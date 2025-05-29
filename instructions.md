@@ -29,7 +29,34 @@ Welcome to the AI-Diffusion Minecraft Mod project. Follow these steps on every m
 1. **PROJECT-OUTLINE.md**: mark the task complete (`- [x]`) or refine future steps if needed.
 2. Commit any outline changes with a **`docs:`** prefix (e.g., `docs: complete DiffusionModel.run integration`).
 
-## 5. Branch & PR Discipline
+## 5. Reflection & Learning Cycle
+After each completed task with all tests passing:
+
+1. **Commit Working Changes**:
+   - `git add .` and `git commit -m "feat: [task description]"`
+   - Ensure the commit includes all working code and passing tests
+
+2. **Reflect on the Process**:
+   - What challenges were encountered during implementation?
+   - Were there any API usage patterns that worked particularly well?
+   - Did any edge cases emerge that should inform future tasks?
+   - Were there any performance considerations or optimization opportunities?
+   - What debugging techniques proved most effective?
+
+3. **Update Learning Artifacts**:
+   - Add new insights to the "Technical Standards" section below
+   - Document any new dependency patterns or API usage discoveries
+   - Note any build/test troubleshooting solutions that worked
+   - Record any Fabric-specific gotchas or best practices learned
+
+4. **Commit Learning Updates**:
+   - `git add instructions.md` (and any other documentation updates)
+   - `git commit -m "docs: reflect on [task] - learned [key insight]"`
+   - Keep learning commits separate from implementation commits
+
+This reflection cycle ensures that knowledge gained from each task informs and improves future development cycles.
+
+## 6. Branch & PR Discipline
 1. Develop each microfeature on its own branch (`feature/xxx`).
 2. Push branch, open a PR, and let CI run.
 3. **Only merge** when:
@@ -41,12 +68,12 @@ Welcome to the AI-Diffusion Minecraft Mod project. Follow these steps on every m
    - **`feat:`** for implementation
    - **`docs:`** for outline or instruction updates
 
-## 6. Supervisor Role
+## 7. Supervisor Role
 - Review every PR diff, focusing on API correctness and code quality.
 - Guide Copilot with inline comments and clear method/test names.
 - Pivot or refine the outline when higher-level priorities change.
 
-## 7. Technical Standards
+## 8. Technical Standards
 - **NBT Parsing**: Always use try-with-resources for file operations and validate NBT tag existence
 - **Coordinate Systems**: Use bitwise operations for performance (`chunkX >> 5` instead of `/32`)
 - **Error Handling**: Catch specific exceptions (IOException, DataFormatException) with detailed logging
