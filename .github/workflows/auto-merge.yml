@@ -66,26 +66,51 @@ jobs:
             echo "❌ PR not eligible: docs_only=$DOCS_ONLY, size_ok=$SIZE_OK ($LOC_CHANGED LOC)"
           fi
 
-      - name: Check CI status
+      - name: Wait for and check CI status
         id: check-ci
         if: steps.check-eligibility.outputs.eligible == 'true'
         run: |
-          # Wait for CI checks to complete and check status
-          sleep 10
-
-          # Get the latest commit SHA
+          # Wait for CI checks to complete with retry mechanism
           COMMIT_SHA="${{ github.event.pull_request.head.sha }}"
+          MAX_ATTEMPTS=12  # 12 attempts * 30 seconds = 6 minutes max wait
+          ATTEMPT=1
+          CI_STATUS="false"
 
-          # Check if all required checks are passing
-          CI_STATUS=$(gh api repos/${{ github.repository }}/commits/$COMMIT_SHA/check-runs \
-            --jq '[.check_runs[] | select(.name | test("Code Quality & Linting|Tests & Coverage|Build Mod")) | .conclusion] | all(. == "success")')
+          echo "🔄 Waiting for CI checks to complete for commit $COMMIT_SHA..."
+
+          while [ $ATTEMPT -le $MAX_ATTEMPTS ]; do
+            echo "⏱️  Attempt $ATTEMPT/$MAX_ATTEMPTS - checking CI status..."
+
+            # Check if all required checks are passing
+            CI_STATUS=$(gh api repos/${{ github.repository }}/commits/$COMMIT_SHA/check-runs \
+              --jq '[.check_runs[] | select(.name | test("Code Quality & Linting|Tests & Coverage|Build Mod|CodeQL Security Scan")) | .conclusion] | all(. == "success")' 2>/dev/null || echo "false")
+
+            # Also check if all checks have completed (not pending)
+            CHECKS_COMPLETED=$(gh api repos/${{ github.repository }}/commits/$COMMIT_SHA/check-runs \
+              --jq '[.check_runs[] | select(.name | test("Code Quality & Linting|Tests & Coverage|Build Mod|CodeQL Security Scan")) | .status] | all(. == "completed")' 2>/dev/null || echo "false")
+
+            echo "📊 CI Status: $CI_STATUS | Checks Completed: $CHECKS_COMPLETED"
+
+            if [ "$CI_STATUS" = "true" ] && [ "$CHECKS_COMPLETED" = "true" ]; then
+              echo "✅ All CI checks are passing!"
+              break
+            elif [ "$CHECKS_COMPLETED" = "false" ]; then
+              echo "⏳ CI checks still running, waiting 30 seconds..."
+            else
+              echo "❌ Some CI checks failed or are in unknown state"
+              break
+            fi
+
+            sleep 30
+            ATTEMPT=$((ATTEMPT + 1))
+          done
 
           echo "ci_passing=$CI_STATUS" >> $GITHUB_OUTPUT
 
           if [ "$CI_STATUS" = "true" ]; then
-            echo "✅ All CI checks are passing"
+            echo "✅ All required CI checks are passing"
           else
-            echo "❌ CI checks are not all passing yet"
+            echo "❌ CI checks are not all passing yet (waited up to $((MAX_ATTEMPTS * 30 / 60)) minutes)"
           fi
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -134,7 +159,7 @@ jobs:
           gh pr comment ${{ github.event.pull_request.number }} --body "🤖 **Auto-merge enabled**
 
           This PR meets all criteria for automatic merging:
-          - ✅ **Docs/CI changes only**: Only `docs/`, `*.md`, or CI workflow files modified
+          - ✅ **Docs/CI changes only**: Only \`docs/\`, \`*.md\`, or CI workflow files modified
           - ✅ **Size limit**: ${{ steps.check-eligibility.outputs.loc_changed }} lines changed (< 200 LOC)
           - ✅ **CI passing**: All required checks are green
           - ✅ **No open threads**: No unresolved review comments
