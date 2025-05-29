@@ -33,6 +33,7 @@ Welcome to the AI-Diffusion Minecraft Mod project. Follow these steps on every m
 After each completed task with all tests passing:
 
 1. **Commit Working Changes**:
+   - `git status` to review what files have been modified
    - `git add .` and `git commit -m "feat: [task description]"`
    - Ensure the commit includes all working code and passing tests
 
@@ -50,6 +51,7 @@ After each completed task with all tests passing:
    - Record any Fabric-specific gotchas or best practices learned
 
 4. **Commit Learning Updates**:
+   - `git status` to verify only documentation files are being committed
    - `git add instructions.md` (and any other documentation updates)
    - `git commit -m "docs: reflect on [task] - learned [key insight]"`
    - Keep learning commits separate from implementation commits
@@ -79,5 +81,6 @@ This reflection cycle ensures that knowledge gained from each task informs and i
 - **Error Handling**: Catch specific exceptions (IOException, DataFormatException) with detailed logging
 - **Version Compatibility**: Detect Minecraft version via DataVersion in level.dat when needed
 - **Resource Management**: Explicit cleanup for DJL Predictors and MappedByteBuffer instances
+- **PowerShell Commands**: Use semicolons (`;`) for command chaining, not `&&`. Example: `cd "path"; git add file` instead of `cd "path" && git add file`
 
 Repeat this cycle for each new capability—keeping the loop tight ensures Copilot stays productive and aligned with project goals.
