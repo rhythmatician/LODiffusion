@@ -1,4 +1,4 @@
-package com.yourname.lodiffusion;
+package com.rhythmatician.lodiffusion;
 
 import net.fabricmc.api.ModInitializer;
 import org.slf4j.Logger;

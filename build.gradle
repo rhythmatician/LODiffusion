@@ -39,6 +39,12 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 
+	// NOTE: Distant Horizons integration will be done at runtime
+	// DH doesn't publish to Maven Central, so we use conditional integration
+	// Users need to install DH separately for LOD features to work
+
+    compileOnly("com.seibel.distanthorizons:distant-horizons-api:4.0.0") // Added for DH API
+
 	// JUnit 5 for testing
 	testImplementation 'org.junit.jupiter:junit-jupiter:5.9.2'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'

@@ -1,4 +1,4 @@
-package com.yourname.lodiffusion;
+package com.rhythmatician.lodiffusion;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;

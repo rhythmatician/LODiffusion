@@ -1,4 +1,4 @@
-package com.yourname.lodiffusion;
+package com.rhythmatician.lodiffusion;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
@@ -22,7 +22,7 @@ class HelloTerrainModTest {
         // Given: A HelloTerrainMod instance
         // When: onInitialize is called
         // Then: Should complete without throwing exceptions
-        
+
         // Act & Assert - this verifies the method executes successfully
         assertDoesNotThrow(() -> mod.onInitialize());
     }
