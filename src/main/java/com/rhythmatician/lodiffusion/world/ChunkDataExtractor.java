@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.io.RandomAccessFile;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import org.jglrxavpok.hephaistos.collections.ImmutableLongArray;
 import org.jglrxavpok.hephaistos.mca.AnvilException;
 import org.jglrxavpok.hephaistos.mca.ChunkColumn;
 import org.jglrxavpok.hephaistos.mca.RegionFile;
@@ -162,6 +163,7 @@ public class ChunkDataExtractor {
                 return null;
             }
 
+            // TODO: Optimize this to avoid copying - need to investigate ImmutableLongArray API
             return decodeHeightmapFromLongArray(motionBlockingTag.getValue().copyArray());
         } catch (AnvilException e) {
             throw new IOException("Failed to parse region file: " + regionFile.getName(), e);
@@ -201,7 +203,7 @@ public class ChunkDataExtractor {
                 heightmap[x][z] = 64; // Sea level
             }
         }
-        
+
         return heightmap;
     }
 
