@@ -2,6 +2,7 @@
 
 General Workflow:
 - Always follow TDD: write one focused JUnit test first, then implement just enough code to pass it.
+- Before each feature, run `git status` to ensure a clean working tree.
 - Use Java 17 syntax and Fabric 1.20+ API (`net.fabricmc.fabric.api.*`).
 - Keep methods small; push heavy logic into helper classes (e.g., `DiffusionModel`).
 - After each feature, update `PROJECT-OUTLINE.md` with an “- [x]” or refine upcoming tasks.
