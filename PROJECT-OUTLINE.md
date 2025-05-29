@@ -1,7 +1,3 @@
-Absolutely — you've advanced far enough that it's time to upgrade the **project outline from a sketch to a blueprint**. You're no longer in a phase of “get it working”; you’re in a phase of **architecting a scalable and extensible diffusion-driven terrain mod**. Here's a proposed revision that reflects the real structure of your codebase, what Copilot is doing well, and where model training, terrain fidelity, and mod compatibility are heading.
-
----
-
 ## 🔭 **AI-Diffusion Minecraft Mod – LODiffusion**
 
 ### 🎯 **Mission**
@@ -60,7 +56,7 @@ Generate plausible terrain in distant chunks using a **discrete diffusion model*
 
 * [ ] `train.py`: U-Net with sinusoidal timestep embedding
 * [ ] Conditional input: height + biome classmap (optional)
-* [ ] Output: multi-scale diffusion (e.g., Δheightmaps)
+* [ ] Output: multi-scale diffusion (e.g., ∆heightmaps)
 * [ ] Export: ONNX + metadata (input format, LOD scale factors)
 * [ ] Quantized model for runtime use (DJL or custom)
 
@@ -97,11 +93,11 @@ Generate plausible terrain in distant chunks using a **discrete diffusion model*
 
 | Metric             | Value                                                      |
 | ------------------ | ---------------------------------------------------------- |
-| Test Coverage      | 87.1% instructions, 82.2% lines, 100% classes             |
+| Test Coverage      | 87.1% instructions, 82.2% lines, 100% classes              |
 | Tests              | 96 passing                                                 |
 | Diffusion Channels | height, biome (temp stubbed)                               |
 | LOD Levels         | 0 (full) → 3 (coarsest)                                    |
-| Real World Chunks  | 64 (.mca) files (\~16k chunks)                             |
+| Real World Chunks  | 64 (.mca) files (∼16k chunks)                              |
 | Runtime Mod State  | Launches successfully with DH (2.3.X)                      |
 | Copilot Autonomy   | Scaffold + fix cycles work well; commit automation pending |
 
@@ -134,7 +130,3 @@ Generate plausible terrain in distant chunks using a **discrete diffusion model*
 3. **Update `PROJECT-OUTLINE.md` with this refined blueprint.**
 
 4. **Write a simple benchmark test** in `tests/benchmark/InferenceBenchmarkTest.java` to simulate runtime model invocation (even if stubbed).
-
----
-
-Would you like me to directly rewrite your `PROJECT-OUTLINE.md` file with this enhanced structure?
