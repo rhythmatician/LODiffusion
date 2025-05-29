@@ -24,13 +24,11 @@ Welcome to the AI-Diffusion Minecraft Mod project. Follow these steps using the 
 4. **Create PR**: Should be reviewable in < 10 minutes, max 200 lines changed
 
 ## 🧪 Test-First Development
-## 🧪 Test-First Development
 
 1. **If tests aren't set up yet**, open `build.gradle`, add a `java` plugin, JUnit 5 dependencies, `useJUnitPlatform()`, and the JaCoCo plugin block.
 2. **Write a single, focused test** in `src/test/java/...` (e.g., sampling the vanilla heightmap).
 3. **Commit immediately**: `git add . && git commit -m "test: add vanilla heightmap sampling test"`
 
-## 🔨 Implementation
 ## 🔨 Implementation
 
 1. Open the corresponding class in `src/main/java/...`.
@@ -44,7 +42,6 @@ Welcome to the AI-Diffusion Minecraft Mod project. Follow these steps using the 
    - **For biome parsing**: Implement version-aware logic (pre-1.18 vs 1.18+)
 5. **Commit immediately**: `git add . && git commit -m "feat: implement heightmap sampling"`
 
-## ✅ Verify & Refine
 ## ✅ Verify & Refine
 
 1. **Run local checks**: `./gradlew clean lint test jacocoTestReport` (matches CI pipeline).
@@ -60,7 +57,6 @@ The CI runs three separate jobs for faster feedback:
 - **Test Job**: Unit tests + coverage (`./gradlew test jacocoTestReport`)  
 - **Build Job**: Final mod JAR build (only if lint + test pass)
 
-## 📚 Update Documentation
 ## 📚 Update Documentation
 
 1. **docs/PROJECT-OUTLINE.md**: mark the task complete (`- [x]`) or refine future steps if needed.
@@ -114,7 +110,6 @@ This reflection cycle ensures that knowledge gained from each task informs and i
    - **`fix:`** for bug fixes
    - **`docs:`** for documentation updates
 
-## 👥 Supervisor Role
 ## 👥 Supervisor Role
 
 - Review every PR diff, focusing on API correctness and code quality.
