@@ -5,11 +5,11 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import net.querz.mca.Chunk;
 import net.querz.mca.MCAFile;
 import net.querz.mca.MCAUtil;
 import net.querz.nbt.tag.CompoundTag;
 import net.querz.nbt.tag.LongArrayTag;
-import net.querz.nbt.tag.Tag;
 
 /**
  * Utility class for extracting chunk data from Minecraft world files.
@@ -108,10 +108,14 @@ public class ChunkDataExtractor {
         try {            MCAFile mcaFile = MCAUtil.read(regionFile);
             if (mcaFile == null) {
                 return null;
+            }            // Get chunk data - using updateHandle() with coordinates
+            Chunk chunk = mcaFile.getChunk(chunkX, chunkZ);
+            if (chunk == null) {
+                return null;
             }
 
-            // Get chunk data - direct approach with querz library
-            CompoundTag chunkTag = mcaFile.getChunk(chunkX, chunkZ);
+            chunk.updateHandle(chunkX, chunkZ);
+            CompoundTag chunkTag = chunk.getHandle();
             if (chunkTag == null) {
                 return null;
             }
@@ -184,13 +188,20 @@ public class ChunkDataExtractor {
     public static String[] extractBiomesFromChunk(File regionFile, int chunkX, int chunkZ) throws IOException {
         if (chunkX < 0 || chunkX >= 32 || chunkZ < 0 || chunkZ >= 32) {
             throw new IllegalArgumentException("Chunk coordinates must be 0-31");
-        }
-
-        try {            MCAFile mcaFile = MCAUtil.read(regionFile);
-            if (mcaFile == null) {            return null;
+        }        try {
+            MCAFile mcaFile = MCAUtil.read(regionFile);
+            if (mcaFile == null) {
+                return null;
             }
 
-            CompoundTag chunkTag = mcaFile.getChunk(chunkX, chunkZ);
+            // Get chunk data - using updateHandle() with coordinates
+            Chunk chunk = mcaFile.getChunk(chunkX, chunkZ);
+            if (chunk == null) {
+                return null;
+            }
+
+            chunk.updateHandle(chunkX, chunkZ);
+            CompoundTag chunkTag = chunk.getHandle();
             if (chunkTag == null) {
                 return null;
             }
