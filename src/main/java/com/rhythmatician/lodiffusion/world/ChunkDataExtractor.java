@@ -105,13 +105,12 @@ public class ChunkDataExtractor {
             throw new IllegalArgumentException("Chunk coordinates must be 0-31");
         }
 
-        try {
-            MCAFile mcaFile = MCAUtil.read(regionFile);
+        try {            MCAFile mcaFile = MCAUtil.read(regionFile);
             if (mcaFile == null) {
                 return null;
             }
 
-            // Get chunk data
+            // Get chunk data - direct approach with querz library
             CompoundTag chunkTag = mcaFile.getChunk(chunkX, chunkZ);
             if (chunkTag == null) {
                 return null;
@@ -187,10 +186,8 @@ public class ChunkDataExtractor {
             throw new IllegalArgumentException("Chunk coordinates must be 0-31");
         }
 
-        try {
-            MCAFile mcaFile = MCAUtil.read(regionFile);
-            if (mcaFile == null) {
-                return null;
+        try {            MCAFile mcaFile = MCAUtil.read(regionFile);
+            if (mcaFile == null) {            return null;
             }
 
             CompoundTag chunkTag = mcaFile.getChunk(chunkX, chunkZ);
