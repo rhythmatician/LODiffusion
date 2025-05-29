@@ -164,26 +164,24 @@ public class ChunkDataExtractorTest {
         assertThrows(IllegalArgumentException.class, () -> {
             ChunkDataExtractor.getWorldChunkCoordinates(0, 0, 100, 15);
         }, "Should throw exception for invalid local coordinates");
-    }
-
-    @Test
-    void testExtractHeightmapFromChunk_NotImplemented() {
-        // Test that the placeholder method correctly throws UnsupportedOperationException
+    }    @Test
+    void testExtractHeightmapFromChunk_FileNotFound() {
+        // Test that the implemented method correctly handles missing files
         File testFile = new File("r.0.0.mca");
 
-        assertThrows(UnsupportedOperationException.class, () -> {
+        assertThrows(IOException.class, () -> {
             ChunkDataExtractor.extractHeightmapFromChunk(testFile, 0, 0);
-        }, "Should throw UnsupportedOperationException for unimplemented NBT parsing");
+        }, "Should throw IOException for missing region file");
     }
 
     @Test
-    void testExtractBiomesFromChunk_NotImplemented() {
-        // Test that the biome extraction placeholder correctly throws UnsupportedOperationException
+    void testExtractBiomesFromChunk_FileNotFound() {
+        // Test that the biome extraction method correctly handles missing files
         File testFile = new File("r.0.0.mca");
 
-        assertThrows(UnsupportedOperationException.class, () -> {
+        assertThrows(IOException.class, () -> {
             ChunkDataExtractor.extractBiomesFromChunk(testFile, 0, 0);
-        }, "Should throw UnsupportedOperationException for unimplemented biome extraction");
+        }, "Should throw IOException for missing region file");
     }
 
     @Test

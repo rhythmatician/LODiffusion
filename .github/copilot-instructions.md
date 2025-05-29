@@ -1,109 +1,153 @@
-# Copilot Assistant Guide
+# Copilot Assistant Instructions for LODiffusion
 
-## General Workflow
-- Always follow TDD: write one focused JUnit test first, then implement just enough code to pass it.
-- Before each feature, run `git status` to ensure a clean working tree.
-- Use Java 17 syntax and Fabric API 1.21+ (`net.fabricmc.fabric.api.*`).
-- Keep methods small; extract complex logic into helper classes (`DiffusionModel`, `LODQuery`, etc.).
-- After each feature, mark it in `docs/PROJECT-OUTLINE.md` with “- [x]” or update the upcoming tasks.
-- Pin all dependency versions in `build.gradle`.
+## 🔁 Development Workflow
 
-## Testing & CI
-- Tests live under `src/test/java/...`; every new feature must include a test.
-- Use JUnit 5 (`junit-jupiter-api`, `junit-jupiter-engine`) and Mockito (`mockito-core`).
-- Code coverage target: **≥ 80%** on every commit. Enforced via `jacocoTestReport`.
-- Run `./gradlew.bat test jacocoTestReport lint` before opening a PR (use `.bat` extension for Windows).
-- Before opening a PR, Copilot must run:
-  `./gradlew.bat clean test jacocoTestReport lint`
-  and only continue if all steps succeed.
-- Track open issues using `docs/CI-CHECKLIST.md`.
-- **Git Bash compatibility:** When working with paths, use Unix-style forward slashes. Change directory using `cd /c/Users/...` instead of `cd "c:\Users\..."`.
+Copilot must adhere to the **test-first, micro-commit strategy**:
 
-## Shell Commands & HTTP
-- Whitelist auto-approved commands (no prompt):
-  - `ls`, `git`, `grep`, `sed`, `awk`
-  - `curl -X GET`, `curl --request GET`
-- Prompt before using `POST`, `PUT`, `DELETE`, or file-modifying shell commands.
+### Before Each Feature
+```bash
+git fetch && git checkout main && git pull
+```
+- Ensure `git status` shows a clean working tree
+- Create a focused branch with a clear prefix:
+  - `test/add-xyz-test`
+  - `feat/implement-abc`
+  - `fix/resolve-def`
+  - `docs/update-ghi`
+```bash
+git checkout -b test/add-xyz-test
+```
 
-## Fabric & Mod Setup
-- Scaffold mods using the Fabric example mod.
+### Development Cycle (Every 15–20 minutes)
+1. **Write one small test** → commit (`test:`)
+2. **Implement only enough to pass** → commit (`feat:`)
+3. **Fix issues, refactor, or cleanup** → commit (`fix:` or `refactor:`)
+4. **Push frequently** to enable CI and backups
+
+```bash
+git add .
+git commit -m "test: add vanilla heightmap sampling"
+git push origin your-branch-name
+```
+
+### Finalize Branch
+1. Run: `./gradlew clean lint test jacocoTestReport build`
+2. PR must:
+   - Be under 200 LOC
+   - Be reviewable in under 10 minutes
+   - Pass all CI stages
+   - Have no unresolved Copilot review threads
+
+---
+
+## 🔬 Testing & CI Discipline
+
+### Test Rules
+- Tests live in `src/test/java/...`
+- Use **JUnit 5** + **Mockito**
+- Target 80%+ code coverage **per commit**
+- Use tags: `@Tag("ci")`, `@Tag("inference")`
+
+### CI Jobs
+Each commit/PR runs:
+1. **Lint**: `./gradlew lint`
+2. **Test + Coverage**: `./gradlew test jacocoTestReport`
+3. **Build Mod**: `./gradlew build` (only if lint + test pass)
+
+Local equivalent:
+```bash
+./gradlew clean lint test jacocoTestReport build
+```
+
+---
+
+## 🧠 Mod Responsibilities
+
+### Chunk Generation & Diffusion
+- In `DiffusionChunkGenerator.buildSurface(...)`:
+  - Sample vanilla heightmap + biomes
+  - Call `DiffusionModel.run(...)`
+- **LOD chaining is required**: each refinement builds on the prior LOD
+- Stubbed multi-channel logic must be test-guided and forward-compatible
+
+### Distant Horizons Integration
+- Runtime detection only (via `ModDetection.isDistantHorizonsLoaded()`)
+- API dependency is `compileOnly`
+- Use `LODManager.getChunkLOD(...)` for LOD level detection
+- Implement fallback wrappers in `LODManagerCompat`, `DistantHorizonsCompat`
+
+---
+
+## 🧪 Implementation Patterns
+
+### Java Conventions
+- Java 17 required
+- Fabric API 1.21+
+- Use bitwise ops for chunk math (`chunkX >> 5`)
+- Wrap file/NBT IO in try-with-resources
+- Isolate logic: `DiffusionModel`, `ChunkSampler`, `LODQuery`, etc.
 - Ensure `build.gradle` includes:
-  - `java` and `jacoco` plugins
+  - `java`, `jacoco` plugins
   - `test { useJUnitPlatform() }`
-  - `compileOnly` or `modImplementation` as appropriate for integration dependencies
+  - All dependency versions pinned
 
-## Chunk Generation & Diffusion
-- In `DiffusionChunkGenerator.buildSurface(...)`, sample vanilla heightmap and biomes, then call `DiffusionModel.run(...)`.
-- Progressive LOD enforcement: each LOD refinement **must** operate on the previous level's output, not from scratch.
-- Multi-channel support is in progress; tests should guide changes to `DiffusionModel`.
+### Error Handling
+- Catch only specific exceptions
+- Log useful info for NBT/data failures
 
-## Distant Horizons Integration
-- Use **runtime detection** for DH integration unless hard-dependency is absolutely required.
-- DH dependency (`com.seibel.distanthorizons:distant-horizons-api:4.0.0`) is marked as `compileOnly`.
-- Wrap all calls in `ModDetection.isDistantHorizonsLoaded()` checks or use reflection fallback.
-- Use `LODManager.getChunkLOD(player, chunk.getPos())` to determine LOD level.
-- Implement and test mappings in `LODManagerCompat` and `DistantHorizonsCompat`.
+---
 
-## Git Workflow & Micro-Commit Strategy
-**CRITICAL**: Never create massive PRs again. Use micro-commits for all development.
-
-### Branch Management Workflow
-1. **Before starting new work**:
-   ```bash
-   git fetch  # Check if previous PRs have merged
-   git checkout main
-   git pull
-   ```
-
-2. **Clean up completed branches**:
-   ```bash
-   git branch -d feature/old-branch-name  # Delete local branches
-   ```
-
-3. **Create focused feature branches**:
-   ```bash
-   git checkout -b test/add-single-method-test
-   git checkout -b fix/compilation-error-line-45
-   git checkout -b docs/update-coverage-metrics
-   ```
+## 🧵 Git Branching & PR Discipline
 
 ### Micro-Commit Strategy
-- **Commit every 15-20 minutes**: Even if feature isn't complete
-- **One logical change per commit**: 
-  - Add 1-2 test methods → commit
-  - Fix one compilation issue → commit
-  - Update one documentation section → commit
-- **Push frequently**: Backup work and enable smaller PRs
-- **Branch names should be specific**: `test/add-chunk-lod-tests` not `test/improve-coverage`
+- Commit every 15–20 minutes
+- One logical change per commit:
+  - Add test → `test:`
+  - Implement → `feat:`
+  - Fix → `fix:`
+  - Doc → `docs:`
 
-### PR & Branching Policy
-- Use GitHub Flow with **micro-features**:
-  - Each branch targets ONE specific change
-  - PRs should be reviewable in < 10 minutes
-  - Maximum 200 lines of changes per PR
-- **Auto-merge enabled** for docs and small PRs when:
-  - ✅ Only `docs/`, `*.md`, or `.github/workflows/*.yml` files changed
-  - ✅ < 200 lines of code changed
-  - ✅ All CI checks passing (lint, test, build)
-  - ✅ No open review threads
-- Copilot should approve and enable auto-merge on PRs it reviews, unless it opens threads requiring human input.
-- Tag commits using prefixes:
-  - `test:` for test additions
-  - `feat:` for features
-  - `docs:` for documentation
-  - `fix:` for bugfixes
-- Pull requests should update `docs/PROJECT-OUTLINE.md` and `docs/CI-CHECKLIST.md` if relevant.
-- After passing tests, Copilot must `git add`, `git commit`, and include a descriptive message using `test:`, `feat:`, or `fix:` prefix.
+### PR Requirements
+- PRs must:
+  - Contain only one logical change
+  - Touch <200 LOC
+  - Be reviewable in <10 minutes
+  - Be auto-mergeable if:
+    - ✅ Only `docs/`, `*.md`, `.github/` files changed
+    - ✅ All CI checks pass
+    - ✅ No Copilot threads open
 
-## File Index
-- `.github/copilot-instructions/anvil.md`: Anvil file format and NBT parsing
-- `.github/copilot-instructions/chunk-extraction.md`: Chunk data extraction
-- `.github/copilot-instructions/development.md`: General development practices
-- `.github/copilot-instructions/distant-horizons-integration.md`: DH-specific logic and fallback patterns
-- `docs/instructions.md`: Developer instructions for Copilot usage
-- `docs/PROJECT-OUTLINE.md`: Project outline and task tracking
-- `docs/EXAMPLE-WORLD-USAGE.md`: Example world data usage
+### Commit Prefixes
+- `test:` - New or updated tests
+- `feat:` - New feature implementation
+- `fix:` - Bug fix
+- `docs:` - Markdown or outline update
+
+---
+
+## ☁️ Safe Shell Access
+
+### Auto-approved Shell Commands
+```bash
+ls, git, grep, sed, awk,
+curl -X GET, curl --request GET
+```
+
+### Prompt First (Copilot Must Ask)
+- All POST/PUT/DELETE
+- Any command modifying files or system state
+
+---
+
+## 🗂️ File Index
+- `.github/copilot-instructions/anvil.md` — Anvil + NBT parsing
+- `.github/copilot-instructions/chunk-extraction.md` — Chunk IO logic
+- `.github/copilot-instructions/development.md` — Misc best practices
+- `.github/copilot-instructions/distant-horizons-integration.md` — DH APIs + fallback
+- `docs/CI-CHECKLIST.md` — Copilot’s own PR checklist
+- `docs/PROJECT-OUTLINE.md` — Full project plan
+- `docs/instructions.md` — Developer instructions
 
 ## Coplilot's Journals
-> It's good to review these, to avoid repeating the same mistakes:
-- `PHASE-1-REFLECTION.md`: Reflection on Phase 1 development
+- `PHASE-1-REFLECTION.md` — Copilot's journal of mistakes + learnings
+- `docs\COVERAGE-IMPROVEMENT-REFLECTION.md` — Copilot's coverage improvement journal

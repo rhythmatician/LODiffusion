@@ -12,7 +12,16 @@ base {
 }
 
 repositories {
-	// These repositories are only for Gradle plugin lookup, not for project dependencies
+	// Maven Central for standard dependencies
+	mavenCentral()
+	
+	// JitPack for querz NBT library
+	maven {
+		name = 'JitPack'
+		url = 'https://jitpack.io'
+	}
+	
+	// ParchmentMC for mappings
 	maven {
 		name = 'ParchmentMC'
 		url = 'https://maven.parchmentmc.org'
@@ -47,10 +56,11 @@ dependencies {
 	// JUnit 5 for testing
 	testImplementation 'org.junit.jupiter:junit-jupiter:5.9.2'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-	
-	// Mockito for mocking in tests
+		// Mockito for mocking in tests
 	testImplementation 'org.mockito:mockito-core:5.1.1'
 	testImplementation 'org.mockito:mockito-junit-jupiter:5.1.1'
+		// NBT library for parsing Minecraft region files
+	implementation 'com.github.Querz:NBT:6.1'
 }
 
 processResources {

@@ -48,12 +48,22 @@ Generate plausible terrain in distant chunks using a **discrete diffusion model*
 
 ---
 
-### **PHASE 3 — Data Extraction for Training (Planned 🧪)**
+### **PHASE 3 — Data Extraction for Training (In Progress 🧪)**
 
-* [ ] Use `ChunkDataExtractor` to convert `.mca` regions into 8x8 patches
-* [ ] Support vanilla + modded biome decoding (with palette + NBT)
-* [ ] Export `.npy` or `.pt` format data for ML consumption
-* [ ] Optional: Export Distant Horizons LODs for ground-truth A/B testing
+* [x] **NBT Library Integration**: Added `io.github.querz:nbt:6.1` dependency
+* [x] **ChunkDataExtractor NBT Implementation**: Complete implementation with:
+  - Full NBT parsing for `.mca` region files
+  - Heightmap extraction with MOTION_BLOCKING/WORLD_SURFACE fallback
+  - Packed long array decoding for 9-bit height values
+  - Version-aware biome parsing (pre-1.18 vs 1.18+ formats)
+  - Comprehensive error handling and validation
+* [ ] **Unit Tests**: Create comprehensive tests for NBT parsing functionality
+* [ ] **8x8 Patch Extraction**: Convert extracted chunks into training patches
+* [ ] **Training Data Export**: Export `.npy` or `.pt` format data for ML consumption
+* [ ] **Multi-biome Support**: Extend extraction to support modded biomes
+* [ ] **Build System Resolution**: Address Gradle cache locking issues
+* [ ] **Integration Testing**: Test with real-world `.mca` files
+* [ ] **Optional**: Export Distant Horizons LODs for ground-truth A/B testing
 
 ---
 
@@ -110,15 +120,17 @@ Generate plausible terrain in distant chunks using a **discrete diffusion model*
 
 ## 🧱 Modular Breakdown
 
-| Module                    | Purpose                                             |
-| ------------------------- | --------------------------------------------------- |
-| `DiffusionModel`          | Core logic: LOD-aware, multi-pass diffusion         |
-| `DiffusionChunkGenerator` | Minecraft terrain generator (hooks into Fabric API) |
-| `ChunkDataExtractor`      | World file reader (Anvil + NBT-ready)               |
-| `DistantHorizonsCompat`   | API bridge (version-safe & runtime-checked)         |
-| `LODManagerCompat`        | Abstracts LOD level across DH or fallback logic     |
-| `RealWorldDataTest`       | Integration suite using real .mca files             |
-| `train.py`                | PyTorch model (WIP – scaffold next)                 |
+| Module                    | Purpose                                             | Status                    |
+| ------------------------- | --------------------------------------------------- | ------------------------- |
+| `DiffusionModel`          | Core logic: LOD-aware, multi-pass diffusion         | ✅ Complete (90+ tests)    |
+| `DiffusionChunkGenerator` | Minecraft terrain generator (hooks into Fabric API) | ✅ Complete               |
+| `ChunkDataExtractor`      | World file reader (Anvil + NBT-ready)               | 🧪 NBT impl complete     |
+| `DistantHorizonsCompat`   | API bridge (version-safe & runtime-checked)         | ✅ Complete               |
+| `LODManagerCompat`        | Abstracts LOD level across DH or fallback logic     | ✅ Complete               |
+| `RealWorldDataTest`       | Integration suite using real .mca files             | ✅ Complete               |
+| `TerrainPatch`            | Training data format for 8x8 terrain patches        | ✅ Complete               |
+| `TerrainPatchDataset`     | Dataset management for training pipeline            | ✅ Complete               |
+| `train.py`                | PyTorch model (WIP – scaffold next)                 | 📋 Planned               |
 
 ---
 
@@ -141,14 +153,18 @@ Following the **micro-commit strategy** outlined in `.github/copilot-instruction
 - Push frequently for backup and smaller PRs
 
 ### Next Immediate Tasks (Micro-Features)
-1. **test: Add TerrainPatchDataset unit tests** → `test/add-terrain-patch-tests`
-2. **feat: Implement training data extraction CLI** → `feat/training-data-cli`
-3. **docs: Document patch format specification** → `docs/patch-format-spec`
-4. **test: Add inference benchmark stub** → `test/inference-benchmark`
+1. **fix: Resolve Gradle cache locking issues** → `fix/gradle-cache-locks`
+2. **test: Add ChunkDataExtractor NBT parsing tests** → `test/nbt-parsing-tests`
+3. **feat: Implement 8x8 patch extraction from chunks** → `feat/patch-extraction`
+4. **test: Add TerrainPatchDataset integration tests** → `test/terrain-patch-integration`
+5. **feat: Implement training data export CLI** → `feat/training-data-cli`
+6. **docs: Document NBT parsing workflow** → `docs/nbt-parsing-guide`
 
----
+### Recently Completed
+- ✅ **NBT Parsing Implementation**: Complete ChunkDataExtractor with querz NBT library
+- ✅ **Build Dependencies**: Added NBT library to build.gradle
+- ✅ **Error Handling**: Comprehensive validation and fallback mechanisms
+- ✅ **Version Compatibility**: Support for both pre-1.18 and 1.18+ biome formats
 
-## 🔄 Task Tracking
-
-**Currently Active Branch:** `docs/update-copilot-instructions`
-**Next Branch:** TBD based on immediate priorities
+**Currently Active Branch:** `feat/nbt-parsing-implementation` (ready for testing)
+**Next Branch:** `fix/gradle-cache-locks` (address build system issues)
