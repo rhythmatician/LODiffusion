@@ -39,11 +39,10 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 
-	// NOTE: Distant Horizons integration will be done at runtime
-	// DH doesn't publish to Maven Central, so we use conditional integration
+	// NOTE: Distant Horizons integration is runtime-only via reflection
+	// DH doesn't publish to Maven Central, so we avoid compile-time dependencies
 	// Users need to install DH separately for LOD features to work
-
-    compileOnly("com.seibel.distanthorizons:distant-horizons-api:4.0.0") // Added for DH API
+	// Runtime detection handles DH presence/absence gracefully
 
 	// JUnit 5 for testing
 	testImplementation 'org.junit.jupiter:junit-jupiter:5.9.2'
@@ -119,6 +118,48 @@ jacocoTestCoverageVerification {
 		}
 	}
 }
+
+// Lint task for static analysis
+tasks.register("lint", JavaCompile) {
+	group = "verification"
+	description = "Run static analysis with enhanced compiler warnings"
+	
+	// Configure the task to use the same source sets as main compilation
+	source = sourceSets.main.java
+	classpath = sourceSets.main.compileClasspath
+	destinationDirectory = layout.buildDirectory.dir("tmp/lint")
+	
+	// Enhanced compiler options for static analysis
+	options.compilerArgs.addAll([
+		'-Xlint:all',           // Enable all warnings
+		'-Xlint:-processing',   // Disable annotation processing warnings (too noisy)
+		'-Xlint:-serial',       // Disable serialization warnings (not relevant for MC mods)
+		'-Werror',              // Treat warnings as errors
+		'-Xmaxwarns', '100',    // Limit warning count for readability
+		'-parameters',          // Include parameter names for reflection
+		'-deprecation',         // Show detailed deprecation info
+		'-Xlint:unchecked'     // Show detailed unchecked conversion warnings
+	])
+	options.encoding = 'UTF-8'
+	options.release = 21
+	options.fork = true
+	options.forkOptions.jvmArgs = ['-Xmx1g'] // Ensure enough memory for analysis
+	
+	doFirst {
+		println "🔍 Running static analysis with enhanced compiler warnings..."
+		println "   Source files: ${source.files.size()}"
+		println "   Output: ${destinationDirectory.get()}"
+	}
+	
+	doLast {
+		println "✅ Static analysis completed successfully!"
+		println "   All source files compiled without warnings or errors."
+		println "   Ready for integration with additional tools (SpotBugs, Checkstyle, PMD)"
+	}
+}
+
+// Make lint run as part of check
+check.dependsOn lint
 
 // publishing is already configured by fabric-loom, just need to add sources and javadoc
 publishing {

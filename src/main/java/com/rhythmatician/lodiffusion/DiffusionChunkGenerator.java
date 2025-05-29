@@ -1,5 +1,6 @@
 package com.rhythmatician.lodiffusion;
 
+import com.rhythmatician.lodiffusion.dh.DistantHorizonsCompat;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.math.ChunkPos;
 
@@ -231,31 +232,167 @@ public class DiffusionChunkGenerator {
   }
 
   /**
-   * Get LOD level using the configured LOD strategy.
-   * @param chunkX X coordinate of the chunk
-   * @param chunkZ Z coordinate of the chunk
-   * @param playerChunkX Player's chunk X position
-   * @param playerChunkZ Player's chunk Z position
-   * @return LOD level relative to player
+   * Build surface terrain using LODManager integration with multi-channel processing.
+   * This is the main method that integrates with Distant Horizons LODManager
+   * and uses the enhanced multi-channel DiffusionModel.
+   * 
+   * @param player The player entity for LOD calculation
+   * @param chunkPos Chunk position to process
+   * @param heightmap 16x16 heightmap data to process
+   * @param biomes Biome data for the chunk
+   * @param temperatureData Optional temperature channel data (can be null)
    */
-  public int getChunkLODRelativeToPlayer(int chunkX, int chunkZ, int playerChunkX, int playerChunkZ) {
-    return lodQuery.getLOD(chunkX, chunkZ, playerChunkX, playerChunkZ);
+  public void buildSurfaceWithLODManager(ServerPlayerEntity player, ChunkPos chunkPos, 
+                                        int[][] heightmap, String[] biomes, 
+                                        float[][] temperatureData) {
+    // Get LOD from Distant Horizons or fallback calculation
+    int lod = DistantHorizonsCompat.getChunkLOD(player, chunkPos);
+    
+    // Convert heightmap to float array for multi-channel processing
+    float[][] heightChannel = convertToFloatArray(heightmap);
+    
+    // Prepare multi-channel data
+    float[][][] channels;
+    if (temperatureData != null) {
+      // Use 3 channels: height, biome, temperature
+      channels = new float[3][16][16];
+      channels[0] = heightChannel;
+      channels[1] = generateBiomeChannel(biomes);
+      channels[2] = temperatureData;
+    } else {
+      // Use 2 channels: height, biome
+      channels = new float[2][16][16];
+      channels[0] = heightChannel;
+      channels[1] = generateBiomeChannel(biomes);
+    }
+    
+    // Apply basic modification first
+    applyBasicModification(chunkPos.x, chunkPos.z, heightmap);
+    
+    // Use LOD-aware multi-channel diffusion
+    diffusionModel.runWithLOD(lod, channels, biomes);
+    
+    // Convert back to int array and apply LOD-specific refinements
+    convertBackToIntArray(channels[0], heightmap);
+    
+    // Apply additional LOD-specific processing
+    applyLODSpecificProcessing(lod, heightmap, biomes);
   }
 
   /**
-   * Get LOD level for a chunk using a simple distance-based calculation.
-   * @param chunkX X coordinate of the chunk
-   * @param chunkZ Z coordinate of the chunk
-   * @return LOD level (0 = highest detail, higher = lower detail)
+   * Build surface terrain using LODManager integration with coordinate-based LOD.
+   * Overload for cases where player entity is not available.
+   * 
+   * @param chunkX Chunk X coordinate
+   * @param chunkZ Chunk Z coordinate
+   * @param playerChunkX Player's chunk X coordinate
+   * @param playerChunkZ Player's chunk Z coordinate
+   * @param heightmap 16x16 heightmap data to process
+   * @param biomes Biome data for the chunk
    */
-  public int getChunkLOD(int chunkX, int chunkZ) {
-    // Use simple distance-based calculation when no player context available
-    if (lodQuery instanceof DefaultLODQuery) {
-      return ((DefaultLODQuery) lodQuery).getSimpleLOD(chunkX, chunkZ);
-    }
-    // Fallback to distance from origin
-    return lodQuery.getLOD(chunkX, chunkZ, 0, 0);
+  public void buildSurfaceWithLODManager(int chunkX, int chunkZ, int playerChunkX, int playerChunkZ,
+                                        int[][] heightmap, String[] biomes) {
+    // Get LOD using coordinate-based calculation
+    int lod = DistantHorizonsCompat.getChunkLOD(chunkX, chunkZ, playerChunkX, playerChunkZ);
+    
+    // Convert heightmap to float array for multi-channel processing
+    float[][] heightChannel = convertToFloatArray(heightmap);
+    float[][] biomeChannel = generateBiomeChannel(biomes);
+    
+    // Prepare 2-channel data (height, biome)
+    float[][][] channels = new float[2][16][16];
+    channels[0] = heightChannel;
+    channels[1] = biomeChannel;
+    
+    // Apply basic modification first
+    applyBasicModification(chunkX, chunkZ, heightmap);
+    
+    // Use LOD-aware multi-channel diffusion
+    diffusionModel.runWithLOD(lod, channels, biomes);
+    
+    // Convert back to int array
+    convertBackToIntArray(channels[0], heightmap);
+    
+    // Apply additional LOD-specific processing
+    applyLODSpecificProcessing(lod, heightmap, biomes);
   }
+
+  /**
+   * Convert int heightmap to float array for multi-channel processing.
+   */
+  private float[][] convertToFloatArray(int[][] heightmap) {
+    if (heightmap.length != 16 || heightmap[0].length != 16) {
+      throw new IllegalArgumentException("Heightmap must be a 16x16 array.");
+    }
+    float[][] result = new float[16][16];
+    for (int x = 0; x < 16; x++) {
+      for (int z = 0; z < 16; z++) {
+        result[x][z] = (float) heightmap[x][z];
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Convert float heightmap back to int array.
+   */
+  private void convertBackToIntArray(float[][] floatArray, int[][] heightmap) {
+    for (int x = 0; x < 16; x++) {
+      for (int z = 0; z < 16; z++) {
+        heightmap[x][z] = Math.round(floatArray[x][z]);
+      }
+    }
+  }
+
+  /**
+   * Generate biome channel data from biome string array.
+   * Maps biome names to numerical values for processing.
+   */
+  private float[][] generateBiomeChannel(String[] biomes) {
+    float[][] biomeChannel = new float[16][16];
+    for (int i = 0; i < 256; i++) {
+      int x = i % 16;
+      int z = i / 16;
+      biomeChannel[x][z] = getBiomeValue(biomes[i]);
+    }
+    return biomeChannel;
+  }
+
+  /**
+   * Map biome name to numerical value for channel processing.
+   */
+  private float getBiomeValue(String biome) {
+    switch (biome.toLowerCase()) {
+      case "ocean": return 0.1f;
+      case "plains": return 0.3f;
+      case "desert": return 0.5f;
+      case "forest": return 0.7f;
+      case "mountains": return 0.9f;
+      default: return 0.3f; // Default to plains value
+    }
+  }
+
+  /**
+   * Apply LOD-specific processing after multi-channel diffusion.
+   */
+  private void applyLODSpecificProcessing(int lod, int[][] heightmap, String[] biomes) {
+    switch (lod) {
+      case 0:
+        applyHighDetailRefinement(heightmap, biomes);
+        break;
+      case 1:
+        // Medium detail - no additional processing needed
+        break;
+      case 2:
+        applyReducedDiffusion(heightmap, biomes);
+        break;
+      default:
+        // Low detail - minimal processing only
+        break;
+    }
+  }
+
+
 
   /**
    * Check if advanced LOD features are available.
