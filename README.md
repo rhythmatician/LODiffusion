@@ -49,6 +49,29 @@ This will:
    ./gradlew clean test jacocoTestReport
    ```
 
+## Development Workflow
+
+This project follows a **micro-commit strategy** for efficient development:
+
+### Branch Management
+- Create focused branches: `test/add-xyz-test`, `feat/implement-abc`, `docs/update-def`
+- One logical change per branch (max 200 lines changed)
+- PRs should be reviewable in < 10 minutes
+
+### Commit Strategy  
+- Commit every 15-20 minutes during active development
+- Use conventional prefixes: `test:`, `feat:`, `fix:`, `docs:`
+- One logical change per commit
+- Push frequently for backup and CI validation
+
+### Getting Started
+1. **Before starting work**: `git fetch && git checkout main && git pull`
+2. **Create branch**: `git checkout -b test/add-single-method-test`
+3. **Development cycle**: Write test → Commit → Implement → Commit → Repeat
+4. **Complete feature**: Push branch → Create PR → Auto-merge
+
+See `docs/instructions.md` for detailed workflow guidance.
+
 ---
 
 ## CI and Test Discipline

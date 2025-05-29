@@ -1,6 +1,36 @@
 # CI Checklist for LODiffusion
 
-This checklist ensures code quality and proper integration practices for the LODiffusion Minecraft mod.
+This checklist ensures code quality and proper integration practices for the LODiffusion Minecraft mod, following the **micro-commit strategy** outlined in `.github/copilot-instructions.md`.
+
+## Micro-Commit Workflow Checklist
+
+### Branch Management
+- ✅ **Focused branch created** with specific naming:
+  - `test/add-xyz-test` for test additions
+  - `feat/implement-abc` for feature implementation  
+  - `fix/resolve-def` for bug fixes
+  - `docs/update-ghi` for documentation updates
+- ✅ **Single logical change** targeted (max 200 lines of changes)
+- ✅ **Branch freshness**: created from latest `main` after `git pull`
+- ✅ **Clean working tree** before starting (`git status` shows no uncommitted changes)
+
+### Commit Discipline
+- ✅ **Frequent commits** (every 15-20 minutes during active development)
+- ✅ **Conventional commit prefixes** used:
+  - `test:` for test additions
+  - `feat:` for features
+  - `fix:` for bugfixes
+  - `docs:` for documentation
+- ✅ **One logical change per commit**:
+  - Adding 1-2 test methods → single commit
+  - Fixing one compilation issue → single commit
+  - Updating one documentation section → single commit
+- ✅ **Pushed frequently** for backup and CI validation
+
+### PR Requirements
+- ✅ **Reviewable in < 10 minutes** (focused scope)
+- ✅ **Auto-merge eligible** (no unresolved threads after Copilot review)
+- ✅ **Documentation updated** (`docs/PROJECT-OUTLINE.md`, `docs/CI-CHECKLIST.md` if relevant)
 
 ## Pre-Commit Checklist
 
@@ -51,9 +81,12 @@ This checklist ensures code quality and proper integration practices for the LOD
 
 ### Git & CI
 - ✅ Commit messages follow conventional format (`feat:`, `fix:`, `test:`, `docs:`)
-- ✅ One logical change per commit
+- ✅ One logical change per commit (micro-commit strategy)
+- ✅ Frequent commits during development (every 15-20 minutes)
+- ✅ Branch naming follows convention (`test/`, `feat/`, `fix/`, `docs/` prefixes)
 - ✅ No merge conflicts
 - ✅ Branch builds successfully in CI
+- ✅ Ready for auto-merge (< 200 lines changed, reviewable in < 10 minutes)
 
 ## Automated Checks
 

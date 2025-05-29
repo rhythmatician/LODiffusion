@@ -121,20 +121,33 @@ Generate plausible terrain in distant chunks using a **discrete diffusion model*
 
 ---
 
-## 📌 Recommendations to Implement Next
+## 📌 Development Workflow & Micro-Commit Strategy
 
-1. **Split Phase 4 into a `/training` subdir with**:
+Following the **micro-commit strategy** outlined in `.github/copilot-instructions.md`:
 
-   * `train.py`
-   * `extract-patches.py`
-   * `README.md` documenting patch formats + usage
+### Branch Management
+- Each feature/fix gets its own focused branch (`test/add-xyz-test`, `feat/implement-abc`, `docs/update-def`)
+- Maximum 200 lines of changes per PR
+- PRs should be reviewable in < 10 minutes
+- Auto-merge enabled for Copilot-reviewed PRs with no open threads
 
-2. **Write a sample `TerrainPatchDataset` class** in PyTorch to load `.npy`/`.pt` patches.
+### Commit Strategy
+- **Commit every 15-20 minutes** during development
+- One logical change per commit:
+  - Add 1-2 test methods → `test:` commit
+  - Fix compilation issue → `fix:` commit  
+  - Update documentation → `docs:` commit
+- Push frequently for backup and smaller PRs
 
-3. **Update `docs/PROJECT-OUTLINE.md` with this refined blueprint.**
-
-4. **Write a simple benchmark test** in `tests/benchmark/InferenceBenchmarkTest.java` to simulate runtime model invocation (even if stubbed).
+### Next Immediate Tasks (Micro-Features)
+1. **test: Add TerrainPatchDataset unit tests** → `test/add-terrain-patch-tests`
+2. **feat: Implement training data extraction CLI** → `feat/training-data-cli`
+3. **docs: Document patch format specification** → `docs/patch-format-spec`
+4. **test: Add inference benchmark stub** → `test/inference-benchmark`
 
 ---
 
-Would you like me to directly rewrite your `docs/PROJECT-OUTLINE.md` file with this enhanced structure?
+## 🔄 Task Tracking
+
+**Currently Active Branch:** `docs/update-copilot-instructions`
+**Next Branch:** TBD based on immediate priorities
