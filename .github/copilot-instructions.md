@@ -56,10 +56,18 @@ git push origin your-branch-name
 
 ### Test Rules
 
-* Tests live in `src/test/java/...`
-* Use **JUnit 5** + **Mockito**
-* Target 80%+ code coverage **per commit**
-* Use tags: `@Tag("ci")`, `@Tag("inference")`
+* Tests may live in:
+
+  * `src/test/java/com/...` — core unit and integration tests
+  * `src/test/java/data/` — synthetic dataset tests (e.g., `BiomeSamplingTest`)
+  * `src/test/java/benchmark/` — performance and inference benchmarks
+* Use **JUnit 5** and **Mockito**
+* Target **80%+ code coverage per commit**
+* Use tags for clarity:
+
+  * `@Tag("ci")` — regular CI tests
+  * `@Tag("inference")` — DJL/ONNX integration
+  * `@Tag("benchmark")` — long-running benchmarks (excluded from default CI)
 
 ### CI Jobs
 
@@ -67,6 +75,7 @@ Each commit/PR runs:
 
 1. **Lint**: `./gradlew lint` — must pass first
 2. **Test + Coverage**: `./gradlew test jacocoTestReport`
+   *Runs all `src/test/java/**` unless `@Tag("benchmark")` is excluded by config*
 3. **Build Mod**: `./gradlew build` (only if lint + test pass)
 
 Local equivalent:
