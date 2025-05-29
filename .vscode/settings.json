@@ -8,5 +8,6 @@
     "awk",
     "curl -X GET",
     "curl --request GET"
-  ]
+  ],
+  "java.configuration.updateBuildConfiguration": "automatic"
 }
