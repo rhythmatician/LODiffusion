@@ -5,11 +5,11 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import net.querz.mca.Chunk;
-import net.querz.mca.MCAFile;
-import net.querz.mca.MCAUtil;
-import net.querz.nbt.tag.CompoundTag;
-import net.querz.nbt.tag.LongArrayTag;
+import org.jglrxavpok.hephaistos.mca.AnvilException;
+import org.jglrxavpok.hephaistos.mca.ChunkColumn;
+import org.jglrxavpok.hephaistos.mca.RegionFile;
+import org.jglrxavpok.hephaistos.nbt.NBTCompound;
+import org.jglrxavpok.hephaistos.nbt.NBTLongArray;
 
 /**
  * Utility class for extracting chunk data from Minecraft world files.
@@ -104,42 +104,49 @@ public class ChunkDataExtractor {
     public static int[][] extractHeightmapFromChunk(File regionFile, int chunkX, int chunkZ) throws IOException {
         if (chunkX < 0 || chunkX >= 32 || chunkZ < 0 || chunkZ >= 32) {
             throw new IllegalArgumentException("Chunk coordinates must be 0-31");
-        }
-
-        try {            MCAFile mcaFile = MCAUtil.read(regionFile);
-            if (mcaFile == null) {
-                return null;
-            }            // Get chunk data - using updateHandle() with coordinates
-            Chunk chunk = mcaFile.getChunk(chunkX, chunkZ);
+        }        try (RegionFile regionFileHandle = new RegionFile(regionFile)) {
+            // Get chunk data from the region file
+            ChunkColumn chunk = regionFileHandle.getChunk(chunkX, chunkZ);
             if (chunk == null) {
                 return null;
             }
 
-            chunk.updateHandle(chunkX, chunkZ);
-            CompoundTag chunkTag = chunk.getHandle();
+            // Convert chunk to NBT compound
+            NBTCompound chunkTag = chunk.toNBT();
             if (chunkTag == null) {
                 return null;
             }
 
-            // Navigate to heightmaps section
-            CompoundTag levelTag = chunkTag.getCompoundTag("Level");
-            if (levelTag == null) {
-                // Try new format (1.18+)
-                levelTag = chunkTag;
+            // Navigate to heightmaps section - 1.18+ format (no Level tag)
+            NBTCompound heightmapsTag = null;
+            if (chunkTag.containsKey("Heightmaps")) {
+                heightmapsTag = chunkTag.getCompound("Heightmaps");
+            } else if (chunkTag.containsKey("Level")) {
+                // Fallback for pre-1.18 format with Level tag
+                NBTCompound levelTag = chunkTag.getCompound("Level");
+                if (levelTag != null && levelTag.containsKey("Heightmaps")) {
+                    heightmapsTag = levelTag.getCompound("Heightmaps");
+                }
             }
 
-            CompoundTag heightmapsTag = levelTag.getCompoundTag("Heightmaps");
             if (heightmapsTag == null) {
                 return null;
             }
 
             // Extract MOTION_BLOCKING heightmap (most useful for terrain generation)
-            LongArrayTag motionBlockingTag = heightmapsTag.getLongArrayTag("MOTION_BLOCKING");
+            if (!heightmapsTag.containsKey("MOTION_BLOCKING")) {
+                return null;
+            }
+
+            NBTLongArray motionBlockingTag = (NBTLongArray) heightmapsTag.get("MOTION_BLOCKING");
             if (motionBlockingTag == null) {
                 return null;
             }
 
-            return decodeHeightmapFromLongArray(motionBlockingTag.getValue());        } catch (Exception e) {
+            return decodeHeightmapFromLongArray(motionBlockingTag.getValue().toArray());
+        } catch (AnvilException e) {
+            throw new IOException("Failed to parse region file: " + regionFile.getName(), e);
+        } catch (Exception e) {
             throw new IOException("Failed to parse region file: " + regionFile.getName(), e);
         }
     }
@@ -185,24 +192,20 @@ public class ChunkDataExtractor {
      * @param chunkZ Chunk Z coordinate within region (0-31)
      * @return Biome identifier array for surface level (16x16), or null if not found
      * @throws IOException if file cannot be read
-     */
-    public static String[] extractBiomesFromChunk(File regionFile, int chunkX, int chunkZ) throws IOException {
+     */    public static String[] extractBiomesFromChunk(File regionFile, int chunkX, int chunkZ) throws IOException {
         if (chunkX < 0 || chunkX >= 32 || chunkZ < 0 || chunkZ >= 32) {
             throw new IllegalArgumentException("Chunk coordinates must be 0-31");
-        }        try {
-            MCAFile mcaFile = MCAUtil.read(regionFile);
-            if (mcaFile == null) {
-                return null;
-            }
-
-            // Get chunk data - using updateHandle() with coordinates
-            Chunk chunk = mcaFile.getChunk(chunkX, chunkZ);
+        }
+        
+        try (RegionFile regionFileHandle = new RegionFile(regionFile)) {
+            // Get chunk data from the region file
+            ChunkColumn chunk = regionFileHandle.getChunk(chunkX, chunkZ);
             if (chunk == null) {
                 return null;
             }
 
-            chunk.updateHandle(chunkX, chunkZ);
-            CompoundTag chunkTag = chunk.getHandle();
+            // Convert chunk to NBT compound
+            NBTCompound chunkTag = chunk.toNBT();
             if (chunkTag == null) {
                 return null;
             }
@@ -210,39 +213,37 @@ public class ChunkDataExtractor {
             // Try to extract biomes based on format (1.18+ vs pre-1.18)
             return extractBiomesFromChunkTag(chunkTag);
 
+        } catch (AnvilException e) {
+            throw new IOException("Failed to parse region file: " + regionFile.getName(), e);
         } catch (Exception e) {
             throw new IOException("Failed to extract biomes from chunk [" + chunkX + ", " + chunkZ + 
                                   "] in region " + regionFile.getName(), e);
         }
     }
-    
-    /**
+      /**
      * Extract biome data from chunk NBT tag, handling version differences.
      * @param chunkTag The chunk's NBT data
      * @return Array of biome identifiers for 16x16 surface positions
      */
-    private static String[] extractBiomesFromChunkTag(CompoundTag chunkTag) {
+    private static String[] extractBiomesFromChunkTag(NBTCompound chunkTag) {    private static String[] extractBiomesFromChunkTag(NBTCompound chunkTag) {
         // Try 1.18+ format first (3D biomes with sections)
-        CompoundTag sectionsTag = chunkTag.getCompoundTag("sections");
-        if (sectionsTag != null) {
-            return extractBiomes1_18Plus(sectionsTag);
+        if (chunkTag.containsKey("sections")) {
+            return extractBiomes1_18Plus(chunkTag.getCompound("sections"));
         }
         
         // Try pre-1.18 format (Level tag with 2D biomes)
-        CompoundTag levelTag = chunkTag.getCompoundTag("Level");
-        if (levelTag != null) {
-            return extractBiomesPre1_18(levelTag);
+        if (chunkTag.containsKey("Level")) {
+            return extractBiomesPre1_18(chunkTag.getCompound("Level"));
         }
         
         return null; // Unable to extract biomes
     }
-    
-    /**
+      /**
      * Extract biomes from 1.18+ format (3D palette-indexed per section).
      * @param sectionsTag The sections compound tag
      * @return Array of surface biome identifiers
      */
-    private static String[] extractBiomes1_18Plus(CompoundTag sectionsTag) {
+    private static String[] extractBiomes1_18Plus(NBTCompound sectionsTag) {
         // This is a simplified implementation that extracts surface biomes
         // For full 3D biome support, you'd need to process all Y sections
         
@@ -253,13 +254,12 @@ public class ChunkDataExtractor {
         }
         return biomes;
     }
-    
-    /**
+      /**
      * Extract biomes from pre-1.18 format (2D ByteArrayTag).
      * @param levelTag The Level compound tag
      * @return Array of biome identifiers for 16x16 positions
      */
-    private static String[] extractBiomesPre1_18(CompoundTag levelTag) {
+    private static String[] extractBiomesPre1_18(NBTCompound levelTag) {
         // Pre-1.18 used a simple ByteArrayTag for biomes
         // This is also a simplified implementation
         
