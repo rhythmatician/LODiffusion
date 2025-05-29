@@ -44,7 +44,7 @@ public class DiffusionModel {
           
           // Tile-aware processing: reduce diffusion at tile boundaries (every 16 blocks)
           float tileEdgeFactor = getTileEdgeFactor(x, z);
-          int diffusedValue = Math.round((heightmap[x][z] + average * passStrength) / (1.0f + passStrength) * tileEdgeFactor);
+          int diffusedValue = Math.round(((heightmap[x][z] + (average * passStrength)) / (1.0f + passStrength)) * tileEdgeFactor);
           
           heightmap[x][z] = diffusedValue + variation;
         }
