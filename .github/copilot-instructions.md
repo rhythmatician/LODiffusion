@@ -1,0 +1,3 @@
+# Copilot Assistant Guide
+
+Project Name: LODiffusion...

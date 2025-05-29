@@ -1,0 +1,25 @@
+name: CI
+
+on: [push, pull_request]
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      # build/test steps here
+
+  enforce-fabric-imports:
+    name: Enforce Fabric API Imports
+    runs-on: ubuntu-latest
+    needs: build-and-test
+    steps:
+      - uses: actions/checkout@v3
+      - name: Run grep-action
+        uses: freckle/grep-action@v3
+        with:
+          only-changed: true
+          patterns: |
+            - pattern: 'import\\s+(?!net\\.fabricmc\\.fabric\\.api\\.)'
+              syntax: extended
+              level: failure
+              message: 'Only net.fabricmc.fabric.api.* imports are allowed.'

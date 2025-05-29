@@ -1,0 +1,12 @@
+{
+  "github.copilot.experimental.shell.enableDefaultApprovals": true,
+  "github.copilot.experimental.shell.whitelist": [
+    "ls",
+    "git",
+    "grep",
+    "sed",
+    "awk",
+    "curl -X GET",
+    "curl --request GET"
+  ]
+}
