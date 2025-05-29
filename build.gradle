@@ -15,12 +15,6 @@ repositories {
 	// Maven Central for standard dependencies
 	mavenCentral()
 	
-	// JitPack for querz NBT library
-	maven {
-		name = 'JitPack'
-		url = 'https://jitpack.io'
-	}
-	
 	// ParchmentMC for mappings
 	maven {
 		name = 'ParchmentMC'
@@ -55,12 +49,12 @@ dependencies {
 
 	// JUnit 5 for testing
 	testImplementation 'org.junit.jupiter:junit-jupiter:5.9.2'
-	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-		// Mockito for mocking in tests
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'	// Mockito for mocking in tests
 	testImplementation 'org.mockito:mockito-core:5.1.1'
 	testImplementation 'org.mockito:mockito-junit-jupiter:5.1.1'
-		// NBT library for parsing Minecraft region files
-	implementation 'com.github.Querz:NBT:6.1'
+	
+	// Hephaistos NBT library for parsing Minecraft region files (1.18+ compatible)
+	implementation 'io.github.jglrxavpok.hephaistos:common:2.6.1'
 }
 
 processResources {
