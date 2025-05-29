@@ -321,6 +321,9 @@ public class DiffusionChunkGenerator {
    * Convert int heightmap to float array for multi-channel processing.
    */
   private float[][] convertToFloatArray(int[][] heightmap) {
+    if (heightmap.length != 16 || heightmap[0].length != 16) {
+      throw new IllegalArgumentException("Heightmap must be a 16x16 array.");
+    }
     float[][] result = new float[16][16];
     for (int x = 0; x < 16; x++) {
       for (int z = 0; z < 16; z++) {

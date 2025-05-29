@@ -12,8 +12,8 @@ import java.nio.file.Paths;
  * Future enhancement: Add NBT parsing to extract real heightmaps and biome data.
  */
 public class ChunkDataExtractor {
-
-    private static final String WORLD_PATH = "example-world";
+    
+    private static final String WORLD_PATH = "test-data";
 
     /**
      * Check if example world data is available.

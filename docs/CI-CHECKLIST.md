@@ -1,0 +1,204 @@
+# CI Checklist for LODiffusion
+
+This checklist ensures code quality and proper integration practices for the LODiffusion Minecraft mod.
+
+## Pre-Commit Checklist
+
+### Dependency Management
+- ✅ `build.gradle` dependency scope verified (compileOnly vs implementation)
+  - Fabric dependencies: `modImplementation`
+  - Test dependencies: `testImplementation`
+  - Optional integrations: use runtime detection, not compile-time dependencies
+- ✅ No unnecessary dependencies added
+- ✅ Version pinning maintained for reproducible builds
+
+### Code Quality
+- ✅ Remove speculative DH files (placeholder implementations cleaned up)
+- ✅ No unresolved imports or phantom classes
+- ✅ All compilation warnings addressed
+- ✅ Lint task passes (`./gradlew lint`)
+  - Verifies enhanced compiler warnings (-Xlint:all)
+  - Treats warnings as errors (-Werror)
+  - Ensures clean compilation with strict analysis
+- ✅ Code follows project conventions and style guidelines
+- ✅ **Problems tab in IDE cleared of critical issues**:
+  - ❌ No `cannot be resolved to a type` errors
+  - ❌ No missing import statements
+  - ❌ No references to non-existent classes (e.g., `DHWorldGeneratorOverride`)
+  - ❌ No unused declared fields or variables
+- ✅ **Reflection wrapper validation**:
+  - All reflection method references point to actual methods
+  - Unused reflection fields are removed or documented
+  - Reflection fallback paths are tested
+
+### Integration Safety
+- ✅ Reflection paths covered with `ModDetection.isModLoaded("distanthorizons")`
+- ✅ Optional mod integrations use safe detection patterns
+- ✅ No hard dependencies on external mods (except Fabric API)
+- ✅ Graceful fallback behavior when optional mods are not present
+
+### Testing & Coverage
+- ✅ All tests pass (`./gradlew test`)
+- ✅ JaCoCo coverage ≥ 70% (`./gradlew jacocoTestCoverageVerification`)
+- ✅ New features have corresponding tests
+- ✅ No test dependencies on Minecraft bootstrap (use mocks appropriately)
+
+### Documentation & Planning
+- ✅ All TODOs logged or tracked in `docs/PROJECT-OUTLINE.md`
+- ✅ Public API methods have JavaDoc comments
+- ✅ README.md updated with new features
+- ✅ CHANGELOG.md updated for user-facing changes
+
+### Git & CI
+- ✅ Commit messages follow conventional format (`feat:`, `fix:`, `test:`, `docs:`)
+- ✅ One logical change per commit
+- ✅ No merge conflicts
+- ✅ Branch builds successfully in CI
+
+## Automated Checks
+
+These checks should be automated in your CI pipeline:
+
+```bash
+# Build and test
+./gradlew clean build
+
+# Run lint checks
+./gradlew lint
+
+# Verify test coverage
+./gradlew jacocoTestCoverageVerification
+
+# Check for dependency vulnerabilities (if using dependency-check plugin)
+./gradlew dependencyCheckAnalyze
+
+# Static analysis for common problems
+echo "🔍 Checking for compilation issues..."
+
+# Check for unresolved imports and missing classes
+./gradlew compileJava 2>&1 | tee compile.log
+if grep -E "cannot be resolved|not found|does not exist" compile.log; then
+    echo "❌ Found unresolved imports or missing classes"
+    exit 1
+fi
+
+# Check for unused imports
+./gradlew compileJava -Xlint:all 2>&1 | grep "unused" && {
+    echo "⚠️  Found unused imports - should be cleaned up"
+}
+
+# Check for phantom class references
+echo "🔍 Scanning for phantom class references..."
+find src/main/java -name "*.java" -exec grep -l "DHWorldGeneratorOverride\|Class\.forName.*distanthorizons.*" {} \; | while read file; do
+    echo "⚠️  Potential phantom class reference in: $file"
+done
+
+# Validate reflection wrapper integrity
+echo "🔍 Validating reflection wrappers..."
+find src/main/java -name "*Compat.java" -o -name "*Wrapper.java" | while read file; do
+    # Check for unused private fields (basic heuristic)
+    grep -n "private.*Field\|private.*Method" "$file" | while read line; do
+        field_name=$(echo "$line" | sed -n 's/.*private.*\s\+\([a-zA-Z_][a-zA-Z0-9_]*\)\s*[;=].*/\1/p')
+        if [ -n "$field_name" ] && ! grep -q "$field_name" "$file" | grep -v "private.*$field_name"; then
+            echo "⚠️  Potentially unused reflection field '$field_name' in $file:$(echo $line | cut -d: -f1)"
+        fi
+    done
+done
+
+echo "✅ Static analysis checks completed"
+```
+
+### IDE Integration Checks
+
+For VS Code users, these additional checks help catch Problems tab issues:
+
+```bash
+# Check Java Language Server diagnostics
+echo "🔍 Checking for IDE diagnostics..."
+
+# Look for common compilation issues in source files
+find src -name "*.java" -exec grep -l "import.*\.\*" {} \; | while read file; do
+    echo "📝 File with wildcard imports (may cause resolution issues): $file"
+done
+
+# Check for missing package declarations
+find src/main/java src/test/java -name "*.java" | while read file; do
+    if ! head -10 "$file" | grep -q "package "; then
+        echo "❌ Missing package declaration: $file"
+    fi
+done
+
+# Validate class names match file names
+find src -name "*.java" | while read file; do
+    filename=$(basename "$file" .java)
+    if ! grep -q "class $filename\|interface $filename\|enum $filename" "$file"; then
+        echo "⚠️  Class name may not match filename: $file"
+    fi
+done
+```
+
+## Integration-Specific Checks
+
+### Distant Horizons Integration
+- ✅ All DH integration uses `DistantHorizonsCompat` layer
+- ✅ `ModDetection.isDistantHorizonsAvailable()` used before DH calls
+- ✅ Proper fallback to `DefaultLODQuery` when DH not available
+- ✅ No direct imports of DH classes (use reflection when needed)
+
+### Fabric Integration
+- ✅ Mod initializer properly registered in `fabric.mod.json`
+- ✅ Mixins properly configured (if any)
+- ✅ Event handlers properly registered
+- ✅ No blocking operations on main thread
+
+## Release Checklist
+
+Additional checks for release preparation:
+
+- ✅ Version number updated in `gradle.properties`
+- ✅ `fabric.mod.json` version matches
+- ✅ All deprecation warnings addressed
+- ✅ Performance testing completed
+- ✅ Documentation updated
+- ✅ Release notes prepared
+
+## Tools Integration
+
+Future enhancements for the lint task:
+
+### SpotBugs
+```groovy
+plugins {
+    id 'com.github.spotbugs' version '5.0.14'
+}
+
+spotbugs {
+    toolVersion = '4.7.3'
+    effort = 'max'
+    reportLevel = 'medium'
+}
+```
+
+### Checkstyle
+```groovy
+plugins {
+    id 'checkstyle'
+}
+
+checkstyle {
+    toolVersion = '10.12.1'
+    configFile = file('config/checkstyle/checkstyle.xml')
+}
+```
+
+### PMD
+```groovy
+plugins {
+    id 'pmd'
+}
+
+pmd {
+    toolVersion = '6.55.0'
+    ruleSetFiles = files('config/pmd/ruleset.xml')
+}
+```

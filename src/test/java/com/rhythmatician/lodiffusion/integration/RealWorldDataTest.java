@@ -13,12 +13,12 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 
 /**
- * Integration tests using real Minecraft world data from example-world folder.
+ * Integration tests using real Minecraft world data from test-data folder.
  * These tests validate LODiffusion behavior against actual terrain data.
  */
 public class RealWorldDataTest {
 
-    private static final String WORLD_PATH = "example-world";
+    private static final String WORLD_PATH = "test-data";
     private DiffusionChunkGenerator generator;
     private DiffusionModel model;
 
@@ -26,13 +26,11 @@ public class RealWorldDataTest {
     void setUp() {
         generator = new DiffusionChunkGenerator();
         model = new DiffusionModel();
-    }
-
-    @Test
+    }    @Test
     void testWorldDataExists() {
-        // Verify the example world data is available for testing
+        // Verify the test world data is available for testing
         Path worldPath = Paths.get(WORLD_PATH);
-        assertTrue(worldPath.toFile().exists(), "Example world should exist for integration testing");
+        assertTrue(worldPath.toFile().exists(), "Test world should exist for integration testing");
 
         Path regionPath = worldPath.resolve("region");
         assertTrue(regionPath.toFile().exists(), "Region folder should exist");
