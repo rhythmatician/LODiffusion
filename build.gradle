@@ -20,6 +20,12 @@ repositories {
 		name = 'ParchmentMC'
 		url = 'https://maven.parchmentmc.org'
 	}
+	
+	// JitPack for GitHub-based dependencies like Hephaistos
+	maven {
+		name = 'JitPack'
+		url = 'https://jitpack.io'
+	}
 }
 
 loom {
@@ -46,17 +52,16 @@ dependencies {
 	// DH doesn't publish to Maven Central, so we avoid compile-time dependencies
 	// Users need to install DH separately for LOD features to work
 	// Runtime detection handles DH presence/absence gracefully
-
 	// JUnit 5 for testing
 	testImplementation 'org.junit.jupiter:junit-jupiter:5.9.2'
-	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'	// Mockito for mocking in tests
+	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
+	
+	// Mockito for mocking in tests
 	testImplementation 'org.mockito:mockito-core:5.1.1'
 	testImplementation 'org.mockito:mockito-junit-jupiter:5.1.1'
-		// Hephaistos NBT library for parsing Minecraft region files (1.18+ compatible)
-	implementation 'io.github.jglrxavpok.hephaistos:common:2.6.1'
-	
-	// Kotlin standard library for Hephaistos interop (required for Kotlin metadata)
-	implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.21'
+	// Hephaistos NBT library for parsing Minecraft region files (1.18+ compatible)
+	// Using JitPack version which is more reliable
+	implementation 'com.github.jglrxavpok:Hephaistos:1.1.8'
 }
 
 processResources {
