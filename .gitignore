@@ -5,6 +5,9 @@
 # Minecraft example world
 /example-world/
 
+# Hephaistos
+/Hephaistos/
+
 
 # Gradle
 .gradle/
