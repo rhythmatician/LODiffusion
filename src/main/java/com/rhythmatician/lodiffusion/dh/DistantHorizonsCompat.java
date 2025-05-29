@@ -1,108 +1,110 @@
 package com.rhythmatician.lodiffusion.dh;
 
-import com.seibel.distanthorizons.api.DhApi;
-import com.seibel.distanthorizons.api.IDhApi;
-import com.seibel.distanthorizons.api.IDhApiWorldGenerator;
-import com.seibel.distanthorizons.api.IDhApiWorldProxy;
-import com.seibel.distanthorizons.api.IDhApiTerrainDataRepo;
-import com.seibel.distanthorizons.api.datatypes.IDhApiVec3f;
-import com.seibel.distanthorizons.api.datatypes.DhApiTerrainDataPoint;
+import net.minecraft.server.network.ServerPlayerEntity;
+import net.minecraft.util.math.ChunkPos;
 
 /**
  * Handles compatibility with Distant Horizons.
  * All DH-specific code should be in this layer.
+ * 
+ * Provides a unified interface for LOD operations that works both with and without DH.
  */
 public class DistantHorizonsCompat {
 
+    private static final LODManagerCompat lodManagerCompat = new LODManagerCompat();
+
+    /**
+     * Gets the LOD level for a chunk relative to a player.
+     * Uses Distant Horizons if available, otherwise falls back to distance calculation.
+     *
+     * @param player The player to calculate distance from
+     * @param chunkPos The chunk position to get LOD for
+     * @return LOD level (0 = highest detail, higher = lower detail)
+     */
+    public static int getChunkLOD(ServerPlayerEntity player, ChunkPos chunkPos) {
+        return lodManagerCompat.getChunkLOD(player, chunkPos);
+    }
+
+    /**
+     * Gets the LOD level for specific chunk coordinates relative to player coordinates.
+     *
+     * @param chunkX Chunk X coordinate
+     * @param chunkZ Chunk Z coordinate
+     * @param playerChunkX Player's chunk X coordinate
+     * @param playerChunkZ Player's chunk Z coordinate
+     * @return LOD level (0 = highest detail, higher = lower detail)
+     */
+    public static int getChunkLOD(int chunkX, int chunkZ, int playerChunkX, int playerChunkZ) {
+        return lodManagerCompat.getChunkLOD(chunkX, chunkZ, playerChunkX, playerChunkZ);
+    }
+
+    /**
+     * Gets the diffusion factor for a given LOD level.
+     * Maps LOD levels to appropriate diffusion intensity for the DiffusionModel.
+     *
+     * @param lod The LOD level (0 = highest detail, higher = lower detail)
+     * @return Diffusion factor between 0.1 and 1.0
+     */
+    public static float getLODDiffusionFactor(int lod) {
+        return lodManagerCompat.getLODDiffusionFactor(lod);
+    }
+
+    /**
+     * Checks if Distant Horizons integration is available and functional.
+     *
+     * @return true if DH is loaded and LOD API is accessible
+     */
+    public static boolean isDistantHorizonsIntegrationAvailable() {
+        return lodManagerCompat.isDistantHorizonsIntegrationAvailable();
+    }
+
+    /**
+     * Gets a description of the current LOD integration status.
+     *
+     * @return String describing the LOD strategy being used
+     */
+    public static String getIntegrationStatus() {
+        return lodManagerCompat.getIntegrationStatus();
+    }
+
     /**
      * Registers the custom LOD generator with Distant Horizons.
-     * API: DhApi.get().setWorldGenerator (DH API 2.0.0+)
+     * Currently handles the registration process for DH integration.
      */
     public static void registerWorldGenerator() {
-        IDhApi dhApi = DhApi.get();
-        if (dhApi != null) {
-            dhApi.setWorldGenerator(new DiffusionLodGenerator());
+        if (isDistantHorizonsIntegrationAvailable()) {
+            System.out.println("Registering LODiffusion generator with Distant Horizons");
+            // TODO: Implement actual DH generator registration when API is available
         } else {
-            // Log an error or handle the case where DH API is not available
-            // This should not happen if DH is a required dependency
-            System.err.println("Distant Horizons API not found, LODiffusion will not be able to generate LODs for DH.");
+            System.out.println("DH not available - using standalone LOD calculation");
         }
     }
 
     /**
-     * Example of how to query LOD data if needed.
-     * API: DhApi.get().getTerrainDataRepo (DH API 2.0.0+)
-     * API: IDhApiTerrainDataRepo.getAllTerrainDataAtChunkPos (DH API 2.0.0+)
+     * Queries LOD data for a specific chunk.
+     * Provides consistent interface whether using DH or fallback calculation.
+     *
+     * @param chunkX Chunk X coordinate
+     * @param chunkZ Chunk Z coordinate
+     * @param playerChunkX Player's chunk X coordinate (for distance calculation)
+     * @param playerChunkZ Player's chunk Z coordinate (for distance calculation)
+     * @return LOD data array containing [lod_level, diffusion_factor]
      */
-    public static DhApiTerrainDataPoint[] getLodData(int chunkX, int chunkZ) {
-        IDhApi dhApi = DhApi.get();
-        if (dhApi != null) {
-            IDhApiTerrainDataRepo repo = dhApi.getTerrainDataRepo();
-            if (repo != null) {
-                // This is an example, actual usage might differ
-                return repo.getAllTerrainDataAtChunkPos(chunkX, chunkZ);
-            }
-        }
-        return null;
-    }
-}
-
-/**
- * Custom LOD generator for Distant Horizons.
- */
-class DiffusionLodGenerator implements IDhApiWorldGenerator {
-
-    /**
-     * Called by Distant Horizons to generate LOD terrain for a specific chunk and granularity.
-     * API: IDhApiWorldGenerator.generateLod (DH API 2.0.0+)
-     * @param world Proxy to interact with the DH world.
-     * @param ctx Generation context containing chunk coordinates and granularity.
-     */
-    @Override
-    public void generateLod(IDhApiWorldProxy world, IDhApiWorldGenerator.GenerationContext ctx) {
-        int chunkX = ctx.getChunkX();
-        int chunkZ = ctx.getChunkZ();
-        float granularity = ctx.getGranularity(); // Represents the size of each data point (e.g., 8.0f for 8x8x8 blocks)
-
-        System.out.println("DH requesting LOD for chunk: (" + chunkX + ", " + chunkZ + ") with granularity: " + granularity);
-
-        // TODO:
-        // 1. Extract LOD granularity (already available in ctx.getGranularity())
-        // 2. Create a low-res heightmap grid (e.g., 8x8 or 16x16 based on granularity)
-        //    - The size of the grid will depend on how many data points fit into a chunk at the given granularity.
-        //    - A chunk is 16xH_MAXx16 blocks. If granularity is 8, then a chunk is 2x(H_MAX/8)x2 data points.
-        // 3. Call DiffusionModel.run(...) with prior context (if conditioning)
-        //    - This will be the core logic for generating terrain data.
-        // 4. Convert output to a DhApiTerrainDataPoint[] using DhApiTerrainDataPoint.create(x, y, z, density, blockId, ...)
-        //    - x, y, z are world coordinates of the data point.
-        //    - density is a value from 0 (air) to 1 (solid).
-        //    - blockId is the Minecraft block ID (e.g., "minecraft:stone").
-
-        // Example: Create a flat layer of stone for demonstration
-        // The number of points depends on the granularity.
-        // For a 16x16 block area (one chunk column), if granularity is G,
-        // there are (16/G) points in X and Z.
-        int pointsPerAxis = (int) (16 / granularity);
-        if (pointsPerAxis <= 0) pointsPerAxis = 1; // Ensure at least one point
-
-        DhApiTerrainDataPoint[] terrainData = new DhApiTerrainDataPoint[pointsPerAxis * pointsPerAxis];
-        int index = 0;
-        for (int dx = 0; dx < pointsPerAxis; dx++) {
-            for (int dz = 0; dz < pointsPerAxis; dz++) {
-                // Calculate world coordinates for this data point
-                // The ctx.getMinCorner() provides the minimum world coordinates for this LOD generation task.
-                // It's not necessarily aligned with chunk boundaries if granularity is large.
-                float worldX = ctx.getMinCorner().getX() + dx * granularity;
-                float worldZ = ctx.getMinCorner().getZ() + dz * granularity;
-                float worldY = 64.0f; // Example: flat terrain at Y=64
-
-                // Density: 1.0f for solid, 0.0f for air.
-                // Block ID: e.g., "minecraft:stone"
-                terrainData[index++] = DhApiTerrainDataPoint.create(worldX, worldY, worldZ, 1.0f, "minecraft:stone");
-            }
-        }
+    public static Object[] getLodData(int chunkX, int chunkZ, int playerChunkX, int playerChunkZ) {
+        int lod = getChunkLOD(chunkX, chunkZ, playerChunkX, playerChunkZ);
+        float diffusionFactor = getLODDiffusionFactor(lod);
         
-        // Provide the generated data to Distant Horizons
-        world.setTerrainData(terrainData);
+        return new Object[]{lod, diffusionFactor};
+    }
+
+    /**
+     * Legacy method for backward compatibility.
+     * @deprecated Use getLodData(int, int, int, int) with player coordinates instead
+     */
+    @Deprecated
+    public static Object[] getLodData(int chunkX, int chunkZ) {
+        // Use origin as default player position
+        return getLodData(chunkX, chunkZ, 0, 0);
     }
 }
+

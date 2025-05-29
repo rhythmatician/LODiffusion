@@ -33,8 +33,10 @@ Welcome to the AI-Diffusion Minecraft Mod project. Follow these steps on every m
 After each completed task with all tests passing:
 
 1. **Commit Working Changes**:
+   - `git add .` to stage your changes
    - `git status` to review what files have been modified
-   - `git add .` and `git commit -m "feat: [task description]"`
+   - `git diff` each file, to make sure no errors get committed
+   - `git commit -m "feat: [task description]"`
    - Ensure the commit includes all working code and passing tests
 
 2. **Reflect on the Process**:
@@ -51,10 +53,11 @@ After each completed task with all tests passing:
    - Record any Fabric-specific gotchas or best practices learned
 
 4. **Commit Learning Updates**:
+   - Keep learning commits separate from implementation commits
    - `git status` to verify only documentation files are being committed
    - `git add instructions.md` (and any other documentation updates)
    - `git commit -m "docs: reflect on [task] - learned [key insight]"`
-   - Keep learning commits separate from implementation commits
+   - `git push origin`
 
 This reflection cycle ensures that knowledge gained from each task informs and improves future development cycles.
 
