@@ -34,9 +34,14 @@ public class DiffusionModel {
    * @return Height variation to apply
    */
   private int getBiomeVariation(String[] biomes, int x, int z) {
-    // Simple biome-based variation
+    // Simple biome-based variation with null safety
     int biomeIndex = Math.min(x + z, biomes.length - 1);
     String biome = biomes[biomeIndex];
+    
+    // Handle null biomes gracefully
+    if (biome == null) {
+      biome = "minecraft:plains"; // Default fallback
+    }
     
     if (biome.contains("mountain")) {
       return (x + z) % 5 - 2; // -2 to 2 variation

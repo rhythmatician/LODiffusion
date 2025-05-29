@@ -25,12 +25,15 @@
 - [x] Verify gradle works
 
 ### 2. Chunk & LOD hook-ins
-- [ ] Research Fabric chunk-generation API and relevant events
-- [ ] TODO: Copilot, generate `ChunkGeneratorStubTest` skeleton
-- [ ] Stub `DiffusionChunkGenerator.buildSurface(...)`
+- [x] Research Fabric chunk-generation API and relevant events
+- [x] Generate `ChunkGeneratorStubTest` skeleton
+- [x] Stub `DiffusionChunkGenerator.buildSurface(...)` with multiple overloads
+- [x] Implement basic heightmap modification for TDD validation
+- [x] Integrate with `DiffusionModel.run()` method
 
-### 3. Diffusion algorithm integration
-- [ ] TODO: Copilot, write unit tests for `DiffusionModel.run(...)`
+### 3. Diffusion algorithm integration  
+- [x] Write unit tests for `DiffusionModel.run(...)`
+- [x] Implement basic diffusion algorithm with biome-aware processing
 - [ ] TODO: Copilot, modify `DiffusionModel.run(...)` for channels
 - [ ] TODO: Copilot, integrate LODManager and call `run()`
 
