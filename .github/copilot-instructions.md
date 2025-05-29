@@ -45,3 +45,9 @@ Documentation & Branching:
 
 Repeat this cycle to keep Copilot focused, reliable, and aligned with our project goals.
 
+See the .github/copilot-instructions/ folder for even more detailed instructions and examples:
++ `.github/copilot-instructions/anvil.md`: Anvil file format and NBT parsing
++ `.github/copilot-instructions/chunk-extractions.md`: Chunk data extraction
++ `.github/copilot-instructions/development.md`: General development practices
++ `instructions.md`: Developer instructions for Copilot usage
++ `PROJECT-OUTLINE.md`: Project outline and task tracking
