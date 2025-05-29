@@ -2,6 +2,8 @@ package com.rhythmatician.lodiffusion.dh;
 
 import com.rhythmatician.lodiffusion.DiffusionChunkGenerator;
 import com.rhythmatician.lodiffusion.ModDetection;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * LODiffusion world generator implementation for Distant Horizons integration.
@@ -11,6 +13,8 @@ import com.rhythmatician.lodiffusion.ModDetection;
  * Uses runtime detection and safe reflection to integrate with DH when available.
  */
 public class LODiffusionDHWorldGenerator {
+    
+    private static final Logger LOGGER = LoggerFactory.getLogger(LODiffusionDHWorldGenerator.class);
     
     private final DiffusionChunkGenerator chunkGenerator;
     private static volatile LODiffusionDHWorldGenerator instance;
@@ -110,9 +114,8 @@ public class LODiffusionDHWorldGenerator {
         }
         
         registrationAttempted = true;
-        
-        if (!ModDetection.isDistantHorizonsAvailable()) {
-            System.out.println("LODiffusion: Distant Horizons not detected - skipping DH registration");
+          if (!ModDetection.isDistantHorizonsAvailable()) {
+            LOGGER.info("Distant Horizons not detected - skipping DH registration");
             return false;
         }
           try {
@@ -132,22 +135,20 @@ public class LODiffusionDHWorldGenerator {
             // Step 4: Create a wrapper that implements DH's IDhApiWorldGenerator interface
             // This is done through dynamic proxy or direct implementation
             Class<?> worldGeneratorInterface = Class.forName("com.seibel.distanthorizons.api.interfaces.world.IDhApiWorldGenerator");
-            
-            // For now, just log the successful class loading as proof of concept
-            System.out.println("LODiffusion: DH API classes loaded successfully");
-            System.out.println("LODiffusion: World generator interface: " + worldGeneratorInterface.getName());
-            System.out.println("LODiffusion: Generator ready: " + generator.getGeneratorName() + " v" + generator.getGeneratorVersion());
+              // For now, just log the successful class loading as proof of concept
+            LOGGER.info("DH API classes loaded successfully");
+            LOGGER.info("World generator interface: {}", worldGeneratorInterface.getName());
+            LOGGER.info("Generator ready: {} v{}", generator.getGeneratorName(), generator.getGeneratorVersion());
             
             // The actual registration would happen here with proper DH API calls
             // This requires the full DH API specification which may not be available in compile-only mode
             
             return true;
-            
-        } catch (ClassNotFoundException e) {
-            System.out.println("LODiffusion: DH API classes not found - " + e.getMessage());
+              } catch (ClassNotFoundException e) {
+            LOGGER.debug("DH API classes not found: {}", e.getMessage());
             return false;
         } catch (Exception e) {
-            System.err.println("LODiffusion: Error registering DH world generator - " + e.getMessage());
+            LOGGER.error("Error registering DH world generator: {}", e.getMessage());
             return false;
         }
     }
