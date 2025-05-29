@@ -238,9 +238,7 @@ public class ChunkDataExtractor {
     public static int[][] extractHeightmapFromChunk(File regionFile, int chunkX, int chunkZ) throws IOException {
         if (chunkX < 0 || chunkX >= 32 || chunkZ < 0 || chunkZ >= 32) {
             throw new IllegalArgumentException("Chunk coordinates must be 0-31");
-        }
-
-        startTiming();
+        }        startTiming();
         
         try {
             // Use cached RegionFile instance
@@ -253,8 +251,8 @@ public class ChunkDataExtractor {
                 chunk = regionFileHandle.getChunk(chunkX, chunkZ);
             } catch (AnvilException e) {
                 // Chunk doesn't exist in this region - this is normal
-                System.out.println("DEBUG: Chunk [" + chunkX + ", " + chunkZ +
-                    "] not found in region " + regionFile.getName() + " - " + e.getMessage());
+                LOGGER.debug("Chunk [{}, {}] not found in region {} - {}", 
+                    chunkX, chunkZ, regionFile.getName(), e.getMessage());
                 return null;
             }
 
@@ -353,16 +351,14 @@ public class ChunkDataExtractor {
         try {
             // Use cached RegionFile instance
             RegionFileCache regionCache = getOrCreateRegionFileCache(regionFile);
-            RegionFile regionFileHandle = regionCache.getRegionFile();
-
-            // Get chunk data from the region file - handle AnvilException for missing chunks
+            RegionFile regionFileHandle = regionCache.getRegionFile();            // Get chunk data from the region file - handle AnvilException for missing chunks
             ChunkColumn chunk;
             try {
                 chunk = regionFileHandle.getChunk(chunkX, chunkZ);
             } catch (AnvilException e) {
                 // Chunk doesn't exist in this region - this is normal
-                System.out.println("DEBUG: Chunk [" + chunkX + ", " + chunkZ +
-                    "] not found in region " + regionFile.getName() + " - " + e.getMessage());
+                LOGGER.debug("Chunk [{}, {}] not found in region {} - {}", 
+                    chunkX, chunkZ, regionFile.getName(), e.getMessage());
                 return null;
             }
 
