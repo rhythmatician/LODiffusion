@@ -1,7 +1,3 @@
-Absolutely — you've advanced far enough that it's time to upgrade the **project outline from a sketch to a blueprint**. You're no longer in a phase of “get it working”; you’re in a phase of **architecting a scalable and extensible diffusion-driven terrain mod**. Here's a proposed revision that reflects the real structure of your codebase, what Copilot is doing well, and where model training, terrain fidelity, and mod compatibility are heading.
-
----
-
 ## 🔭 **AI-Diffusion Minecraft Mod – LODiffusion**
 
 ### 🎯 **Mission**
@@ -10,161 +6,185 @@ Generate plausible terrain in distant chunks using a **discrete diffusion model*
 
 ---
 
-## 🧭 **Refined Project Roadmap**
+## 🗺️ **Refined Project Roadmap**
 
-### **PHASE 0 — Developer Infrastructure (Done)**
+### **PHASE 0 — Developer Infrastructure (Complete ✅)**
 
-* [x] Git + GitHub Actions with PR CI + Jacoco + Lint
-* [x] Fabric mod scaffolding + Java 17 + Gradle 8.x
-* [x] Copilot terminal permissions, auto-merge prep, TDD config
-* [x] Testing suite bootstrapped with JUnit 5 + Mockito
-
----
+* Git + GitHub Actions with PR CI + JaCoCo + Lint
+* Fabric mod scaffolding + Java 17 + Gradle 8.x
+* Terminal permissions, TDD config, test suite (JUnit 5 + Mockito)
 
 ### **PHASE 1 — Core Diffusion Engine (Complete ✅)**
 
-* [x] Implemented multi-pass, tile-aware `DiffusionModel.run()`
-* [x] Added LOD-sensitive diffusion with LOD intensity maps
-* [x] Introduced multi-channel support: `float[][][]` (height, biome, temp)
-* [x] Integrated LOD blending with `getTileEdgeFactor`
-* [x] Verified via 90+ unit tests + real-world .mca patch tests
-* [x] 70%+ line coverage with full CI compliance
+* Multi-pass, tile-aware `DiffusionModel.run()` with LOD-sensitive logic
+* Multi-channel support: `float[][][]` (height, biome, temp)
+* Blending via `getTileEdgeFactor()`
+* > 90 unit tests and real-world .mca patch tests
 
----
+### **PHASE 2 — World Integration & Hook Points (Complete ✅)**
 
-### **PHASE 2 — World Integration & Hook Points (Nearly Complete ✅)**
+* `DiffusionChunkGenerator` API implemented and tested
+* `LODManagerCompat` + `DistantHorizonsCompat` runtime-safe wrappers
+* `IDhApiWorldGenerator` registration complete
+* > 84% coverage on DH-related logic
 
-* [x] `DiffusionChunkGenerator.buildSurface(...)` overloads implemented
-* [x] `LODManagerCompat` with fallback for Distant Horizons
-* [x] `DistantHorizonsCompat` provides runtime-safe API calls
-* [x] Partial registration for world generation APIs (DH pending)
-* [x] Full implementation of `IDhApiWorldGenerator` registration
-* [x] Comprehensive unit tests for DH integration (84% project coverage)
+### **PHASE 3 — Data Extraction for Training (Nearly Complete 🥭)**
+
+* ✅ NBT parsing implemented with Hephaistos v1.1.8
+* ✅ Handles pre-1.18 and 1.18+ biome formats
+* ✅ Packed heightmaps decoded from LongArrayTag
+* ✅ `RegionFileCache` supports thread-safe caching & profiling
+* ✅ Performance optimizations: 48ms → 0ms cache hits, 8 chunks in 11ms
+* ✅ Proper SLF4J logging conversion completed
 
 **TODO:**
 
-* [ ] Fallback chunk generation logic when DH is not loaded
-* [ ] Add configurable parameters for LOD tuning in-game
-
----
-
-### **PHASE 3 — Data Extraction for Training (In Progress 🧪)**
-
-* [x] **NBT Library Integration**: Added `io.github.querz:nbt:6.1` dependency
-* [x] **ChunkDataExtractor NBT Implementation**: Complete implementation with:
-  - Full NBT parsing for `.mca` region files
-  - Heightmap extraction with MOTION_BLOCKING/WORLD_SURFACE fallback
-  - Packed long array decoding for 9-bit height values
-  - Version-aware biome parsing (pre-1.18 vs 1.18+ formats)
-  - Comprehensive error handling and validation
-* [ ] **Unit Tests**: Create comprehensive tests for NBT parsing functionality
-* [ ] **8x8 Patch Extraction**: Convert extracted chunks into training patches
-* [ ] **Training Data Export**: Export `.npy` or `.pt` format data for ML consumption
-* [ ] **Multi-biome Support**: Extend extraction to support modded biomes
-* [ ] **Build System Resolution**: Address Gradle cache locking issues
-* [ ] **Integration Testing**: Test with real-world `.mca` files
-* [ ] **Optional**: Export Distant Horizons LODs for ground-truth A/B testing
-
----
+* [ ] Add unit tests for edge-case biome parsing
+* [ ] Implement `extract8x8PatchesFromChunk()`
+* [ ] Export `.npy` / `.pt` training data
+* [ ] `feat/training-data-cli` branch
+* [ ] Handle modded biomes & optional DH LODs
 
 ### **PHASE 4 — Model Training Pipeline**
 
-* [ ] `train.py`: U-Net with sinusoidal timestep embedding
-* [ ] Conditional input: height + biome classmap (optional)
-* [ ] Output: multi-scale diffusion (e.g., Δheightmaps)
-* [ ] Export: ONNX + metadata (input format, LOD scale factors)
-* [ ] Quantized model for runtime use (DJL or custom)
-
----
+* [ ] U-Net model: sinusoidal timestep, conditional input (height + biome)
+* [ ] Export to ONNX with LOD metadata
+* [ ] Quantized model for DJL runtime use
 
 ### **PHASE 5 — Runtime Inference Engine**
 
-* [ ] Implement `DiffusionRunner` in Java
-* [ ] Load ONNX model using DJL or custom JNI backend
-* [ ] Predict terrain patches at runtime with cache/memoization
-* [ ] Validate runtime outputs via visual debug overlays
-
----
+* [ ] Java ONNX loading via DJL or JNI
+* [ ] `DiffusionRunner` class
+* [ ] Memoized patch predictions per LOD
+* [ ] Visual debug overlays
 
 ### **PHASE 6 — Tuning, Debugging, UI**
 
-* [ ] Add debug UI to visualize LODs and model output
-* [ ] Toggle between vanilla and AI terrain modes
-* [ ] Per-biome tuning of model parameters
-* [ ] Performance benchmarking at multiple view distances
-
----
+* [ ] Toggle vanilla/AI terrain
+* [ ] In-game LOD parameter tuning
+* [ ] Benchmarking support
 
 ### **PHASE 7 — Packaging, Distribution**
 
-* [ ] Embed metadata (model hash, training stats) into mod
-* [ ] Document setup, inference engine, patch generation
-* [ ] Release build with modrinth & curseforge descriptors
-* [ ] Auto-pack example-world & test suite for public use
+* [ ] Embed model metadata (hash, LODs, etc.)
+* [ ] Publish to Modrinth + Curseforge
+* [ ] Bundle example-world, test suite, CLI
 
 ---
 
-## 📊 **Active Project Metrics**
+## 📊 **Current Project Metrics**
 
-| Metric             | Value                                                      |
-| ------------------ | ---------------------------------------------------------- |
-| Test Coverage      | 84% lines, 100% classes                                   |
-| Tests              | 108 passing                                                |
-| Diffusion Channels | height, biome (temp stubbed)                               |
-| LOD Levels         | 0 (full) → 3 (coarsest)                                    |
-| Real World Chunks  | 64 (.mca) files (\~16k chunks)                             |
-| Runtime Mod State  | Launches successfully with DH (2.3.X)                      |
-| Copilot Autonomy   | Scaffold + fix cycles work well; commit automation pending |
+| Metric            | Value                               |
+| ----------------- | ----------------------------------- |
+| Test Coverage     | 87.1% instructions, 82.2% lines     |
+| Tests Passing     | 108                                 |
+| Channels          | height, biome (temp stubbed)        |
+| LOD Levels        | 0 (full) → 3 (coarsest)             |
+| Real-world Chunks | \~16,000 from 64 `.mca` files       |
+| Runtime Mod State | Works with DH 2.3.x, fallback ready |
 
 ---
 
 ## 🧱 Modular Breakdown
 
-| Module                    | Purpose                                             | Status                    |
-| ------------------------- | --------------------------------------------------- | ------------------------- |
-| `DiffusionModel`          | Core logic: LOD-aware, multi-pass diffusion         | ✅ Complete (90+ tests)    |
-| `DiffusionChunkGenerator` | Minecraft terrain generator (hooks into Fabric API) | ✅ Complete               |
-| `ChunkDataExtractor`      | World file reader (Anvil + NBT-ready)               | 🧪 NBT impl complete     |
-| `DistantHorizonsCompat`   | API bridge (version-safe & runtime-checked)         | ✅ Complete               |
-| `LODManagerCompat`        | Abstracts LOD level across DH or fallback logic     | ✅ Complete               |
-| `RealWorldDataTest`       | Integration suite using real .mca files             | ✅ Complete               |
-| `TerrainPatch`            | Training data format for 8x8 terrain patches        | ✅ Complete               |
-| `TerrainPatchDataset`     | Dataset management for training pipeline            | ✅ Complete               |
-| `train.py`                | PyTorch model (WIP – scaffold next)                 | 📋 Planned               |
+| Module                    | Purpose                                       | Status         |
+| ------------------------- | --------------------------------------------- | -------------- |
+| `DiffusionModel`          | Multi-pass, LOD-aware diffusion logic         | ✅ Complete     |
+| `DiffusionChunkGenerator` | Fabric terrain hook & integration             | ✅ Complete     |
+| `ChunkDataExtractor`      | Region file parsing + patch extraction        | 🥭 Nearly Complete |
+| `RegionFileCache`         | I/O + coordinate cache with profiling         | ✅ Complete     |
+| `DistantHorizonsCompat`   | Runtime-safe bridge to DH API                 | ✅ Complete     |
+| `LODManagerCompat`        | Unified LOD query interface                   | ✅ Complete     |
+| `RealWorldDataTest`       | Integration test suite on real `.mca` data    | ✅ Complete     |
+| `TerrainPatch`            | 8x8 patch representation for training         | ✅ Complete     |
+| `TerrainPatchDataset`     | Dataset loader for `.npy`/`.pt` training data | ✅ Complete     |
+| `train.py`                | U-Net training scaffold                       | 📅 Planned     |
 
 ---
 
-## 📌 Development Workflow & Micro-Commit Strategy
+## 🔖 Next Steps (Branches to Create)
 
 Following the **micro-commit strategy** outlined in `.github/copilot-instructions.md`:
 
-### Branch Management
-- Each feature/fix gets its own focused branch (`test/add-xyz-test`, `feat/implement-abc`, `docs/update-def`)
+### Immediate Next Tasks
+1. `test/nbt-parsing-tests` — unit coverage of biome logic
+2. `feat/patch-extraction` — 8x8 chunk patch builder
+3. `feat/training-data-cli` — CLI export to `.npy`/`.pt`
+4. `docs/nbt-parsing-guide` — explain format detection logic
+5. `fix/gradle-cache-locks` — resolve lingering build issues
+
+### Branch Management Guidelines
 - Maximum 200 lines of changes per PR
 - PRs should be reviewable in < 10 minutes
 - Auto-merge enabled for Copilot-reviewed PRs with no open threads
-
-### Commit Strategy
-- **Commit every 15-20 minutes** during development
-- One logical change per commit:
-  - Add 1-2 test methods → `test:` commit
-  - Fix compilation issue → `fix:` commit  
-  - Update documentation → `docs:` commit
-- Push frequently for backup and smaller PRs
-
-### Next Immediate Tasks (Micro-Features)
-1. **fix: Resolve Gradle cache locking issues** → `fix/gradle-cache-locks`
-2. **test: Add ChunkDataExtractor NBT parsing tests** → `test/nbt-parsing-tests`
-3. **feat: Implement 8x8 patch extraction from chunks** → `feat/patch-extraction`
-4. **test: Add TerrainPatchDataset integration tests** → `test/terrain-patch-integration`
-5. **feat: Implement training data export CLI** → `feat/training-data-cli`
-6. **docs: Document NBT parsing workflow** → `docs/nbt-parsing-guide`
+- Commit every 15-20 minutes during development
 
 ### Recently Completed
-- ✅ **NBT Parsing Implementation**: Complete ChunkDataExtractor with querz NBT library
-- ✅ **Build Dependencies**: Added NBT library to build.gradle
-- ✅ **Error Handling**: Comprehensive validation and fallback mechanisms
-- ✅ **Version Compatibility**: Support for both pre-1.18 and 1.18+ biome formats
+- ✅ **ChunkDataExtractor Performance Optimization**: RegionFileCache, coordinate caching, profiling
+- ✅ **SLF4J Logging Conversion**: Proper logging instead of System.out/System.err
+- ✅ **Gradle Dependencies**: Fixed Hephaistos dependency issues
+- ✅ **Performance Testing**: Comprehensive benchmark suite
 
-**Currently Active Branch:** `feat/nbt-parsing-implementation` (ready for testing)
-**Next Branch:** `fix/gradle-cache-locks` (address build system issues)
+---
+
+## 📖 Resources & Links
+
+* See `README.md` for CI setup and local testing commands
+* See `EXAMPLE-WORLD-USAGE.md` for `.mca` region file structure
+* See `CHUNK-EXTRACTOR-OPTIMIZATION-REFLECTION.md` for performance benchmarks
+* See `CI-CHECKLIST.md` for pre-PR validation steps
+
+---
+
+## 🧵 Development Workflow
+
+### Micro-Commit Strategy
+- Each feature/fix gets its own focused branch (`test/add-xyz-test`, `feat/implement-abc`, `docs/update-def`)
+- One logical change per commit:
+  - Add test → `test:` commit
+  - Implement → `feat:` commit
+  - Fix → `fix:` commit
+  - Doc → `docs:` commit
+
+### CI Pipeline
+Each commit/PR runs:
+1. **Lint**: `./gradlew lint` — must pass first
+2. **Test + Coverage**: `./gradlew test jacocoTestReport`
+3. **Build Mod**: `./gradlew build` (only if lint + test pass)
+
+Local equivalent:
+```bash
+./gradlew clean lint test jacocoTestReport build
+```
+
+### Testing Rules
+- Target **80%+ code coverage per commit**
+- Tests may live in:
+  - `src/test/java/com/...` — core unit and integration tests
+  - `src/test/java/data/` — synthetic dataset tests
+  - `src/test/java/benchmark/` — performance benchmarks
+- Use JUnit 5 and Mockito
+- Use tags for clarity: `@Tag("ci")`, `@Tag("inference")`, `@Tag("benchmark")`
+
+---
+
+## 🏗️ Architecture Notes
+
+### Chunk Generation & Diffusion
+- In `DiffusionChunkGenerator.buildSurface(...)`:
+  - Sample vanilla heightmap + biomes
+  - Call `DiffusionModel.run(...)`
+- **LOD chaining is required**: each refinement builds on the prior LOD
+- Stubbed multi-channel logic must be test-guided and forward-compatible
+
+### Distant Horizons Integration
+- Runtime detection only (via `ModDetection.isDistantHorizonsLoaded()`)
+- API dependency is `compileOnly`
+- Use `LODManager.getChunkLOD(...)` for LOD level detection
+- Implement fallback wrappers in `LODManagerCompat`, `DistantHorizonsCompat`
+
+### Performance Considerations
+- **RegionFileCache**: Avoid reopening .mca files for every chunk
+- **Coordinate Caching**: Cache parsed region coordinates
+- **Profiling Infrastructure**: Optional timing measurements for optimization
+- **Batch Processing**: Process multiple chunks from same region efficiently
