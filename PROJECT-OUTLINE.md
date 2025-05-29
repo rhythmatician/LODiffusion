@@ -21,8 +21,8 @@
 - [x] Clone `fabric-example-mod` and configure `build.gradle`
 - [x] TODO: Copilot, scaffold `src/test/java` directory structure and add JUnit 5 (`testImplementation`) and JaCoCo (`jacoco`) plugins to `build.gradle`
 - [x] Create `HelloTerrainMod` implementing `ModInitializer`
-- [ ] Verify console log "[HelloTerrain] Mod initialized!" on server start
-- [ ] Verify gradle works
+- [x] Verify console log "[HelloTerrain] Mod initialized!" on server start (TDD: HelloTerrainModTest)
+- [x] Verify gradle works
 
 ### 2. Chunk & LOD hook-ins
 - [ ] Research Fabric chunk-generation API and relevant events
