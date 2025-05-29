@@ -18,7 +18,7 @@ import java.nio.file.Paths;
  */
 public class RealWorldDataTest {
 
-    private static final String WORLD_PATH = "test-data";
+    private static final String TEST_DATA_PATH = "test-data";
     private DiffusionChunkGenerator generator;
     private DiffusionModel model;
 
@@ -29,10 +29,10 @@ public class RealWorldDataTest {
     }    @Test
     void testWorldDataExists() {
         // Verify the test world data is available for testing
-        Path worldPath = Paths.get(WORLD_PATH);
-        assertTrue(worldPath.toFile().exists(), "Test world should exist for integration testing");
+        Path testDataPath = Paths.get(TEST_DATA_PATH);
+        assertTrue(testDataPath.toFile().exists(), "Test DATA should exist for integration testing");
 
-        Path regionPath = worldPath.resolve("region");
+        Path regionPath = testDataPath.resolve("region");
         assertTrue(regionPath.toFile().exists(), "Region folder should exist");
 
         File[] regionFiles = regionPath.toFile().listFiles((dir, name) -> name.endsWith(".mca"));
@@ -45,7 +45,7 @@ public class RealWorldDataTest {
     @Test
     void testRegionFileNaming() {
         // Test that region files follow expected naming convention
-        Path regionPath = Paths.get(WORLD_PATH, "region");
+        Path regionPath = Paths.get(TEST_DATA_PATH, "region");
         File[] regionFiles = regionPath.toFile().listFiles((dir, name) -> name.endsWith(".mca"));
 
         assertNotNull(regionFiles);
