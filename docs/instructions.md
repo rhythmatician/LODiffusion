@@ -70,6 +70,33 @@ rm -rf ~/.gradle/caches/fabric-loom      # (optional) clear Loom's global cache
 ```
 Avoid hard-killing builds (e.g., force-closing VS Code or Ctrl+C twice). Use `--no-daemon` in CI environments.
 
+## 🧪 Phase 3 Implementation Details
+
+### NBT Parsing Implementation Status
+- **Library**: Using `io.github.querz:nbt:6.1` for robust NBT handling
+- **Heightmap Extraction**: Implemented with MOTION_BLOCKING preference and WORLD_SURFACE fallback
+- **Packed Data Decoding**: Custom decoder for 9-bit values packed in long arrays
+- **Biome Compatibility**: Handles both pre-1.18 (simple int array) and 1.18+ (compound tag) formats
+- **Error Recovery**: Graceful fallback to placeholder data for missing/corrupt chunks
+
+### Build System Considerations
+When working with the NBT implementation:
+```bash
+# If experiencing Gradle cache locks:
+./gradlew --stop                          # Stop all daemons
+rm -rf .gradle build                      # Clear local cache
+./gradlew clean build --refresh-dependencies  # Clean rebuild
+
+# For persistent Loom issues:
+rm -rf ~/.gradle/caches/fabric-loom       # Clear Loom cache
+```
+
+### Testing Strategy for NBT Code
+1. **Unit Tests**: Test individual NBT parsing methods with mock data
+2. **Integration Tests**: Use real `.mca` files from test worlds
+3. **Error Handling Tests**: Validate behavior with corrupt/missing data
+4. **Performance Tests**: Benchmark parsing speed with large region files
+
 ## 📚 Update Documentation
 
 1. **docs/PROJECT-OUTLINE.md**: mark the task complete (`- [x]`) or refine future steps if needed.
@@ -110,6 +137,28 @@ This reflection cycle ensures that knowledge gained from each task informs and i
 - Approve and enable auto-merge on PRs with no unresolved threads.
 
 ## 🛠️ Technical Standards
-- **NBT Parsing**: Always use try-with-resources for file operations and validate NBT tag existence
-- **Coordinate Systems**: Use bitwise operations for performance (`chunkX >> 5` instead of `/32`)
-- **Error Handling**: Catch specific exceptions (IOException, DataFormatException) with detailed logging
+
+### NBT Parsing & World Data
+- **Library**: Use `io.github.querz:nbt:6.1` for all NBT operations
+- **File Operations**: Always use try-with-resources for MCA file reading
+- **Validation**: Check NBT tag existence before access (`tag.containsKey()`)
+- **Heightmaps**: Extract MOTION_BLOCKING with fallback to WORLD_SURFACE
+- **Biomes**: Handle both pre-1.18 and 1.18+ formats with version detection
+- **Packed Data**: Use helper methods for decoding packed long arrays (9-bit values)
+
+### Performance & Coordinate Systems
+- **Chunk Math**: Use bitwise operations (`chunkX >> 5` instead of `/32`)
+- **Memory**: Prefer primitive arrays over collections for heightmap data
+- **Caching**: Implement memoization for expensive NBT parsing operations
+
+### Error Handling & Logging
+- **Specific Exceptions**: Catch IOException, DataFormatException separately
+- **Fallback Values**: Provide sensible defaults for missing/corrupt chunk data
+- **Detailed Logging**: Include chunk coordinates and file paths in error messages
+- **Graceful Degradation**: Continue operation with placeholder data when possible
+
+### Build System & Dependencies
+- **Gradle Issues**: If cache locks occur, use `./gradlew --stop && rm -rf .gradle build`
+- **Loom Cache**: Clear with `rm -rf ~/.gradle/caches/fabric-loom` if needed
+- **Clean Builds**: Use `./gradlew clean build --refresh-dependencies` for dependency issues
+- **Daemon Management**: Avoid force-killing builds; use `--no-daemon` in CI
