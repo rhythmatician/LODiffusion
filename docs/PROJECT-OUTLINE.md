@@ -38,10 +38,10 @@ Generate plausible terrain in distant chunks using a **discrete diffusion model*
 * [x] `LODManagerCompat` with fallback for Distant Horizons
 * [x] `DistantHorizonsCompat` provides runtime-safe API calls
 * [x] Partial registration for world generation APIs (DH pending)
+* [x] Full implementation of `IDhApiWorldGenerator` registration
 
 **TODO:**
 
-* [ ] Full implementation of `IDhApiWorldGenerator` registration
 * [ ] Fallback chunk generation logic when DH is not loaded
 * [ ] Add configurable parameters for LOD tuning in-game
 

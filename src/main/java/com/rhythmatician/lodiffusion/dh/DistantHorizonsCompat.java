@@ -62,19 +62,23 @@ public class DistantHorizonsCompat {
      * Gets a description of the current LOD integration status.
      *
      * @return String describing the LOD strategy being used
-     */
-    public static String getIntegrationStatus() {
+     */    public static String getIntegrationStatus() {
         return lodManagerCompat.getIntegrationStatus();
     }
 
     /**
      * Registers the custom LOD generator with Distant Horizons.
-     * Currently handles the registration process for DH integration.
+     * Uses the LODiffusionDHWorldGenerator for actual DH API integration.
      */
     public static void registerWorldGenerator() {
         if (isDistantHorizonsIntegrationAvailable()) {
             System.out.println("Registering LODiffusion generator with Distant Horizons");
-            // TODO: Implement actual DH generator registration when API is available
+            boolean success = LODiffusionDHWorldGenerator.attemptRegistration();
+            if (success) {
+                System.out.println("Successfully registered LODiffusion with DH API");
+            } else {
+                System.out.println("Failed to register with DH API - using fallback LOD calculation");
+            }
         } else {
             System.out.println("DH not available - using standalone LOD calculation");
         }
