@@ -12,11 +12,12 @@
 - Tests live under `src/test/java/...`; every new feature must include a test.
 - Use JUnit 5 (`junit-jupiter-api`, `junit-jupiter-engine`) and Mockito (`mockito-core`).
 - Code coverage target: **≥ 80%** on every commit. Enforced via `jacocoTestReport`.
-- Run `./gradlew test jacocoTestReport lint` before opening a PR.
+- Run `./gradlew.bat test jacocoTestReport lint` before opening a PR (use `.bat` extension for Windows).
 - Before opening a PR, Copilot must run:
-  `./gradlew clean test jacocoTestReport lint`
+  `./gradlew.bat clean test jacocoTestReport lint`
   and only continue if all steps succeed.
 - Track open issues using `CI-CHECKLIST.md`.
+- **Git Bash compatibility:** When working with paths, use Unix-style forward slashes. Change directory using `cd /c/Users/...` instead of `cd "c:\Users\..."`.
 
 ## Shell Commands & HTTP
 - Whitelist auto-approved commands (no prompt):
