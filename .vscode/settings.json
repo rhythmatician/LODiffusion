@@ -1,13 +1,4 @@
 {
-  "github.copilot.experimental.shell.enableDefaultApprovals": true,
-  "github.copilot.experimental.shell.whitelist": [
-    "ls",
-    "git",
-    "grep",
-    "sed",
-    "awk",
-    "curl -X GET",
-    "curl --request GET"
-  ],
-  "java.configuration.updateBuildConfiguration": "automatic"
+  "java.configuration.updateBuildConfiguration": "automatic",
+  "github.copilot.experimental.shell.enableDefaultApprovals": true
 }
