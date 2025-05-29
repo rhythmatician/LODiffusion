@@ -245,14 +245,15 @@ public class ChunkDataExtractor {
             if (chunkTag == null) {
                 return null;
             }            // Try to extract biomes based on format (1.18+ vs pre-1.18)
-            return extractBiomesFromChunkTag(chunkTag);
-
-        } catch (AnvilException e) {
+            return extractBiomesFromChunkTag(chunkTag);        } catch (AnvilException e) {
             System.out.println("DEBUG: AnvilException extracting biomes from chunk [" + chunkX + ", " + chunkZ + 
                 "] in region " + regionFile.getName() + " - " + e.getMessage());
             return null;
-        } catch (Exception e) {
-            throw new IOException("Failed to extract biomes from chunk [" + chunkX + ", " + chunkZ + 
+        } catch (IOException e) {
+            throw new IOException("I/O error while extracting biomes from chunk [" + chunkX + ", " + chunkZ + 
+                                  "] in region " + regionFile.getName(), e);
+        } catch (RuntimeException e) { // Catch unexpected runtime exceptions, including NBT parsing issues
+            throw new IOException("Failed to parse NBT data for chunk [" + chunkX + ", " + chunkZ + 
                                   "] in region " + regionFile.getName(), e);
         }
     }
