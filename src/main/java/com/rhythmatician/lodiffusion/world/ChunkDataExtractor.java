@@ -12,6 +12,8 @@ import org.jglrxavpok.hephaistos.mca.ChunkColumn;
 import org.jglrxavpok.hephaistos.mca.RegionFile;
 import org.jglrxavpok.hephaistos.nbt.NBTCompound;
 import org.jglrxavpok.hephaistos.nbt.NBTLongArray;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Utility class for extracting chunk data from Minecraft world files.
@@ -28,6 +30,7 @@ import org.jglrxavpok.hephaistos.nbt.NBTLongArray;
  */
 public class ChunkDataExtractor {
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(ChunkDataExtractor.class);
     private static final String WORLD_PATH = "test-data";
     
     // Cache for RegionFile instances to avoid reopening files
@@ -97,16 +100,14 @@ public class ChunkDataExtractor {
     
     /**
      * End timing and log the operation duration
-     */
-    private static void endTiming(String operation) {
+     */    private static void endTiming(String operation) {
         if (profilingEnabled && operationStartTime.get() != null) {
             long elapsed = (System.nanoTime() - operationStartTime.get()) / 1_000_000; // Convert to ms
-            System.out.println("PERF: " + operation + " took " + elapsed + "ms");
+            LOGGER.debug("PERF: {} took {}ms", operation, elapsed);
             operationStartTime.remove();
         }
     }
-    
-    /**
+      /**
      * Clear all cached region files and coordinates. Call this to free memory.
      */
     public static void clearCache() {
@@ -115,7 +116,7 @@ public class ChunkDataExtractor {
             try {
                 cache.close();
             } catch (IOException e) {
-                System.err.println("Warning: Failed to close cached region file: " + e.getMessage());
+                LOGGER.warn("Failed to close cached region file", e);
             }
         }
         regionFileCache.clear();
@@ -156,12 +157,12 @@ public class ChunkDataExtractor {
      * @param regionFile Region file
      * @return Array containing [regionX, regionZ] coordinates
      * @throws IllegalArgumentException if filename format is invalid
-     */
-    public static int[] parseRegionCoordinates(File regionFile) {
+     */    public static int[] parseRegionCoordinates(File regionFile) {
+        String filePath = regionFile.getAbsolutePath();
         String filename = regionFile.getName();
         
-        // Check cache first
-        int[] cached = regionCoordCache.get(filename);
+        // Check cache first using absolute path to prevent collisions
+        int[] cached = regionCoordCache.get(filePath);
         if (cached != null) {
             return cached.clone(); // Return copy to prevent modification
         }
@@ -176,13 +177,11 @@ public class ChunkDataExtractor {
 
         if (parts.length != 2) {
             throw new IllegalArgumentException("Invalid coordinate format: " + filename);
-        }
-
-        int[] result = new int[] { Integer.parseInt(parts[0]), Integer.parseInt(parts[1]) };
+        }        int[] result = new int[] { Integer.parseInt(parts[0]), Integer.parseInt(parts[1]) };
         
-        // Cache the result
-        regionCoordCache.put(filename, result.clone());
-          return result;
+        // Cache the result using absolute path as key
+        regionCoordCache.put(filePath, result.clone());
+        return result;
     }
     
     /**
