@@ -68,13 +68,10 @@ public class DistantHorizonsCompat {
     }    /**
      * Registers the custom LOD generator with Distant Horizons.
      * Uses the LODiffusionDHWorldGenerator for actual DH API integration.
-     */
-    public static void registerWorldGenerator() {
-        LODiffusionDHWorldGenerator generator = LODiffusionDHWorldGenerator.getInstance();
-        
+     */    public static void registerWorldGenerator() {
         if (isDistantHorizonsIntegrationAvailable()) {
             System.out.println("Registering LODiffusion generator with Distant Horizons");
-            boolean success = generator.attemptRegistration();
+            boolean success = LODiffusionDHWorldGenerator.attemptRegistration();
             if (success) {
                 System.out.println("Successfully registered LODiffusion with DH API");
             } else {
