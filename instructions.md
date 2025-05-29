@@ -81,6 +81,5 @@ This reflection cycle ensures that knowledge gained from each task informs and i
 - **Error Handling**: Catch specific exceptions (IOException, DataFormatException) with detailed logging
 - **Version Compatibility**: Detect Minecraft version via DataVersion in level.dat when needed
 - **Resource Management**: Explicit cleanup for DJL Predictors and MappedByteBuffer instances
-- **PowerShell Commands**: Use semicolons (`;`) for command chaining, not `&&`. Example: `cd "path"; git add file` instead of `cd "path" && git add file`
 
 Repeat this cycle for each new capability—keeping the loop tight ensures Copilot stays productive and aligned with project goals.
