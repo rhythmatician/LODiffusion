@@ -17,7 +17,6 @@
 ## 3. Phase Details
 
 ### 1. Mod setup & Hello World
-- [ ] Commit `.vscode/settings.json` for shell whitelist
 - [ ] Install JDK 17+ and Fabric Loom
 - [ ] Clone `fabric-example-mod` and configure `build.gradle`
 - [ ] TODO: Copilot, scaffold `src/test/java` directory structure and add JUnit 5 (`testImplementation`) and JaCoCo (`jacoco`) plugins to `build.gradle`
