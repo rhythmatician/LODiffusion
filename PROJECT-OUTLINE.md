@@ -34,6 +34,9 @@
 ### 3. Diffusion algorithm integration  
 - [x] Write unit tests for `DiffusionModel.run(...)`
 - [x] Implement basic diffusion algorithm with biome-aware processing
+- [x] Add LOD-aware processing with buildSurfaceWithLOD() method
+- [x] Implement progressive refinement across LOD levels (0-3)
+- [x] Comprehensive LOD integration testing
 - [ ] TODO: Copilot, modify `DiffusionModel.run(...)` for channels
 - [ ] TODO: Copilot, integrate LODManager and call `run()`
 
