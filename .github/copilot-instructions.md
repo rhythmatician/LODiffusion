@@ -44,11 +44,48 @@
 - Use `LODManager.getChunkLOD(player, chunk.getPos())` to determine LOD level.
 - Implement and test mappings in `LODManagerCompat` and `DistantHorizonsCompat`.
 
-## PR & Branching Policy
-- Use GitHub Flow:
-  - One micro-feature per branch: `feature/<desc>`
-  - PRs must include test coverage and pass CI
-- Enable auto-merge if Copilot review leaves no unresolved threads.
+## Git Workflow & Micro-Commit Strategy
+**CRITICAL**: Never create massive PRs again. Use micro-commits for all development.
+
+### Branch Management Workflow
+1. **Before starting new work**:
+   ```bash
+   git fetch  # Check if previous PRs have merged
+   git checkout main
+   git pull
+   ```
+
+2. **Clean up completed branches**:
+   ```bash
+   git branch -d feature/old-branch-name  # Delete local branches
+   ```
+
+3. **Create focused feature branches**:
+   ```bash
+   git checkout -b test/add-single-method-test
+   git checkout -b fix/compilation-error-line-45
+   git checkout -b docs/update-coverage-metrics
+   ```
+
+### Micro-Commit Strategy
+- **Commit every 15-20 minutes**: Even if feature isn't complete
+- **One logical change per commit**: 
+  - Add 1-2 test methods → commit
+  - Fix one compilation issue → commit
+  - Update one documentation section → commit
+- **Push frequently**: Backup work and enable smaller PRs
+- **Branch names should be specific**: `test/add-chunk-lod-tests` not `test/improve-coverage`
+
+### PR & Branching Policy
+- Use GitHub Flow with **micro-features**:
+  - Each branch targets ONE specific change
+  - PRs should be reviewable in < 10 minutes
+  - Maximum 200 lines of changes per PR
+- **Auto-merge enabled** for docs and small PRs when:
+  - ✅ Only `docs/`, `*.md`, or `.github/workflows/*.yml` files changed
+  - ✅ < 200 lines of code changed
+  - ✅ All CI checks passing (lint, test, build)
+  - ✅ No open review threads
 - Copilot should approve and enable auto-merge on PRs it reviews, unless it opens threads requiring human input.
 - Tag commits using prefixes:
   - `test:` for test additions

@@ -1,6 +1,40 @@
 # CI Checklist for LODiffusion
 
-This checklist ensures code quality and proper integration practices for the LODiffusion Minecraft mod.
+This checklist ensures code quality and proper integration practices for the LODiffusion Minecraft mod, following the **micro-commit strategy** outlined in `.github/copilot-instructions.md`.
+
+## Micro-Commit Workflow Checklist
+
+### Branch Management
+- ✅ **Focused branch created** with specific naming:
+  - `test/add-xyz-test` for test additions
+  - `feat/implement-abc` for feature implementation  
+  - `fix/resolve-def` for bug fixes
+  - `docs/update-ghi` for documentation updates
+- ✅ **Single logical change** targeted (max 200 lines of changes)
+- ✅ **Branch freshness**: created from latest `main` after `git pull`
+- ✅ **Clean working tree** before starting (`git status` shows no uncommitted changes)
+
+### Commit Discipline
+- ✅ **Frequent commits** (every 15-20 minutes during active development)
+- ✅ **Conventional commit prefixes** used:
+  - `test:` for test additions
+  - `feat:` for features
+  - `fix:` for bugfixes
+  - `docs:` for documentation
+- ✅ **One logical change per commit**:
+  - Adding 1-2 test methods → single commit
+  - Fixing one compilation issue → single commit
+  - Updating one documentation section → single commit
+- ✅ **Pushed frequently** for backup and CI validation
+
+### PR Requirements
+- ✅ **Reviewable in < 10 minutes** (focused scope)
+- ✅ **Auto-merge eligible** for docs/CI changes:
+  - Only `docs/`, `*.md`, or `.github/workflows/*.yml` files modified
+  - < 200 lines of code changed
+  - All CI checks passing (lint, test, build)
+  - No unresolved review threads
+- ✅ **Documentation updated** (`docs/PROJECT-OUTLINE.md`, `docs/CI-CHECKLIST.md` if relevant)
 
 ## Pre-Commit Checklist
 
@@ -51,26 +85,53 @@ This checklist ensures code quality and proper integration practices for the LOD
 
 ### Git & CI
 - ✅ Commit messages follow conventional format (`feat:`, `fix:`, `test:`, `docs:`)
-- ✅ One logical change per commit
+- ✅ One logical change per commit (micro-commit strategy)
+- ✅ Frequent commits during development (every 15-20 minutes)
+- ✅ Branch naming follows convention (`test/`, `feat/`, `fix/`, `docs/` prefixes)
 - ✅ No merge conflicts
 - ✅ Branch builds successfully in CI
+- ✅ Ready for auto-merge (< 200 lines changed, reviewable in < 10 minutes)
 
 ## Automated Checks
 
-These checks should be automated in your CI pipeline:
+The CI pipeline runs three separate jobs for better parallelization and clearer feedback:
 
+### 1. Lint Job (Code Quality & Linting)
 ```bash
-# Build and test
-./gradlew clean build
-
-# Run lint checks
+# Runs first and fastest - fails quickly on style issues
 ./gradlew lint
+```
+- Verifies enhanced compiler warnings (-Xlint:all)
+- Treats warnings as errors (-Werror)
+- Ensures clean compilation with strict analysis
+- **Fails fast** to provide immediate feedback on code quality
 
-# Verify test coverage
-./gradlew jacocoTestCoverageVerification
+### 2. Test Job (Tests & Coverage)
+```bash
+# Runs in parallel with lint job
+./gradlew test jacocoTestReport jacocoTestCoverageVerification
+```
+- Executes all unit tests
+- Generates coverage reports
+- Enforces ≥ 80% coverage threshold
+- Comments coverage results on PRs
+- Uploads coverage artifacts
 
-# Check for dependency vulnerabilities (if using dependency-check plugin)
-./gradlew dependencyCheckAnalyze
+### 3. Build Job (Build Mod)
+```bash
+# Only runs if lint and test jobs pass
+./gradlew build --exclude-task test
+```
+- Builds the final mod JAR
+- Runs only after lint and test pass (via `needs: [lint, test]`)
+- Uploads build artifacts
+- Validates that the mod can be packaged successfully
+
+### Local Development Workflow
+For the complete check before pushing (matches all CI jobs):
+```bash
+# Run all checks locally before push
+./gradlew clean lint test jacocoTestReport jacocoTestCoverageVerification build
 
 # Static analysis for common problems
 echo "🔍 Checking for compilation issues..."

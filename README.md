@@ -1,5 +1,7 @@
 # LODiffusion: AI-Powered LOD Terrain Generation for Minecraft
 
+![CI](https://github.com/rhythmatician/LODiffusion/actions/workflows/ci.yml/badge.svg)
+
 LODiffusion is a Minecraft mod that integrates AI-driven terrain generation using a progressive Level of Detail (LOD) system. It is inspired by Distant Horizons and uses a multi-resolution diffusion model to generate terrain dynamically based on the distance from the player.
 
 ---
@@ -49,6 +51,29 @@ This will:
    ./gradlew clean test jacocoTestReport
    ```
 
+## Development Workflow
+
+This project follows a **micro-commit strategy** for efficient development:
+
+### Branch Management
+- Create focused branches: `test/add-xyz-test`, `feat/implement-abc`, `docs/update-def`
+- One logical change per branch (max 200 lines changed)
+- PRs should be reviewable in < 10 minutes
+
+### Commit Strategy  
+- Commit every 15-20 minutes during active development
+- Use conventional prefixes: `test:`, `feat:`, `fix:`, `docs:`
+- One logical change per commit
+- Push frequently for backup and CI validation
+
+### Getting Started
+1. **Before starting work**: `git fetch && git checkout main && git pull`
+2. **Create branch**: `git checkout -b test/add-single-method-test`
+3. **Development cycle**: Write test → Commit → Implement → Commit → Repeat
+4. **Complete feature**: Push branch → Create PR → Auto-merge
+
+See `docs/instructions.md` for detailed workflow guidance.
+
 ---
 
 ## CI and Test Discipline
@@ -58,6 +83,15 @@ Follow a strict test-first development cycle:
 * Write JUnit tests first (under `src/test/java/...`)
 * Use `@Tag("ci")` or `@Tag("inference")` for test targeting
 * Coverage threshold: **80% minimum**
+
+### CI Pipeline
+The GitHub Actions CI runs three separate jobs for optimal feedback:
+
+1. **Lint Job** (`./gradlew lint`) - Fast code quality checks
+2. **Test Job** (`./gradlew test jacocoTestReport`) - Unit tests + coverage  
+3. **Build Job** (`./gradlew build`) - Final mod JAR (only if lint + test pass)
+
+Run locally before pushing: `./gradlew clean lint test jacocoTestReport build`
 
 ---
 
