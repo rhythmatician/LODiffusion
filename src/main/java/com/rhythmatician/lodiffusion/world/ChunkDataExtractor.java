@@ -111,6 +111,9 @@ public class ChunkDataExtractor {
         try (RandomAccessFile file = new RandomAccessFile(regionFile, "r")) {
             // Parse region coordinates from filename for RegionFile constructor
             int[] regionCoords = parseRegionCoordinates(regionFile);
+            if (regionCoords == null || regionCoords.length != 2) {
+                throw new IllegalArgumentException("Invalid region coordinates parsed from file: " + regionFile.getName());
+            }
             RegionFile regionFileHandle = new RegionFile(file, regionCoords[0], regionCoords[1]);
             
             // Get chunk data from the region file
