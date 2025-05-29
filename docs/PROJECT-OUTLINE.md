@@ -32,13 +32,14 @@ Generate plausible terrain in distant chunks using a **discrete diffusion model*
 
 ---
 
-### **PHASE 2 — World Integration & Hook Points (In Progress)**
+### **PHASE 2 — World Integration & Hook Points (Nearly Complete ✅)**
 
 * [x] `DiffusionChunkGenerator.buildSurface(...)` overloads implemented
 * [x] `LODManagerCompat` with fallback for Distant Horizons
 * [x] `DistantHorizonsCompat` provides runtime-safe API calls
 * [x] Partial registration for world generation APIs (DH pending)
 * [x] Full implementation of `IDhApiWorldGenerator` registration
+* [x] Comprehensive unit tests for DH integration (84% project coverage)
 
 **TODO:**
 
@@ -97,8 +98,8 @@ Generate plausible terrain in distant chunks using a **discrete diffusion model*
 
 | Metric             | Value                                                      |
 | ------------------ | ---------------------------------------------------------- |
-| Test Coverage      | 70.5% lines, 100% classes                                  |
-| Tests              | 96 passing                                                 |
+| Test Coverage      | 84% lines, 100% classes                                   |
+| Tests              | 108 passing                                                |
 | Diffusion Channels | height, biome (temp stubbed)                               |
 | LOD Levels         | 0 (full) → 3 (coarsest)                                    |
 | Real World Chunks  | 64 (.mca) files (\~16k chunks)                             |
