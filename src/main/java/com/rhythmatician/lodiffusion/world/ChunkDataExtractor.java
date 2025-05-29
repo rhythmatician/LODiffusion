@@ -14,8 +14,9 @@ import net.querz.nbt.tag.LongArrayTag;
 /**
  * Utility class for extracting chunk data from Minecraft world files.
  * This class provides methods to read real world data for testing and training.
- *
- * Future enhancement: Add NBT parsing to extract real heightmaps and biome data.
+ * 
+ * Supports NBT parsing to extract heightmaps and biome data from .mca region files.
+ * Compatible with both pre-1.18 and 1.18+ Minecraft world formats.
  */
 public class ChunkDataExtractor {
     
