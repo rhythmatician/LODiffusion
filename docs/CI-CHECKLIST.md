@@ -44,7 +44,7 @@ This checklist ensures code quality and proper integration practices for the LOD
 - ✅ No test dependencies on Minecraft bootstrap (use mocks appropriately)
 
 ### Documentation & Planning
-- ✅ All TODOs logged or tracked in PROJECT-OUTLINE.md
+- ✅ All TODOs logged or tracked in `docs/PROJECT-OUTLINE.md`
 - ✅ Public API methods have JavaDoc comments
 - ✅ README.md updated with new features
 - ✅ CHANGELOG.md updated for user-facing changes

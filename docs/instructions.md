@@ -26,7 +26,7 @@ Welcome to the AI-Diffusion Minecraft Mod project. Follow these steps on every m
 5. **Troubleshooting**: If build fails, try `./gradlew build --refresh-dependencies` or `./gradlew cleanloom`
 
 ## 4. Update Documentation
-1. **PROJECT-OUTLINE.md**: mark the task complete (`- [x]`) or refine future steps if needed.
+1. **docs/PROJECT-OUTLINE.md**: mark the task complete (`- [x]`) or refine future steps if needed.
 2. Commit any outline changes with a **`docs:`** prefix (e.g., `docs: complete DiffusionModel.run integration`).
 
 ## 5. Reflection & Learning Cycle

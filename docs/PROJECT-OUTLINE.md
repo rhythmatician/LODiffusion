@@ -131,10 +131,10 @@ Generate plausible terrain in distant chunks using a **discrete diffusion model*
 
 2. **Write a sample `TerrainPatchDataset` class** in PyTorch to load `.npy`/`.pt` patches.
 
-3. **Update `PROJECT-OUTLINE.md` with this refined blueprint.**
+3. **Update `docs/PROJECT-OUTLINE.md` with this refined blueprint.**
 
 4. **Write a simple benchmark test** in `tests/benchmark/InferenceBenchmarkTest.java` to simulate runtime model invocation (even if stubbed).
 
 ---
 
-Would you like me to directly rewrite your `PROJECT-OUTLINE.md` file with this enhanced structure?
+Would you like me to directly rewrite your `docs/PROJECT-OUTLINE.md` file with this enhanced structure?

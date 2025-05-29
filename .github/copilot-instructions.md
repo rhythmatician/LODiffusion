@@ -5,7 +5,7 @@
 - Before each feature, run `git status` to ensure a clean working tree.
 - Use Java 17 syntax and Fabric API 1.21+ (`net.fabricmc.fabric.api.*`).
 - Keep methods small; extract complex logic into helper classes (`DiffusionModel`, `LODQuery`, etc.).
-- After each feature, mark it in `PROJECT-OUTLINE.md` with “- [x]” or update the upcoming tasks.
+- After each feature, mark it in `docs/PROJECT-OUTLINE.md` with “- [x]” or update the upcoming tasks.
 - Pin all dependency versions in `build.gradle`.
 
 ## Testing & CI
@@ -16,7 +16,7 @@
 - Before opening a PR, Copilot must run:
   `./gradlew.bat clean test jacocoTestReport lint`
   and only continue if all steps succeed.
-- Track open issues using `CI-CHECKLIST.md`.
+- Track open issues using `docs/CI-CHECKLIST.md`.
 - **Git Bash compatibility:** When working with paths, use Unix-style forward slashes. Change directory using `cd /c/Users/...` instead of `cd "c:\Users\..."`.
 
 ## Shell Commands & HTTP
@@ -55,7 +55,7 @@
   - `feat:` for features
   - `docs:` for documentation
   - `fix:` for bugfixes
-- Pull requests should update `PROJECT-OUTLINE.md` and `CI-CHECKLIST.md` if relevant.
+- Pull requests should update `docs/PROJECT-OUTLINE.md` and `docs/CI-CHECKLIST.md` if relevant.
 - After passing tests, Copilot must `git add`, `git commit`, and include a descriptive message using `test:`, `feat:`, or `fix:` prefix.
 
 ## File Index
@@ -63,5 +63,10 @@
 - `.github/copilot-instructions/chunk-extraction.md`: Chunk data extraction
 - `.github/copilot-instructions/development.md`: General development practices
 - `.github/copilot-instructions/distant-horizons-integration.md`: DH-specific logic and fallback patterns
-- `instructions.md`: Developer instructions for Copilot usage
-- `PROJECT-OUTLINE.md`: Project outline and task tracking
+- `docs/instructions.md`: Developer instructions for Copilot usage
+- `docs/PROJECT-OUTLINE.md`: Project outline and task tracking
+- `docs/EXAMPLE-WORLD-USAGE.md`: Example world data usage
+
+## Coplilot's Journals
+> It's good to review these, to avoid repeating the same mistakes:
+- `PHASE-1-REFLECTION.md`: Reflection on Phase 1 development
