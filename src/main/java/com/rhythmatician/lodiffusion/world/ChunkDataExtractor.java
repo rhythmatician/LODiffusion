@@ -1,8 +1,8 @@
 package com.rhythmatician.lodiffusion.world;
 
-
 import java.io.File;
 import java.io.IOException;
+import java.io.RandomAccessFile;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import org.jglrxavpok.hephaistos.mca.AnvilException;
@@ -93,7 +93,9 @@ public class ChunkDataExtractor {
         int worldChunkZ = regionZ * 32 + localChunkZ;
 
         return new int[] { worldChunkX, worldChunkZ };
-    }    /**
+    }
+
+    /**
      * Extract heightmap data from a specific chunk in a region file.
      * @param regionFile Region file to parse
      * @param chunkX Chunk X coordinate within region (0-31)
@@ -104,7 +106,13 @@ public class ChunkDataExtractor {
     public static int[][] extractHeightmapFromChunk(File regionFile, int chunkX, int chunkZ) throws IOException {
         if (chunkX < 0 || chunkX >= 32 || chunkZ < 0 || chunkZ >= 32) {
             throw new IllegalArgumentException("Chunk coordinates must be 0-31");
-        }        try (RegionFile regionFileHandle = new RegionFile(regionFile)) {
+        }
+
+        try (RandomAccessFile file = new RandomAccessFile(regionFile, "r")) {
+            // Parse region coordinates from filename for RegionFile constructor
+            int[] regionCoords = parseRegionCoordinates(regionFile);
+            RegionFile regionFileHandle = new RegionFile(file, regionCoords[0], regionCoords[1]);
+            
             // Get chunk data from the region file
             ChunkColumn chunk = regionFileHandle.getChunk(chunkX, chunkZ);
             if (chunk == null) {
@@ -143,7 +151,7 @@ public class ChunkDataExtractor {
                 return null;
             }
 
-            return decodeHeightmapFromLongArray(motionBlockingTag.getValue().toArray());
+            return decodeHeightmapFromLongArray(motionBlockingTag.getValue().copyArray());
         } catch (AnvilException e) {
             throw new IOException("Failed to parse region file: " + regionFile.getName(), e);
         } catch (Exception e) {
@@ -184,7 +192,9 @@ public class ChunkDataExtractor {
         }
         
         return heightmap;
-    }    /**
+    }
+
+    /**
      * Extract biome data from a specific chunk in a region file.
      * Handles both pre-1.18 (2D biomes) and 1.18+ (3D palette-indexed biomes).
      * @param regionFile Region file to parse
@@ -192,12 +202,17 @@ public class ChunkDataExtractor {
      * @param chunkZ Chunk Z coordinate within region (0-31)
      * @return Biome identifier array for surface level (16x16), or null if not found
      * @throws IOException if file cannot be read
-     */    public static String[] extractBiomesFromChunk(File regionFile, int chunkX, int chunkZ) throws IOException {
+     */
+    public static String[] extractBiomesFromChunk(File regionFile, int chunkX, int chunkZ) throws IOException {
         if (chunkX < 0 || chunkX >= 32 || chunkZ < 0 || chunkZ >= 32) {
             throw new IllegalArgumentException("Chunk coordinates must be 0-31");
         }
         
-        try (RegionFile regionFileHandle = new RegionFile(regionFile)) {
+        try (RandomAccessFile file = new RandomAccessFile(regionFile, "r")) {
+            // Parse region coordinates from filename for RegionFile constructor
+            int[] regionCoords = parseRegionCoordinates(regionFile);
+            RegionFile regionFileHandle = new RegionFile(file, regionCoords[0], regionCoords[1]);
+            
             // Get chunk data from the region file
             ChunkColumn chunk = regionFileHandle.getChunk(chunkX, chunkZ);
             if (chunk == null) {
@@ -220,12 +235,13 @@ public class ChunkDataExtractor {
                                   "] in region " + regionFile.getName(), e);
         }
     }
-      /**
+
+    /**
      * Extract biome data from chunk NBT tag, handling version differences.
      * @param chunkTag The chunk's NBT data
      * @return Array of biome identifiers for 16x16 surface positions
      */
-    private static String[] extractBiomesFromChunkTag(NBTCompound chunkTag) {    private static String[] extractBiomesFromChunkTag(NBTCompound chunkTag) {
+    private static String[] extractBiomesFromChunkTag(NBTCompound chunkTag) {
         // Try 1.18+ format first (3D biomes with sections)
         if (chunkTag.containsKey("sections")) {
             return extractBiomes1_18Plus(chunkTag.getCompound("sections"));
@@ -238,7 +254,8 @@ public class ChunkDataExtractor {
         
         return null; // Unable to extract biomes
     }
-      /**
+
+    /**
      * Extract biomes from 1.18+ format (3D palette-indexed per section).
      * @param sectionsTag The sections compound tag
      * @return Array of surface biome identifiers
@@ -254,7 +271,8 @@ public class ChunkDataExtractor {
         }
         return biomes;
     }
-      /**
+
+    /**
      * Extract biomes from pre-1.18 format (2D ByteArrayTag).
      * @param levelTag The Level compound tag
      * @return Array of biome identifiers for 16x16 positions
