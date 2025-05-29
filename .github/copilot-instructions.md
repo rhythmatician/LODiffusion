@@ -1,54 +1,66 @@
 # Copilot Assistant Guide
 
-General Workflow:
+## General Workflow
 - Always follow TDD: write one focused JUnit test first, then implement just enough code to pass it.
 - Before each feature, run `git status` to ensure a clean working tree.
-- Use Java 17 syntax and Fabric 1.20+ API (`net.fabricmc.fabric.api.*`).
-- Keep methods small; push heavy logic into helper classes (e.g., `DiffusionModel`).
-- After each feature, update `PROJECT-OUTLINE.md` with an “- [x]” or refine upcoming tasks.
-- Pin dependency versions in `build.gradle` to maintain consistency.
+- Use Java 17 syntax and Fabric API 1.21+ (`net.fabricmc.fabric.api.*`).
+- Keep methods small; extract complex logic into helper classes (`DiffusionModel`, `LODQuery`, etc.).
+- After each feature, mark it in `PROJECT-OUTLINE.md` with “- [x]” or update the upcoming tasks.
+- Pin all dependency versions in `build.gradle`.
 
-Testing & CI:
-- Tests live under `src/test/java/...`; ensure each new behavior has a corresponding test.
-- Use JUnit 5 (`junit-jupiter-api` & `junit-jupiter-engine`) and Mockito (`mockito-core`).
-- Ensure Jacoco coverage ≥ 80% on every commit.
+## Testing & CI
+- Tests live under `src/test/java/...`; every new feature must include a test.
+- Use JUnit 5 (`junit-jupiter-api`, `junit-jupiter-engine`) and Mockito (`mockito-core`).
+- Code coverage target: **≥ 80%** on every commit. Enforced via `jacocoTestReport`.
+- Run `./gradlew test jacocoTestReport lint` before opening a PR.
+- Before opening a PR, Copilot must run:
+  `./gradlew clean test jacocoTestReport lint`
+  and only continue if all steps succeed.
+- Track open issues using `CI-CHECKLIST.md`.
 
-Shell Commands & HTTP:
+## Shell Commands & HTTP
 - Whitelist auto-approved commands (no prompt):
   - `ls`, `git`, `grep`, `sed`, `awk`
   - `curl -X GET`, `curl --request GET`
-- All other shell or HTTP methods (POST/PUT/DELETE) must prompt for approval.
+- Prompt before using `POST`, `PUT`, `DELETE`, or file-modifying shell commands.
 
-Fabric & Mod Setup:
-- When scaffolding, use the Fabric example mod as a base.
-- In `build.gradle`, apply `java` & `jacoco` plugins and configure `test { useJUnitPlatform() }`.
+## Fabric & Mod Setup
+- Scaffold mods using the Fabric example mod.
+- Ensure `build.gradle` includes:
+  - `java` and `jacoco` plugins
+  - `test { useJUnitPlatform() }`
+  - `compileOnly` or `modImplementation` as appropriate for integration dependencies
 
-Chunk Generation & Diffusion:
+## Chunk Generation & Diffusion
 - In `DiffusionChunkGenerator.buildSurface(...)`, sample vanilla heightmap and biomes, then call `DiffusionModel.run(...)`.
-- Enforce **Progressive Refinement**: each LOD pass must refine the previous level’s output, not recompute from scratch.
+- Progressive LOD enforcement: each LOD refinement **must** operate on the previous level's output, not from scratch.
+- Multi-channel support is in progress; tests should guide changes to `DiffusionModel`.
 
-Distant Horizons Integration:
-- Add dependency in Gradle:
-  `modImplementation "com.terraformersmc:distant-horizons:<version>"`
-- Import and call:
-  ```java
-  import com.terraformersmc.distanthorizons.api.LODManager;
-  int lod = LODManager.getChunkLOD(player, chunk.getPos());
-````
+## Distant Horizons Integration
+- Use **runtime detection** for DH integration unless hard-dependency is absolutely required.
+- DH dependency (`com.seibel.distanthorizons:distant-horizons-api:4.0.0`) is marked as `compileOnly`.
+- Wrap all calls in `ModDetection.isDistantHorizonsLoaded()` checks or use reflection fallback.
+- Use `LODManager.getChunkLOD(player, chunk.getPos())` to determine LOD level.
+- Implement and test mappings in `LODManagerCompat` and `DistantHorizonsCompat`.
 
-* Map `lod` to diffusion factors in a `switch` or `if` chain; write a `LODIntegrationTest` for each mapping.
+## PR & Branching Policy
+- Use GitHub Flow:
+  - One micro-feature per branch: `feature/<desc>`
+  - PRs must include test coverage and pass CI
+- Enable auto-merge if Copilot review leaves no unresolved threads.
+- Copilot should approve and enable auto-merge on PRs it reviews, unless it opens threads requiring human input.
+- Tag commits using prefixes:
+  - `test:` for test additions
+  - `feat:` for features
+  - `docs:` for documentation
+  - `fix:` for bugfixes
+- Pull requests should update `PROJECT-OUTLINE.md` and `CI-CHECKLIST.md` if relevant.
+- After passing tests, Copilot must `git add`, `git commit`, and include a descriptive message using `test:`, `feat:`, or `fix:` prefix.
 
-Documentation & Branching:
-
-* Use GitHub Flow: `feature/<desc>` branches, one microfeature per branch.
-* Require CI & coverage checks before merging to `main`.
-* Tag commits with `test:`, `feat:`, or `docs:` prefixes.
-
-Repeat this cycle to keep Copilot focused, reliable, and aligned with our project goals.
-
-See the .github/copilot-instructions/ folder for even more detailed instructions and examples:
-+ `.github/copilot-instructions/anvil.md`: Anvil file format and NBT parsing
-+ `.github/copilot-instructions/chunk-extractions.md`: Chunk data extraction
-+ `.github/copilot-instructions/development.md`: General development practices
-+ `instructions.md`: Developer instructions for Copilot usage
-+ `PROJECT-OUTLINE.md`: Project outline and task tracking
+## File Index
+- `.github/copilot-instructions/anvil.md`: Anvil file format and NBT parsing
+- `.github/copilot-instructions/chunk-extraction.md`: Chunk data extraction
+- `.github/copilot-instructions/development.md`: General development practices
+- `.github/copilot-instructions/distant-horizons-integration.md`: DH-specific logic and fallback patterns
+- `instructions.md`: Developer instructions for Copilot usage
+- `PROJECT-OUTLINE.md`: Project outline and task tracking
