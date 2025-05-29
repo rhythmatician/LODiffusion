@@ -7,18 +7,22 @@ Copilot must adhere to the **test-first, micro-commit strategy**:
 ### Before Each Feature
 ```bash
 git fetch && git checkout main && git pull
-```
-- Ensure `git status` shows a clean working tree
-- Create a focused branch with a clear prefix:
-  - `test/add-xyz-test`
-  - `feat/implement-abc`
-  - `fix/resolve-def`
-  - `docs/update-ghi`
+````
+
+* Ensure `git status` shows a clean working tree
+* Create a focused branch with a clear prefix:
+
+  * `test/add-xyz-test`
+  * `feat/implement-abc`
+  * `fix/resolve-def`
+  * `docs/update-ghi`
+
 ```bash
 git checkout -b test/add-xyz-test
 ```
 
 ### Development Cycle (Every 15–20 minutes)
+
 1. **Write one small test** → commit (`test:`)
 2. **Implement only enough to pass** → commit (`feat:`)
 3. **Fix issues, refactor, or cleanup** → commit (`fix:` or `refactor:`)
@@ -31,30 +35,42 @@ git push origin your-branch-name
 ```
 
 ### Finalize Branch
-1. Run: `./gradlew clean lint test jacocoTestReport build`
+
+1. Run:
+
+   ```bash
+   ./gradlew clean lint test jacocoTestReport build
+   ```
+
+   *Note: `lint` must pass before `test` or `build`.*
 2. PR must:
-   - Be under 200 LOC
-   - Be reviewable in under 10 minutes
-   - Pass all CI stages
-   - Have no unresolved Copilot review threads
+
+   * Be under 200 LOC
+   * Be reviewable in under 10 minutes
+   * Pass all CI stages
+   * Have no unresolved Copilot review threads
 
 ---
 
 ## 🔬 Testing & CI Discipline
 
 ### Test Rules
-- Tests live in `src/test/java/...`
-- Use **JUnit 5** + **Mockito**
-- Target 80%+ code coverage **per commit**
-- Use tags: `@Tag("ci")`, `@Tag("inference")`
+
+* Tests live in `src/test/java/...`
+* Use **JUnit 5** + **Mockito**
+* Target 80%+ code coverage **per commit**
+* Use tags: `@Tag("ci")`, `@Tag("inference")`
 
 ### CI Jobs
+
 Each commit/PR runs:
-1. **Lint**: `./gradlew lint`
+
+1. **Lint**: `./gradlew lint` — must pass first
 2. **Test + Coverage**: `./gradlew test jacocoTestReport`
 3. **Build Mod**: `./gradlew build` (only if lint + test pass)
 
 Local equivalent:
+
 ```bash
 ./gradlew clean lint test jacocoTestReport build
 ```
