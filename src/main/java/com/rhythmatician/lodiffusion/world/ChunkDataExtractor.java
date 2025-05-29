@@ -102,8 +102,7 @@ public class ChunkDataExtractor {
      * @param chunkZ Chunk Z coordinate within region (0-31)
      * @return 16x16 heightmap data array, or null if chunk not found
      * @throws IOException if file cannot be read
-     */
-    public static int[][] extractHeightmapFromChunk(File regionFile, int chunkX, int chunkZ) throws IOException {
+     */    public static int[][] extractHeightmapFromChunk(File regionFile, int chunkX, int chunkZ) throws IOException {
         if (chunkX < 0 || chunkX >= 32 || chunkZ < 0 || chunkZ >= 32) {
             throw new IllegalArgumentException("Chunk coordinates must be 0-31");
         }
@@ -113,8 +112,17 @@ public class ChunkDataExtractor {
             int[] regionCoords = parseRegionCoordinates(regionFile);
             RegionFile regionFileHandle = new RegionFile(file, regionCoords[0], regionCoords[1]);
             
-            // Get chunk data from the region file
-            ChunkColumn chunk = regionFileHandle.getChunk(chunkX, chunkZ);
+            // Get chunk data from the region file - handle AnvilException for missing chunks
+            ChunkColumn chunk;
+            try {
+                chunk = regionFileHandle.getChunk(chunkX, chunkZ);
+            } catch (AnvilException e) {
+                // Chunk doesn't exist in this region - this is normal
+                System.out.println("DEBUG: Chunk [" + chunkX + ", " + chunkZ + 
+                    "] not found in region " + regionFile.getName() + " - " + e.getMessage());
+                return null;
+            }
+            
             if (chunk == null) {
                 return null;
             }
@@ -207,14 +215,22 @@ public class ChunkDataExtractor {
         if (chunkX < 0 || chunkX >= 32 || chunkZ < 0 || chunkZ >= 32) {
             throw new IllegalArgumentException("Chunk coordinates must be 0-31");
         }
-        
-        try (RandomAccessFile file = new RandomAccessFile(regionFile, "r")) {
+          try (RandomAccessFile file = new RandomAccessFile(regionFile, "r")) {
             // Parse region coordinates from filename for RegionFile constructor
             int[] regionCoords = parseRegionCoordinates(regionFile);
             RegionFile regionFileHandle = new RegionFile(file, regionCoords[0], regionCoords[1]);
             
-            // Get chunk data from the region file
-            ChunkColumn chunk = regionFileHandle.getChunk(chunkX, chunkZ);
+            // Get chunk data from the region file - handle AnvilException for missing chunks
+            ChunkColumn chunk;
+            try {
+                chunk = regionFileHandle.getChunk(chunkX, chunkZ);
+            } catch (AnvilException e) {
+                // Chunk doesn't exist in this region - this is normal
+                System.out.println("DEBUG: Chunk [" + chunkX + ", " + chunkZ + 
+                    "] not found in region " + regionFile.getName() + " - " + e.getMessage());
+                return null;
+            }
+            
             if (chunk == null) {
                 return null;
             }
@@ -223,13 +239,13 @@ public class ChunkDataExtractor {
             NBTCompound chunkTag = chunk.toNBT();
             if (chunkTag == null) {
                 return null;
-            }
-
-            // Try to extract biomes based on format (1.18+ vs pre-1.18)
+            }            // Try to extract biomes based on format (1.18+ vs pre-1.18)
             return extractBiomesFromChunkTag(chunkTag);
 
         } catch (AnvilException e) {
-            throw new IOException("Failed to parse region file: " + regionFile.getName(), e);
+            System.out.println("DEBUG: AnvilException extracting biomes from chunk [" + chunkX + ", " + chunkZ + 
+                "] in region " + regionFile.getName() + " - " + e.getMessage());
+            return null;
         } catch (Exception e) {
             throw new IOException("Failed to extract biomes from chunk [" + chunkX + ", " + chunkZ + 
                                   "] in region " + regionFile.getName(), e);
