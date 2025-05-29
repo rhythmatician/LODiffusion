@@ -90,20 +90,44 @@ This checklist ensures code quality and proper integration practices for the LOD
 
 ## Automated Checks
 
-These checks should be automated in your CI pipeline:
+The CI pipeline runs three separate jobs for better parallelization and clearer feedback:
 
+### 1. Lint Job (Code Quality & Linting)
 ```bash
-# Build and test
-./gradlew clean build
-
-# Run lint checks
+# Runs first and fastest - fails quickly on style issues
 ./gradlew lint
+```
+- Verifies enhanced compiler warnings (-Xlint:all)
+- Treats warnings as errors (-Werror)
+- Ensures clean compilation with strict analysis
+- **Fails fast** to provide immediate feedback on code quality
 
-# Verify test coverage
-./gradlew jacocoTestCoverageVerification
+### 2. Test Job (Tests & Coverage)
+```bash
+# Runs in parallel with lint job
+./gradlew test jacocoTestReport jacocoTestCoverageVerification
+```
+- Executes all unit tests
+- Generates coverage reports
+- Enforces ≥ 80% coverage threshold
+- Comments coverage results on PRs
+- Uploads coverage artifacts
 
-# Check for dependency vulnerabilities (if using dependency-check plugin)
-./gradlew dependencyCheckAnalyze
+### 3. Build Job (Build Mod)
+```bash
+# Only runs if lint and test jobs pass
+./gradlew build --exclude-task test
+```
+- Builds the final mod JAR
+- Runs only after lint and test pass (via `needs: [lint, test]`)
+- Uploads build artifacts
+- Validates that the mod can be packaged successfully
+
+### Local Development Workflow
+For the complete check before pushing (matches all CI jobs):
+```bash
+# Run all checks locally before push
+./gradlew clean lint test jacocoTestReport jacocoTestCoverageVerification build
 
 # Static analysis for common problems
 echo "🔍 Checking for compilation issues..."

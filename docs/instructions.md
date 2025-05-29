@@ -47,12 +47,18 @@ Welcome to the AI-Diffusion Minecraft Mod project. Follow these steps using the 
 ## ✅ Verify & Refine
 ## ✅ Verify & Refine
 
-1. Run `./gradlew clean test jacocoTestReport`.
+1. **Run local checks**: `./gradlew clean lint test jacocoTestReport` (matches CI pipeline).
 2. Confirm your new test is green.
 3. Check coverage: total coverage ≥ 80%.
 4. If coverage dips, write additional tests rather than lowering the threshold.
 5. **Commit any fixes**: `git add . && git commit -m "fix: resolve compilation error in heightmap test"`
 6. **Troubleshooting**: If build fails, try `./gradlew build --refresh-dependencies` or `./gradlew cleanloom`
+
+### CI Pipeline Structure
+The CI runs three separate jobs for faster feedback:
+- **Lint Job**: Fast code quality checks (`./gradlew lint`)
+- **Test Job**: Unit tests + coverage (`./gradlew test jacocoTestReport`)  
+- **Build Job**: Final mod JAR build (only if lint + test pass)
 
 ## 📚 Update Documentation
 ## 📚 Update Documentation

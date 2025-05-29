@@ -82,6 +82,15 @@ Follow a strict test-first development cycle:
 * Use `@Tag("ci")` or `@Tag("inference")` for test targeting
 * Coverage threshold: **80% minimum**
 
+### CI Pipeline
+The GitHub Actions CI runs three separate jobs for optimal feedback:
+
+1. **Lint Job** (`./gradlew lint`) - Fast code quality checks
+2. **Test Job** (`./gradlew test jacocoTestReport`) - Unit tests + coverage  
+3. **Build Job** (`./gradlew build`) - Final mod JAR (only if lint + test pass)
+
+Run locally before pushing: `./gradlew clean lint test jacocoTestReport build`
+
 ---
 
 ## Integration Points
