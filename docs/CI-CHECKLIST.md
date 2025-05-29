@@ -29,7 +29,11 @@ This checklist ensures code quality and proper integration practices for the LOD
 
 ### PR Requirements
 - ✅ **Reviewable in < 10 minutes** (focused scope)
-- ✅ **Auto-merge eligible** (no unresolved threads after Copilot review)
+- ✅ **Auto-merge eligible** for docs/CI changes:
+  - Only `docs/`, `*.md`, or `.github/workflows/*.yml` files modified
+  - < 200 lines of code changed
+  - All CI checks passing (lint, test, build)
+  - No unresolved review threads
 - ✅ **Documentation updated** (`docs/PROJECT-OUTLINE.md`, `docs/CI-CHECKLIST.md` if relevant)
 
 ## Pre-Commit Checklist

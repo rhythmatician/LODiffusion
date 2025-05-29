@@ -81,7 +81,11 @@
   - Each branch targets ONE specific change
   - PRs should be reviewable in < 10 minutes
   - Maximum 200 lines of changes per PR
-- Enable auto-merge if Copilot review leaves no unresolved threads.
+- **Auto-merge enabled** for docs and small PRs when:
+  - ✅ Only `docs/`, `*.md`, or `.github/workflows/*.yml` files changed
+  - ✅ < 200 lines of code changed
+  - ✅ All CI checks passing (lint, test, build)
+  - ✅ No open review threads
 - Copilot should approve and enable auto-merge on PRs it reviews, unless it opens threads requiring human input.
 - Tag commits using prefixes:
   - `test:` for test additions

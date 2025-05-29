@@ -1,5 +1,7 @@
 # LODiffusion: AI-Powered LOD Terrain Generation for Minecraft
 
+![CI](https://github.com/rhythmatician/LODiffusion/actions/workflows/ci.yml/badge.svg)
+
 LODiffusion is a Minecraft mod that integrates AI-driven terrain generation using a progressive Level of Detail (LOD) system. It is inspired by Distant Horizons and uses a multi-resolution diffusion model to generate terrain dynamically based on the distance from the player.
 
 ---
