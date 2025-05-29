@@ -24,14 +24,12 @@
   },
   "mixins": [
     "lodiffusion.mixins.json"
-  ],
-
-  "depends": {
+  ],  "depends": {
     "fabricloader": ">=0.16.10",
-    "minecraft": "~1.21.5",
+    "minecraft": "~1.21.4",
     "java": ">=21",
     "fabric-api": "*",
-    "distanthorizons": ">=2.3.0"
+    "distanthorizons": ">=2.3.0-b-dev"
   },
   "suggests": {
     "another-mod": "*"
