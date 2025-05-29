@@ -1,6 +1,9 @@
 # Distant horizons
 /dh/
 
+# Minecraft example world
+/example-world/
+
 # Gradle
 .gradle/
 build/
