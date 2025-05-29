@@ -35,6 +35,24 @@ This will:
 > attrib +R /S /D dh\*
 > ```
 
+## Repopulating `fabric/`
+
+The `fabric` directory contains the source code for the MC [Fabric API](https://github.com/FabricMC/fabric)
+
+```bash
+git clone https://github.com/FabricMC/fabric
+chmod -R a-w fabric
+```
+
+## Repopulating `Hephaistos/`
+
+The `Hephaistos` directory contains [Hephaistos](https://github.com/Minestom/Hephaistos)
+
+```bash
+git clone https://github.com/Minestom/Hephaistos
+chmod -R a-w Hephaistos
+```
+
 ---
 
 ## Getting Started
