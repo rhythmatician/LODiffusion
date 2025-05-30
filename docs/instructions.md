@@ -70,21 +70,46 @@ rm -rf ~/.gradle/caches/fabric-loom      # (optional) clear Loom's global cache
 ```
 Avoid hard-killing builds (e.g., force-closing VS Code or Ctrl+C twice). Use `--no-daemon` in CI environments.
 
-## 🧪 Phase 3 Implementation Details
+## 🔧 Dependency Resolution & Build Issues
 
-### NBT Parsing Implementation Status
-- **Library**: Using `io.github.querz:nbt:6.1` for robust NBT handling
-- **Heightmap Extraction**: Implemented with MOTION_BLOCKING preference and WORLD_SURFACE fallback
-- **Packed Data Decoding**: Custom decoder for 9-bit values packed in long arrays
-- **Biome Compatibility**: Handles both pre-1.18 (simple int array) and 1.18+ (compound tag) formats
-- **Error Recovery**: Graceful fallback to placeholder data for missing/corrupt chunks
+### Normal Gradle Behavior During Dependency Updates
 
-### Build System Considerations
-When working with the NBT implementation:
+When adding or updating dependencies (especially complex ones like Hephaistos), expect these **normal behaviors**:
+
+#### File Locking During Sync (Expected)
+- VS Code Java extension locks Gradle cache files during dependency resolution
+- Duration: 4-5 minutes for complex dependencies
+- **Don't interrupt**: Let the process complete naturally
+
+#### Monitoring Progress
+1. **Check VS Code Output**:
+   - Open "Output" panel → "Gradle for Java"
+   - Wait for `CONFIGURE SUCCESSFUL in Xm Ys`
+   - Confirm with `Found X tasks` message
+
+2. **Import Resolution**:
+   - Unresolved imports are normal **during** sync
+   - Imports should resolve **after** `CONFIGURE SUCCESSFUL`
+
+#### When to Actually Worry
+- Process stuck beyond 10-15 minutes with no progress
+- Repeated Gradle daemon crashes
+- Imports still unresolved after successful configuration
+
+### Hephaistos NBT Library Specific
+```gradle
+// Correct dependency (repository moved to Minestom):
+dependencies {
+    implementation 'com.github.Minestom:Hephaistos:2.2.0'
+}
+```
+
+### Gradle Troubleshooting Tips
+If you encounter issues specifically related to dependency resolution or the Hephaistos library, consider the following steps:
 ```bash
-# If experiencing Gradle cache locks:
-./gradlew --stop                          # Stop all daemons
-rm -rf .gradle build                      # Clear local cache
+./gradlew --stop                          # Stop all Gradle daemons
+rm -rf .gradle build                      # Clear local project cache
+rm -rf ~/.gradle/caches/fabric-loom       # Clear Loom's global cache
 ./gradlew clean build --refresh-dependencies  # Clean rebuild
 
 # For persistent Loom issues:

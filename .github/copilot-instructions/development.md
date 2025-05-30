@@ -80,6 +80,11 @@ Batch Reading: Instead of processing one chunk at a time, consider designing the
 In-memory Caching: For scenarios where specific chunks or regions might be accessed repeatedly (though less common in a linear data generation process), an in-memory caching layer can significantly reduce redundant disk reads. Libraries or custom implementations can manage this cache to store recently accessed data.
 Lazy Loading: Some parsing libraries may implement lazy loading, where the full NBT data for a chunk is only parsed and loaded into memory when explicitly requested. This minimizes the initial memory footprint and processing overhead, especially for chunks where only a subset of data is needed.
 Concurrency (Multi-threading)For extremely large datasets, employing multi-threading can parallelize the reading and processing of region files, potentially speeding up the overall extraction process. A common pattern involves a producer-consumer model, where one thread is dedicated to reading region files and placing raw or partially parsed chunk data into a queue, while other threads consume data from the queue for further processing and extraction.47However, the use of multi-threading introduces additional complexity. While FileChannel operations (which underpin MappedByteBuffer) are generally thread-safe, instances of MappedByteBuffer themselves are not thread-safe.40 If multiple threads need to access the same mapped region of a file, explicit synchronization mechanisms (e.g., synchronized blocks or utilities from java.util.concurrent) are required to prevent data corruption. Alternatively, each thread could map its own distinct region of the file or utilize thread-local buffers to avoid contention.Given these considerations, for the initial prototype, a single-threaded approach utilizing MappedByteBuffer (either directly or implicitly through the chosen library) is likely sufficient and simpler to implement correctly. If performance profiling later reveals I/O or processing bottlenecks during large-scale training data generation, then more advanced concurrency strategies can be explored, but always with meticulous attention to thread safety and resource management.8. Proof-of-Concept Java Code ExampleThis section provides a basic Java proof-of-concept using the Querz/NBT library to demonstrate the extraction of heightmap and biome data for a single chunk. The example focuses on the Minecraft Java Edition 1.18+ biome format for modern compatibility.8.1. Project Setup (Maven Dependency)To use the Querz/NBT library, add the following dependencies to your pom.xml file (for Maven projects):XML<dependencies>
+	<dependency>
+	    <groupId>com.github.Minestom.Hephaistos</groupId>
+	    <artifactId>common</artifactId>
+	    <version>v2.1.2</version>
+	</dependency>
     <dependency>
         <groupId>com.github.Querz</groupId>
         <artifactId>NBT</artifactId>
@@ -360,8 +365,8 @@ public class Main {
         // --- Configuration ---
         //!!! IMPORTANT: REPLACE WITH YOUR ACTUAL MINECRAFT SAVE DIRECTORY PATH
         // Example: "C:/Users/YourUser/AppData/Roaming/.minecraft/saves/MyAwesomeWorld"
-        String minecraftSaveDirectory = "path/to/your/minecraft/saves/YourWorldName"; 
-        
+        String minecraftSaveDirectory = "path/to/your/minecraft/saves/YourWorldName";
+
         // Target region and local chunk coordinates
         // For example, world chunk (5, 10) would be in region (0,0) at local chunk (5,10)
         // worldChunkX = targetRegionX * 32 + targetChunkX
@@ -372,7 +377,7 @@ public class Main {
         int targetChunkZ = 10; // Example local chunk Z within region (0-31)
 
         // Configure logging to show warnings/errors. Set to Level.FINEST for more verbose library logging.
-        LOGGER.setLevel(Level.INFO); 
+        LOGGER.setLevel(Level.INFO);
 
         MinecraftAnvilParser parser = new MinecraftAnvilParser();
 
@@ -466,4 +471,56 @@ Data Transformation for AI: The extracted numerical heightmap values and biome I
 
 
 Future Data Exploration: While this report focuses specifically on heightmaps and biomes, the Anvil format contains a wealth of additional information, including detailed block types, lighting data, and entity information. Depending on the evolving needs of the AI model, the LOD-fusion project may consider extending the data extraction capabilities to include these additional features, further enriching the training dataset.
+
+## 10. Gradle Dependency Resolution and File Locking Troubleshooting
+
+### Understanding Normal Gradle Behavior
+
+During dependency resolution, especially for new or changed dependencies, Gradle and VS Code's Java extension exhibit specific behaviors that are **normal and expected**, not errors:
+
+#### File Locking During Dependency Resolution
+- **Expected behavior**: VS Code Java extension holds locks on Gradle cache files during dependency download and resolution
+- **Duration**: Can last 4-5 minutes for complex dependencies like Hephaistos
+- **Symptoms**:
+  - File access errors in Gradle daemon logs
+  - Temporary inability to access `.gradle/caches/` files
+  - IDE showing "Building workspace" or similar status
+
+#### How to Monitor Progress Correctly
+1. **Watch VS Code Gradle extension output**:
+   - Open "Output" panel in VS Code
+   - Select "Gradle for Java" from the dropdown
+   - Look for `CONFIGURE SUCCESSFUL in Xm Ys` messages
+   - Confirm with `Found X tasks` indicator
+
+2. **Don't fight file locks**:
+   - Avoid manual deletion of `.gradle/` folders during sync
+   - Don't restart Gradle daemon during active dependency resolution
+   - Let VS Code complete its synchronization process
+
+#### Dependency-Specific Troubleshooting
+
+**Hephaistos NBT Library**:
+- **Correct dependency**: `com.github.Minestom:Hephaistos:2.2.0`
+- **Incorrect/outdated**: `com.github.Minestom:Hephaistos:X.X.X` (repository moved)
+- **Expected resolution time**: 4-5 minutes for initial download
+- **Success indicators**:
+  - Gradle shows `CONFIGURE SUCCESSFUL`
+  - No more "unresolved imports" in ChunkDataExtractor.java
+
+#### When to Actually Worry
+File locking is **problematic** only if:
+- Persists beyond 10-15 minutes with no progress
+- Gradle daemon crashes repeatedly
+- VS Code shows permanent "Build failed" with no dependency resolution
+- Import statements remain unresolved after successful `CONFIGURE SUCCESSFUL`
+
+#### Quick Resolution Steps
+1. **First**: Check VS Code Gradle extension output for progress
+2. **Wait**: Allow 5-10 minutes for dependency resolution to complete
+3. **Verify**: Look for `CONFIGURE SUCCESSFUL` message
+4. **Test**: Try compiling the project once sync completes
+5. **Only if stuck**: Restart VS Code Java extension or clean Gradle cache
+
+This guidance prevents wasted time fighting normal Gradle behaviors and focuses troubleshooting efforts on actual issues.
 
