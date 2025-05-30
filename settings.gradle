@@ -8,3 +8,24 @@ pluginManagement {
 		gradlePluginPortal()
 	}
 }
+
+dependencyResolutionManagement {
+	repositoriesMode.set(RepositoriesMode.PREFER_PROJECT)
+	repositories {
+		mavenCentral()
+		maven {
+			name = 'Fabric'
+			url = 'https://maven.fabricmc.net/'
+		}
+		maven {
+			name = 'ParchmentMC'
+			url = 'https://maven.parchmentmc.org'
+		}
+		maven { 
+			name = 'JitPack'
+			url = 'https://jitpack.io' 
+		}
+	}
+}
+
+rootProject.name = 'LODiffusion'
