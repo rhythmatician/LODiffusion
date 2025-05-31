@@ -8,7 +8,9 @@ import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
-public class RealWorldBiomeExtractionTest {    @Test
+public class RealWorldBiomeExtractionTest {
+
+    @Test
     public void testRegionFileAccess() throws IOException {
         File regionFilePath = new File("test-data/region/r.-1.0.mca");
         assertTrue(regionFilePath.exists(), "Region file should exist");
