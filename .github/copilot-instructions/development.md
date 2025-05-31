@@ -501,7 +501,7 @@ During dependency resolution, especially for new or changed dependencies, Gradle
 #### Dependency-Specific Troubleshooting
 
 **Hephaistos NBT Library**:
-- **Correct dependency**: `com.github.Minestom:Hephaistos:2.2.0`
+- **Correct dependency**: `com.github.Minestom:Hephaistos:2.1.2` (2.0.0's build failed)
 - **Incorrect/outdated**: `com.github.Minestom:Hephaistos:X.X.X` (repository moved)
 - **Expected resolution time**: 4-5 minutes for initial download
 - **Success indicators**:
