@@ -83,7 +83,8 @@ public class RawNBTStructureTest {
 
                     // Read chunk header: length (4 bytes) + compression type (1 byte)
                     int chunkLength = file.readInt();
-                    byte compressionType = file.readByte();                    LOGGER.info("Chunk length: {} bytes, compression: {}", chunkLength, compressionType);
+                    byte compressionType = file.readByte();
+                    LOGGER.info("Chunk length: {} bytes, compression: {}", chunkLength, compressionType);
 
                     if (chunkLength > 0 && chunkLength < 1024 * 1024) { // Sanity check
                         // We found valid chunk data - this proves the region file contains chunks
