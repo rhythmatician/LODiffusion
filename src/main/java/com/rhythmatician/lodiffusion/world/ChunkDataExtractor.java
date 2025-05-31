@@ -533,6 +533,7 @@ public class ChunkDataExtractor {
             System.out.println("DEBUG: Found 1.18+ format with sections");
             try {
                 // In 1.18+, sections is a ListTag containing section compounds
+                @SuppressWarnings("unchecked")
                 org.jglrxavpok.hephaistos.nbt.NBTList<org.jglrxavpok.hephaistos.nbt.NBT> sectionsTag = 
                     (org.jglrxavpok.hephaistos.nbt.NBTList<org.jglrxavpok.hephaistos.nbt.NBT>) chunkTag.get("sections");
                 if (sectionsTag != null && sectionsTag.getSize() > 0) {

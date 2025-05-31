@@ -13,6 +13,22 @@ base {
 
 // Repository configuration moved to settings.gradle with dependencyResolutionManagement
 // to avoid conflicts and ensure proper dependency resolution
+// However, Fabric Loom requires repositories to be declared in build.gradle
+repositories {
+	mavenCentral()
+	maven {
+		name = 'Fabric'
+		url = 'https://maven.fabricmc.net/'
+	}
+	maven {
+		name = 'ParchmentMC'
+		url = 'https://maven.parchmentmc.org'
+	}
+	maven { 
+		name = 'JitPack'
+		url = 'https://jitpack.io' 
+	}
+}
 
 loom {
 	splitEnvironmentSourceSets()
@@ -45,8 +61,8 @@ dependencies {
 	// Mockito for mocking in tests
 	testImplementation 'org.mockito:mockito-core:5.1.1'
 	testImplementation 'org.mockito:mockito-junit-jupiter:5.1.1'	// NBT and MCA library for parsing Minecraft region files (1.18+ compatible)
-	// Using local Hephaistos JAR due to JitPack resolution issues
-	implementation files('libs/hephaistos-common-2.1.2.jar')
+	// Using JitPack for reliable dependency resolution
+	implementation 'com.github.Minestom.Hephaistos:common:2.1.2'
 
 	// Kotlin standard library - required by Hephaistos
 	implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.10'
