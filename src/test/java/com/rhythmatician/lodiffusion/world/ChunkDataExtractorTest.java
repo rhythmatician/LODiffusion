@@ -167,7 +167,7 @@ public class ChunkDataExtractorTest {
     }    @Test
     void testExtractHeightmapFromChunk_FileNotFound() {
         // Test that the implemented method correctly handles missing files
-        File testFile = new File("r.0.0.mca");
+        File testFile = new File("non-existent-directory/r.0.0.mca");
 
         assertThrows(IOException.class, () -> {
             ChunkDataExtractor.extractHeightmapFromChunk(testFile, 0, 0);
@@ -177,7 +177,7 @@ public class ChunkDataExtractorTest {
     @Test
     void testExtractBiomesFromChunk_FileNotFound() {
         // Test that the biome extraction method correctly handles missing files
-        File testFile = new File("r.0.0.mca");
+        File testFile = new File("non-existent-directory/r.0.0.mca");
 
         assertThrows(IOException.class, () -> {
             ChunkDataExtractor.extractBiomesFromChunk(testFile, 0, 0);

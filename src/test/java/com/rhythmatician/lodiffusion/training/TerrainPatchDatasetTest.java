@@ -249,7 +249,6 @@ class TerrainPatchDatasetTest {
                 List<TerrainPatch> allPatches = dataset.getAllPatches();
                 
                 // Count patches with different coordinate patterns
-                int uniqueCoordinates = 0;
                 java.util.Set<String> coordSet = new java.util.HashSet<>();
                 
                 for (int i = 0; i < Math.min(20, allPatches.size()); i++) {
