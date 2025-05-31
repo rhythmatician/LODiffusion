@@ -103,6 +103,53 @@ Local equivalent:
 
 ---
 
+## 🧠 Phase 4 — Model Training Pipeline (U-Net, PyTorch, ONNX)
+
+Copilot should help implement a complete model training pipeline for LODiffusion terrain generation.
+
+### 🏗️ Goals
+- Train a U-Net-based diffusion model that upsamples terrain patches from coarse to fine resolution (8×8 → 16×16)
+- Accept multi-channel input: heightmaps and biome classmaps
+- Use sinusoidal timestep encoding for diffusion
+- Export the trained model to ONNX for Java inference
+
+### 📦 Code Structure
+- All training scripts go in the `train/` directory
+- Key files:
+  - `train/train.py`: U-Net training script
+  - `train/extract_patches.py`: Reads `.mca` → outputs `.npy`/`.pt`
+  - `train/dataset.py`: Loads training data (terrain patches)
+  - `train/unet.py`: U-Net model architecture
+  - `train/utils.py`: Normalization, logging, metrics
+  - `train/config.yaml`: Hyperparameters
+
+### ✅ Data Format
+- Inputs: 8×8×2 (height, biome), float32, normalized to [-1, 1]
+- Outputs: 16×16 height prediction (optionally biome too)
+- Use `.npy` or `.pt` files as input—no live chunk parsing
+
+### 🧪 What to Help With
+- Scaffold minimal working versions of `train.py`, `unet.py`, and `dataset.py`
+- Define `TerrainPatchDataset(torch.utils.data.Dataset)` with __getitem__ returning input/output tensors
+- Implement basic training loop with logging and checkpointing
+- Use `torch.onnx.export()` to save model to `lodiffusion.onnx`
+
+### 🚫 What NOT to Do
+- Don't write Java code (that's for runtime, not training)
+- Don't handle `.mca` parsing—this is already handled in Java
+- Don't write TensorFlow code
+
+### 🧪 Testing Strategy
+- Include `test/train_test.py` for validating a tiny model on dummy data
+- Add CLI argument parsing to `train.py` (argparse or YAML-based)
+- Use PyTorch 2.x and target ONNX 1.15+
+
+### 📎 Documentation Targets
+- Update `docs/PROJECT-OUTLINE.md` when `train.py` and ONNX export are complete
+- Update `README.md` to include Python training instructions
+
+---
+
 ## 🧪 Implementation Patterns
 
 ### Java Conventions
@@ -143,10 +190,11 @@ Local equivalent:
     - ✅ No Copilot threads open
 
 ### Commit Prefixes
-- `test:` - New or updated tests
-- `feat:` - New feature implementation
+- `test:` - New or updated tests (Java or Python)
+- `feat:` - New feature implementation (Java or Python)
 - `fix:` - Bug fix
 - `docs:` - Markdown or outline update
+- `train:` - Model training pipeline changes
 
 ---
 
