@@ -3,8 +3,6 @@ package com.rhythmatician.lodiffusion.world;
 import java.io.File;
 import java.io.IOException;
 import java.io.RandomAccessFile;
-import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
@@ -30,10 +28,7 @@ import org.slf4j.LoggerFactory;
  * - Cached region coordinate parsing
  * - Optional profiling for performance measurement
  */
-public class ChunkDataExtractor {
-
-    private static final Logger LOGGER = LoggerFactory.getLogger(ChunkDataExtractor.class);
-    private static final String TEST_DATA_DIR = "test-data";
+public class ChunkDataExtractor {    private static final Logger LOGGER = LoggerFactory.getLogger(ChunkDataExtractor.class);
 
     // Cache for RegionFile instances to avoid reopening files
     private static final ConcurrentMap<String, RegionFileCache> regionFileCache = new ConcurrentHashMap<>();
@@ -123,42 +118,14 @@ public class ChunkDataExtractor {
         regionFileCache.clear();
         regionCoordCache.clear();
     }
-
     /**
-     * Check if example world data is available.
-     * @return true if world data exists and is readable
-     */
-    public static boolean isWorldDataAvailable() {
-        Path worldPath = Paths.get(TEST_DATA_DIR);
-        Path regionPath = worldPath.resolve("region");
-
-        if (!worldPath.toFile().exists() || !regionPath.toFile().exists()) {
-            return false;
-        }
-
-        File[] regionFiles = regionPath.toFile().listFiles((dir, name) -> name.endsWith(".mca"));
-        return regionFiles != null && regionFiles.length > 0;
-    }
-
-    /**
-     * Get list of available region files for processing.
-     * @return Array of region file paths, or empty array if none found
-     */
-    public static File[] getAvailableRegionFiles() {
-        if (!isWorldDataAvailable()) {
-            return new File[0];
-        }
-
-        Path regionPath = Paths.get(TEST_DATA_DIR, "region");
-        File[] regionFiles = regionPath.toFile().listFiles((dir, name) -> name.endsWith(".mca"));
-        return regionFiles != null ? regionFiles : new File[0];
-    }    /**
      * Parse region coordinates from filename (e.g. "r.0.1.mca" -> [0, 1]).
      * Results are cached to avoid repeated parsing.
      * @param regionFile Region file
      * @return Array containing [regionX, regionZ] coordinates
      * @throws IllegalArgumentException if filename format is invalid
-     */    public static int[] parseRegionCoordinates(File regionFile) {
+     */
+    public static int[] parseRegionCoordinates(File regionFile) {
         String filePath = regionFile.getAbsolutePath();
         String filename = regionFile.getName();
 
@@ -302,7 +269,8 @@ public class ChunkDataExtractor {
                 return null;
             }            NBTLongArray motionBlockingTag = (NBTLongArray) heightmapsTag.get("MOTION_BLOCKING");            if (motionBlockingTag == null) {
                 return null;
-            }            // OPTIMIZATION: Use optimized decoding with cached RegionFile
+            }
+            // OPTIMIZATION: Use optimized decoding with cached RegionFile
             // Convert ImmutableLongArray to regular long array
             var immutableArray = motionBlockingTag.getValue();
             long[] heightData = immutableArray.copyArray();
@@ -613,24 +581,6 @@ public class ChunkDataExtractor {
         }
         
         return null;
-    }/**
-     * Get statistics about available world data.
-     * @return Summary string describing available data
-     */
-    public static String getWorldDataSummary() {
-        if (!isWorldDataAvailable()) {
-            return "No world data available";
-        }
-
-        File[] regionFiles = getAvailableRegionFiles();
-        StringBuilder summary = new StringBuilder();
-        summary.append("Example world data available:\n");
-        summary.append("- Region files: ").append(regionFiles.length).append("\n");
-        summary.append("- Total chunks: ~").append(regionFiles.length * 1024).append("\n");
-        summary.append("- Coverage: Real Minecraft terrain data\n");
-        summary.append("- Use case: Integration testing and algorithm validation");
-
-        return summary.toString();
     }
 
     /**

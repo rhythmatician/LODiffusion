@@ -12,12 +12,12 @@ import static org.junit.jupiter.api.Assertions.*;
  */
 class DefaultLODQueryTest {
 
-    private DefaultLODQuery lodQuery;
-
-    @BeforeEach
+    private DefaultLODQuery lodQuery;    @BeforeEach
     void setUp() {
         lodQuery = new DefaultLODQuery();
-    }    @Test
+    }
+
+    @Test
     void testLODCalculationWithCoordinates() {
         // Given: A player at chunk position (10, 10)
         int playerX = 10, playerZ = 10;
@@ -77,10 +77,11 @@ class DefaultLODQueryTest {
         
         // All should have same LOD due to absolute distance calculation
         assertEquals(lod1, lod2, "Negative coordinates should give same LOD as positive");
-        assertEquals(lod1, lod3, "Mixed coordinates should give same LOD");
-        assertEquals(lod1, lod4, "All combinations should give same LOD");
+        assertEquals(lod1, lod3, "Mixed coordinates should give same LOD");        assertEquals(lod1, lod4, "All combinations should give same LOD");
         assertEquals(1, lod1, "Distance 5 should be LOD 1");
-    }    @Test
+    }
+
+    @Test
     void testGetLOD_WithMockedServerPlayer() {
         // Test the ServerPlayerEntity overload method
         // This method delegates to the coordinate-based version, so we test indirectly
