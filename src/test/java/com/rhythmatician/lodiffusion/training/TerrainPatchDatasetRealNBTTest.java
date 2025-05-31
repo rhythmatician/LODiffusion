@@ -1,6 +1,7 @@
 package com.rhythmatician.lodiffusion.training;
 
 import com.rhythmatician.lodiffusion.world.ChunkDataExtractor;
+import fixtures.TestWorldFixtures;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Tag;
@@ -19,9 +20,7 @@ import static org.junit.jupiter.api.Assertions.*;
 @Tag("ci")
 public class TerrainPatchDatasetRealNBTTest {
 
-    private TerrainPatchDataset dataset;
-
-    @BeforeEach
+    private TerrainPatchDataset dataset;    @BeforeEach
     void setUp() {
         dataset = new TerrainPatchDataset();
     }
@@ -30,13 +29,14 @@ public class TerrainPatchDatasetRealNBTTest {
     @DisplayName("Dataset should use real NBT extraction when world data available")
     void testRealNBTIntegration() {
         // Skip test if no world data available
-        if (!ChunkDataExtractor.isWorldDataAvailable()) {
+        if (!TestWorldFixtures.isExampleWorldAvailable()) {
             System.out.println("Skipping real NBT test - no world data available");
             return;
         }
 
         // Load patches using real NBT data
-        int patchCount = dataset.loadFromWorldData();
+        File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
+        int patchCount = dataset.loadFromWorldData(regionFiles);
         assertTrue(patchCount > 0, "Should load some patches from real world data");
         assertTrue(dataset.isLoaded(), "Dataset should be marked as loaded");
 
@@ -77,20 +77,19 @@ public class TerrainPatchDatasetRealNBTTest {
             if (biome.startsWith("minecraft:")) {
                 hasProperBiomes = true;
             }
-        }
-        assertTrue(hasProperBiomes, "Should have proper Minecraft biome identifiers");
+        }        assertTrue(hasProperBiomes, "Should have proper Minecraft biome identifiers");
     }
 
     @Test
     @DisplayName("Patch extraction should split 16x16 chunks into 2x2 grid of 8x8 patches")
     void testPatchExtractionFromRealChunk() throws IOException {
         // Skip test if no world data available
-        if (!ChunkDataExtractor.isWorldDataAvailable()) {
+        if (!TestWorldFixtures.isExampleWorldAvailable()) {
             System.out.println("Skipping patch extraction test - no world data available");
             return;
         }
 
-        File[] regionFiles = ChunkDataExtractor.getAvailableRegionFiles();
+        File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
         if (regionFiles.length == 0) {
             System.out.println("No region files available for testing");
             return;
@@ -109,8 +108,7 @@ public class TerrainPatchDatasetRealNBTTest {
 
             System.out.println("Successfully extracted real chunk data:");
             System.out.println("- Heightmap: 16x16 with heights " +
-                chunkHeightmap[0][0] + " to " + chunkHeightmap[15][15]);
-            System.out.println("- Biomes: " + chunkBiomes[0] + " (example)");
+                chunkHeightmap[0][0] + " to " + chunkHeightmap[15][15]);            System.out.println("- Biomes: " + chunkBiomes[0] + " (example)");
         }
     }
 
@@ -118,15 +116,16 @@ public class TerrainPatchDatasetRealNBTTest {
     @DisplayName("Dataset should handle missing or corrupt chunks gracefully")
     void testErrorHandling() {
         // This test should always pass, even without world data
-        if (!ChunkDataExtractor.isWorldDataAvailable()) {
-            // Without world data, should throw IllegalStateException
-            assertThrows(IllegalStateException.class, () -> {
-                dataset.loadFromWorldData();
+        File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
+        if (regionFiles.length == 0) {
+            // Without world data, should throw IllegalArgumentException
+            assertThrows(IllegalArgumentException.class, () -> {
+                dataset.loadFromWorldData(regionFiles);
             });
         } else {
             // With world data, should handle errors gracefully
             assertDoesNotThrow(() -> {
-                int patches = dataset.loadFromWorldData();
+                int patches = dataset.loadFromWorldData(regionFiles);
                 // Should complete without throwing, even if some chunks fail
                 assertTrue(patches >= 0, "Patch count should be non-negative");
             });
@@ -137,15 +136,15 @@ public class TerrainPatchDatasetRealNBTTest {
     @DisplayName("Debug information should be comprehensive")
     void testDebuggingOutput() {
         // This test verifies our debugging output is helpful
-        if (!ChunkDataExtractor.isWorldDataAvailable()) {
+        if (!TestWorldFixtures.isExampleWorldAvailable()) {
             System.out.println("World data summary (no data): " +
-                ChunkDataExtractor.getWorldDataSummary());
-            return;
-        }
+                TestWorldFixtures.getWorldDataSummary());
+            return;        }
 
-        System.out.println("World data summary: " + ChunkDataExtractor.getWorldDataSummary());
+        System.out.println("World data summary: " + TestWorldFixtures.getWorldDataSummary());
 
-        int patchCount = dataset.loadFromWorldData();
+        File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
+        int patchCount = dataset.loadFromWorldData(regionFiles);
         System.out.println("Dataset summary after loading: " + dataset.getDatasetSummary());
         System.out.println("Patches loaded: " + patchCount);
 

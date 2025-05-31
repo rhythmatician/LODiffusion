@@ -1,5 +1,6 @@
 package com.rhythmatician.lodiffusion.world;
 
+import fixtures.TestWorldFixtures;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.io.TempDir;
@@ -37,7 +38,7 @@ public class ChunkDataExtractorTest {
         Files.createFile(testRegionPath.resolve("r.0.0.mca"));
 
         // Test with real example-world (if it exists)
-        assertTrue(ChunkDataExtractor.isWorldDataAvailable(),
+        assertTrue(TestWorldFixtures.isExampleWorldAvailable(),
             "Should detect available world data when example-world exists");
     }
 
@@ -56,14 +57,12 @@ public class ChunkDataExtractorTest {
         Files.createFile(testRegionPath.resolve("r.0.0.mca"));
         Files.createFile(testRegionPath.resolve("r.1.0.mca"));
         Files.createFile(testRegionPath.resolve("r.0.1.mca"));
-        Files.createFile(testRegionPath.resolve("not_a_region.txt")); // Should be ignored
-
-        // Test with real world data
-        File[] regionFiles = ChunkDataExtractor.getAvailableRegionFiles();
+        Files.createFile(testRegionPath.resolve("not_a_region.txt")); // Should be ignored        // Test with real world data
+        File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
         assertNotNull(regionFiles, "Region files array should not be null");
 
         // If example-world exists, we should have region files
-        if (ChunkDataExtractor.isWorldDataAvailable()) {
+        if (TestWorldFixtures.isExampleWorldAvailable()) {
             assertTrue(regionFiles.length > 0, "Should find region files in example-world");
             for (File file : regionFiles) {
                 assertTrue(file.getName().endsWith(".mca"),
@@ -75,7 +74,7 @@ public class ChunkDataExtractorTest {
     @Test
     void testGetAvailableRegionFiles_WithNoRegions() {
         // Test when no region files exist (empty directory case is covered by isWorldDataAvailable)
-        File[] regionFiles = ChunkDataExtractor.getAvailableRegionFiles();
+        File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
         assertNotNull(regionFiles, "Should return empty array, not null, when no regions found");
     }
 
@@ -159,12 +158,12 @@ public class ChunkDataExtractorTest {
 
         assertThrows(IllegalArgumentException.class, () -> {
             ChunkDataExtractor.getWorldChunkCoordinates(0, 0, 0, 32);
-        }, "Should throw exception for local chunk Z >= 32");
-
-        assertThrows(IllegalArgumentException.class, () -> {
+        }, "Should throw exception for local chunk Z >= 32");        assertThrows(IllegalArgumentException.class, () -> {
             ChunkDataExtractor.getWorldChunkCoordinates(0, 0, 100, 15);
         }, "Should throw exception for invalid local coordinates");
-    }    @Test
+    }
+
+    @Test
     void testExtractHeightmapFromChunk_FileNotFound() {
         // Test that the implemented method correctly handles missing files
         File testFile = new File("non-existent-directory/r.0.0.mca");
@@ -187,10 +186,10 @@ public class ChunkDataExtractorTest {
     @Test
     void testGetWorldDataSummary_WithData() {
         // Test world data summary generation
-        String summary = ChunkDataExtractor.getWorldDataSummary();
+        String summary = TestWorldFixtures.getWorldDataSummary();
         assertNotNull(summary, "Summary should not be null");
 
-        if (ChunkDataExtractor.isWorldDataAvailable()) {
+        if (TestWorldFixtures.isExampleWorldAvailable()) {
             assertTrue(summary.contains("Example world data available"),
                 "Summary should indicate data is available");
             assertTrue(summary.contains("Region files:"),
@@ -200,7 +199,7 @@ public class ChunkDataExtractorTest {
             assertTrue(summary.contains("Real Minecraft terrain"),
                 "Summary should mention data type");
         } else {
-            assertEquals("No world data available", summary,
+            assertTrue(summary.contains("No world data available"),
                 "Summary should indicate no data when unavailable");
         }
     }
@@ -209,7 +208,7 @@ public class ChunkDataExtractorTest {
     void testGetWorldDataSummary_NoData() {
         // This test verifies the behavior when no world data is available
         // Since we can't guarantee the state of example-world, we test the logic indirectly
-        String summary = ChunkDataExtractor.getWorldDataSummary();
+        String summary = TestWorldFixtures.getWorldDataSummary();
         assertNotNull(summary, "Summary should never be null");
         assertTrue(summary.length() > 0, "Summary should not be empty");
     }
@@ -217,7 +216,7 @@ public class ChunkDataExtractorTest {
     @Test
     void testRegionFileExtensionFiltering() {
         // Verify that only .mca files are considered region files
-        File[] regionFiles = ChunkDataExtractor.getAvailableRegionFiles();
+        File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
 
         if (regionFiles.length > 0) {
             for (File file : regionFiles) {

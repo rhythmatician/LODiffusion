@@ -20,13 +20,13 @@ public class RealWorldDataTest {
 
     private static final String TEST_DATA_PATH = "test-data";
     private DiffusionChunkGenerator generator;
-    private DiffusionModel model;
-
-    @BeforeEach
+    private DiffusionModel model;    @BeforeEach
     void setUp() {
         generator = new DiffusionChunkGenerator();
         model = new DiffusionModel();
-    }    @Test
+    }
+
+    @Test
     void testWorldDataExists() {
         // Verify the test world data is available for testing
         Path testDataPath = Paths.get(TEST_DATA_PATH);

@@ -30,8 +30,7 @@ public class TerrainPatchDataset {
         this.patches = new ArrayList<>();
         this.isDataLoaded = false;
     }
-    
-    /**
+      /**
      * Load terrain patches from available world data.
      * Converts real Minecraft chunks into 8x8 training patches.
      * 
@@ -39,14 +38,27 @@ public class TerrainPatchDataset {
      * @throws IllegalStateException if world data is not available
      */
     public int loadFromWorldData() {
-        if (!ChunkDataExtractor.isWorldDataAvailable()) {
-            throw new IllegalStateException("World data not available for loading patches");
+        throw new UnsupportedOperationException(
+            "loadFromWorldData() requires external world data discovery. " +
+            "Use loadFromWorldData(File[] regionFiles) instead, or call from test context.");
+    }
+    
+    /**
+     * Load terrain patches from specified region files.
+     * Converts real Minecraft chunks into 8x8 training patches.
+     * 
+     * @param regionFiles Array of region files to process
+     * @return Number of patches loaded
+     * @throws IllegalArgumentException if regionFiles is null or empty
+     */
+    public int loadFromWorldData(File[] regionFiles) {
+        if (regionFiles == null || regionFiles.length == 0) {
+            throw new IllegalArgumentException("Region files array cannot be null or empty");
         }
         
         // Clear existing patches
         patches.clear();
         
-        File[] regionFiles = ChunkDataExtractor.getAvailableRegionFiles();
         int totalPatchesLoaded = 0;
         
         for (File regionFile : regionFiles) {

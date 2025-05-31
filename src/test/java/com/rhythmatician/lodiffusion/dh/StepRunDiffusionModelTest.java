@@ -30,11 +30,11 @@ class StepRunDiffusionModelTest {
     @Test
     void testGenerateGroup_HandlesEmptyList() {
         // Arrange
-        List<Object> emptyChunks = Arrays.asList();
-
-        // Act & Assert - should handle empty list gracefully
+        List<Object> emptyChunks = Arrays.asList();        // Act & Assert - should handle empty list gracefully
         assertDoesNotThrow(() -> step.generateGroup(emptyChunks));
-    }    @Test
+    }
+
+    @Test
     void testDiffusionModel_ModifiesHeightmap() {
         // Arrange - Create a 16x16 heightmap with values that will definitely change
         int[][] heightmap = new int[16][16];
@@ -62,12 +62,13 @@ class StepRunDiffusionModelTest {
         boolean anyModified = (heightmap[2][2] != originalPos1) || 
                              (heightmap[5][8] != originalPos2) || 
                              (heightmap[10][5] != originalPos3);
-        
-        assertTrue(anyModified, 
+          assertTrue(anyModified, 
             "Diffusion should modify heightmap values. Original: [" + 
             originalPos1 + "," + originalPos2 + "," + originalPos3 + 
             "], Modified: [" + heightmap[2][2] + "," + heightmap[5][8] + "," + heightmap[10][5] + "]");
-    }@Test
+    }
+
+    @Test
     void testDiffusionModel_WithLOD_MultiChannel() {
         // Arrange - Create multi-channel data [channel][x][z] with larger array
         float[][][] channels = new float[3][5][5]; // 5x5 to ensure diffusion boundary logic works

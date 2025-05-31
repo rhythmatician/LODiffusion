@@ -1,5 +1,6 @@
 package com.rhythmatician.lodiffusion.world;
 
+import fixtures.TestWorldFixtures;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.Tag;
 import org.junit.jupiter.api.BeforeEach;
@@ -26,18 +27,17 @@ public class ChunkDataExtractorPerformanceTest {
     }
 
     @AfterEach
-    void tearDown() {
-        // Clean up after tests
+    void tearDown() {        // Clean up after tests
         ChunkDataExtractor.clearCache();
         ChunkDataExtractor.setProfilingEnabled(false);
     }
 
     @Test
     void testRegionFileCachingPerformance() {
-        Assumptions.assumeTrue(ChunkDataExtractor.isWorldDataAvailable(), 
+        Assumptions.assumeTrue(TestWorldFixtures.isExampleWorldAvailable(), 
             "World data not available - skipping performance test");
 
-        File[] regionFiles = ChunkDataExtractor.getAvailableRegionFiles();
+        File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
         Assumptions.assumeTrue(regionFiles.length > 0, 
             "No region files available - skipping performance test");
 
@@ -67,19 +67,17 @@ public class ChunkDataExtractorPerformanceTest {
             if (secondResult != null) {
                 assertNotNull(secondResult, "Second heightmap extraction should succeed");
                 assertEquals(16, secondResult.length, "Heightmap should be 16x16");
-            }
-
-        } catch (Exception e) {
+            }        } catch (Exception e) {
             fail("Performance test failed with exception: " + e.getMessage());
         }
     }
 
     @Test
     void testBatchExtractionPerformance() {
-        Assumptions.assumeTrue(ChunkDataExtractor.isWorldDataAvailable(), 
+        Assumptions.assumeTrue(TestWorldFixtures.isExampleWorldAvailable(), 
             "World data not available - skipping performance test");
 
-        File[] regionFiles = ChunkDataExtractor.getAvailableRegionFiles();
+        File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
         Assumptions.assumeTrue(regionFiles.length > 0, 
             "No region files available - skipping performance test");
 
@@ -133,11 +131,10 @@ public class ChunkDataExtractorPerformanceTest {
     }
 
     @Test
-    void testCacheClearance() {
-        Assumptions.assumeTrue(ChunkDataExtractor.isWorldDataAvailable(), 
+    void testCacheClearance() {        Assumptions.assumeTrue(TestWorldFixtures.isExampleWorldAvailable(), 
             "World data not available - skipping cache test");
 
-        File[] regionFiles = ChunkDataExtractor.getAvailableRegionFiles();
+        File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
         Assumptions.assumeTrue(regionFiles.length > 0, 
             "No region files available - skipping cache test");
 

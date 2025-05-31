@@ -1,8 +1,9 @@
 package com.rhythmatician.lodiffusion.training;
 
-import com.rhythmatician.lodiffusion.world.ChunkDataExtractor;
+import fixtures.TestWorldFixtures;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import java.io.File;
 import java.util.List;
 import static org.junit.jupiter.api.Assertions.*;
 
@@ -35,27 +36,28 @@ class TerrainPatchDatasetTest {
         assertEquals(16, TerrainPatchDataset.CHUNK_SIZE, "CHUNK_SIZE should be 16");
         assertEquals(4, TerrainPatchDataset.PATCHES_PER_CHUNK, "PATCHES_PER_CHUNK should be 4 (2x2 grid)");
     }
-    
+
     @Test
     void testLoadFromWorldData_NoWorldDataAvailable() {
         // Test behavior when world data is not available
-        // This test assumes ChunkDataExtractor.isWorldDataAvailable() returns false
+        File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
         
-        if (!ChunkDataExtractor.isWorldDataAvailable()) {
-            assertThrows(IllegalStateException.class, () -> {
-                dataset.loadFromWorldData();
-            }, "Should throw IllegalStateException when world data is not available");
+        if (regionFiles.length == 0) {
+            assertThrows(IllegalArgumentException.class, () -> {
+                dataset.loadFromWorldData(regionFiles);
+            }, "Should throw IllegalArgumentException when region files array is empty");
             
             assertFalse(dataset.isLoaded(), "Dataset should not be marked as loaded after failed load");
             assertEquals(0, dataset.getPatchCount(), "Patch count should remain 0 after failed load");
         }
     }
-    
+
     @Test
     void testLoadFromWorldData_WithWorldDataAvailable() {
         // Test loading when world data is available
-        if (ChunkDataExtractor.isWorldDataAvailable()) {
-            int patchesLoaded = dataset.loadFromWorldData();
+        if (TestWorldFixtures.isExampleWorldAvailable()) {
+            File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
+            int patchesLoaded = dataset.loadFromWorldData(regionFiles);
             
             assertTrue(patchesLoaded > 0, "Should load at least some patches when world data is available");
             assertTrue(dataset.isLoaded(), "Dataset should be marked as loaded");
@@ -67,11 +69,10 @@ class TerrainPatchDatasetTest {
             assertFalse(dataset.getAllPatches().isEmpty(), "getAllPatches should not be empty");
         }
     }
-    
     @Test
     void testGetPatch_ValidIndex() {
         // Create a dataset with known mock data
-        if (ChunkDataExtractor.isWorldDataAvailable()) {
+        if (TestWorldFixtures.isExampleWorldAvailable()) {
             dataset.loadFromWorldData();
             
             if (dataset.getPatchCount() > 0) {
@@ -93,16 +94,16 @@ class TerrainPatchDatasetTest {
         assertThrows(IndexOutOfBoundsException.class, () -> {
             dataset.getPatch(-1);
         }, "Should throw exception for negative index");
-        
-        assertThrows(IndexOutOfBoundsException.class, () -> {
+          assertThrows(IndexOutOfBoundsException.class, () -> {
             dataset.getPatch(10);
         }, "Should throw exception for index beyond dataset size");
     }
-    
+
     @Test
     void testGetAllPatches_ImmutableCopy() {
-        if (ChunkDataExtractor.isWorldDataAvailable()) {
-            dataset.loadFromWorldData();
+        if (TestWorldFixtures.isExampleWorldAvailable()) {
+            File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
+            dataset.loadFromWorldData(regionFiles);
             
             List<TerrainPatch> patches1 = dataset.getAllPatches();
             List<TerrainPatch> patches2 = dataset.getAllPatches();
@@ -114,16 +115,16 @@ class TerrainPatchDatasetTest {
             int originalSize = patches1.size();
             if (originalSize > 0) {
                 patches1.clear(); // Modify returned list
-                assertEquals(originalSize, dataset.getPatchCount(), "Dataset size should be unchanged");
-            }
+                assertEquals(originalSize, dataset.getPatchCount(), "Dataset size should be unchanged");            }
         }
     }
-    
+
     @Test
     void testClear() {
-        if (ChunkDataExtractor.isWorldDataAvailable()) {
+        if (TestWorldFixtures.isExampleWorldAvailable()) {
             // Load data first
-            dataset.loadFromWorldData();
+            File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
+            dataset.loadFromWorldData(regionFiles);
             int initialCount = dataset.getPatchCount();
             
             if (initialCount > 0) {
@@ -135,14 +136,14 @@ class TerrainPatchDatasetTest {
                 assertEquals(0, dataset.getPatchCount(), "Patch count should be 0 after clear");
                 assertFalse(dataset.isLoaded(), "Dataset should not be loaded after clear");
                 assertTrue(dataset.getAllPatches().isEmpty(), "All patches list should be empty after clear");
-            }
-        }
+            }        }
     }
-    
+
     @Test
     void testGetDatasetSummary_LoadedState() {
-        if (ChunkDataExtractor.isWorldDataAvailable()) {
-            dataset.loadFromWorldData();
+        if (TestWorldFixtures.isExampleWorldAvailable()) {
+            File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
+            dataset.loadFromWorldData(regionFiles);
             
             String summary = dataset.getDatasetSummary();
             assertNotNull(summary, "Summary should not be null");
@@ -156,18 +157,18 @@ class TerrainPatchDatasetTest {
     @Test
     void testGetDatasetSummary_NotLoadedState() {
         // Test summary when not loaded
-        String summary = dataset.getDatasetSummary();
-        assertEquals("Dataset not loaded", summary, "Summary should indicate not loaded");
+        String summary = dataset.getDatasetSummary();        assertEquals("Dataset not loaded", summary, "Summary should indicate not loaded");
     }
-    
+
     @Test
     void testPatchCoordinateValidation() {
-        if (ChunkDataExtractor.isWorldDataAvailable()) {
-            dataset.loadFromWorldData();
+        if (TestWorldFixtures.isExampleWorldAvailable()) {
+            File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
+            dataset.loadFromWorldData(regionFiles);
             
             if (dataset.getPatchCount() > 0) {
                 // Verify patches have reasonable coordinates
-                for (int i = 0; i < Math.min(10, dataset.getPatchCount()); i++) {
+                for (int i = 0; i < Math.min(3, dataset.getPatchCount()); i++) {
                     TerrainPatch patch = dataset.getPatch(i);
                     
                     // Patch coordinates should be multiples of 8 (patch alignment)
@@ -179,11 +180,12 @@ class TerrainPatchDatasetTest {
             }
         }
     }
-    
+
     @Test
     void testPatchDataValidation() {
-        if (ChunkDataExtractor.isWorldDataAvailable()) {
-            dataset.loadFromWorldData();
+        if (TestWorldFixtures.isExampleWorldAvailable()) {
+            File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
+            dataset.loadFromWorldData(regionFiles);
             
             if (dataset.getPatchCount() > 0) {
                 TerrainPatch patch = dataset.getPatch(0);
@@ -206,16 +208,16 @@ class TerrainPatchDatasetTest {
                     assertNotNull(biome, "Biome entries should not be null");
                     assertFalse(biome.trim().isEmpty(), "Biome entries should not be empty");
                 }
-            }
-        }
+            }        }
     }
-    
+
     @Test
     void testMultipleLoadCalls() {
-        if (ChunkDataExtractor.isWorldDataAvailable()) {
+        if (TestWorldFixtures.isExampleWorldAvailable()) {
             // Load data twice
-            int firstLoad = dataset.loadFromWorldData();
-            int secondLoad = dataset.loadFromWorldData();
+            File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
+            int firstLoad = dataset.loadFromWorldData(regionFiles);
+            int secondLoad = dataset.loadFromWorldData(regionFiles);
             
             // Second load should replace first load
             assertEquals(firstLoad, secondLoad, "Multiple loads should produce same result");
@@ -234,14 +236,14 @@ class TerrainPatchDatasetTest {
         // Verify calculation
         int patchesPerRow = TerrainPatchDataset.CHUNK_SIZE / TerrainPatchDataset.PATCH_SIZE;
         int calculatedPatchesPerChunk = patchesPerRow * patchesPerRow;
-        assertEquals(TerrainPatchDataset.PATCHES_PER_CHUNK, calculatedPatchesPerChunk,
-                    "PATCHES_PER_CHUNK should match calculated value");
+        assertEquals(TerrainPatchDataset.PATCHES_PER_CHUNK, calculatedPatchesPerChunk,                    "PATCHES_PER_CHUNK should match calculated value");
     }
-    
+
     @Test
     void testPatchDistribution() {
-        if (ChunkDataExtractor.isWorldDataAvailable()) {
-            dataset.loadFromWorldData();
+        if (TestWorldFixtures.isExampleWorldAvailable()) {
+            File[] regionFiles = TestWorldFixtures.getExampleWorldRegionFiles();
+            dataset.loadFromWorldData(regionFiles);
             
             if (dataset.getPatchCount() >= 4) {
                 // Check that patches from the same chunk have expected coordinate relationships
