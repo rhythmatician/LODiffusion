@@ -28,9 +28,10 @@ public class ChunkDataExtractorTest {
     void setUp() throws IOException {
         // Create a temporary world structure for testing
         testWorldPath = tempDir.resolve("test-world");
-        testRegionPath = testWorldPath.resolve("region");
-        Files.createDirectories(testRegionPath);
-    }    @Test
+        testRegionPath = testWorldPath.resolve("region");        Files.createDirectories(testRegionPath);
+    }
+
+    @Test
     void testIsWorldDataAvailable_WithValidWorld() throws IOException {
         // Create mock region file
         Files.createFile(testRegionPath.resolve("r.0.0.mca"));
@@ -54,8 +55,9 @@ public class ChunkDataExtractorTest {
         // Create multiple mock region files
         Files.createFile(testRegionPath.resolve("r.0.0.mca"));
         Files.createFile(testRegionPath.resolve("r.1.0.mca"));
-        Files.createFile(testRegionPath.resolve("r.0.1.mca"));
-        Files.createFile(testRegionPath.resolve("not_a_region.txt")); // Should be ignored        // Test with real world data
+        Files.createFile(testRegionPath.resolve("r.0.1.mca"));        Files.createFile(testRegionPath.resolve("not_a_region.txt")); // Should be ignored
+
+        // Test with real world data
         File[] regionFiles = TestWorldFixtures.getTestDataRegionFiles();
         assertNotNull(regionFiles, "Region files array should not be null");
 
@@ -64,10 +66,11 @@ public class ChunkDataExtractorTest {
             assertTrue(regionFiles.length > 0, "Should find region files in test-data");
             for (File file : regionFiles) {
                 assertTrue(file.getName().endsWith(".mca"),
-                    "All returned files should be .mca files: " + file.getName());
-            }
+                    "All returned files should be .mca files: " + file.getName());            }
         }
-    }    @Test
+    }
+
+    @Test
     void testGetAvailableRegionFiles_WithNoRegions() {
         // Test when no region files exist (empty directory case is covered by isWorldDataAvailable)
         File[] regionFiles = TestWorldFixtures.getTestDataRegionFiles();
@@ -153,8 +156,9 @@ public class ChunkDataExtractorTest {
         }, "Should throw exception for local chunk X >= 32");
 
         assertThrows(IllegalArgumentException.class, () -> {
-            ChunkDataExtractor.getWorldChunkCoordinates(0, 0, 0, 32);
-        }, "Should throw exception for local chunk Z >= 32");        assertThrows(IllegalArgumentException.class, () -> {
+            ChunkDataExtractor.getWorldChunkCoordinates(0, 0, 0, 32);        }, "Should throw exception for local chunk Z >= 32");
+
+        assertThrows(IllegalArgumentException.class, () -> {
             ChunkDataExtractor.getWorldChunkCoordinates(0, 0, 100, 15);
         }, "Should throw exception for invalid local coordinates");
     }
@@ -175,9 +179,10 @@ public class ChunkDataExtractorTest {
         File testFile = new File("non-existent-directory/r.0.0.mca");
 
         assertThrows(IOException.class, () -> {
-            ChunkDataExtractor.extractBiomesFromChunk(testFile, 0, 0);
-        }, "Should throw IOException for missing region file");
-    }    @Test
+            ChunkDataExtractor.extractBiomesFromChunk(testFile, 0, 0);        }, "Should throw IOException for missing region file");
+    }
+
+    @Test
     void testGetWorldDataSummary_WithData() {
         // Test world data summary generation
         String summary = TestWorldFixtures.getWorldDataSummary();
@@ -201,9 +206,10 @@ public class ChunkDataExtractorTest {
         // This test verifies the behavior when no world data is available
         // Since we can't guarantee the state of example-world, we test the logic indirectly
         String summary = TestWorldFixtures.getWorldDataSummary();
-        assertNotNull(summary, "Summary should never be null");
-        assertTrue(summary.length() > 0, "Summary should not be empty");
-    }    @Test
+        assertNotNull(summary, "Summary should never be null");        assertTrue(summary.length() > 0, "Summary should not be empty");
+    }
+
+    @Test
     void testRegionFileExtensionFiltering() {
         // Verify that only .mca files are considered region files
         File[] regionFiles = TestWorldFixtures.getTestDataRegionFiles();

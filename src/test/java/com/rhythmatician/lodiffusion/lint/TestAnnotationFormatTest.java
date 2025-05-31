@@ -9,7 +9,9 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-class TestAnnotationFormatTest {    @Test
+class TestAnnotationFormatTest {
+    
+    @Test
     void testAllTestAnnotationsAreOnTheirOwnLine() throws IOException {
         Path root = Paths.get("src/test/java");
         try (Stream<Path> files = Files.walk(root)) {

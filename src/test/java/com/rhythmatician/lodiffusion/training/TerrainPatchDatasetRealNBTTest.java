@@ -19,12 +19,14 @@ import static org.junit.jupiter.api.Assertions.*;
  * Validates that mock data creation is replaced with actual NBT extraction.
  */
 @Tag("ci")
-public class TerrainPatchDatasetRealNBTTest {
+public class TerrainPatchDatasetRealNBTTest {    private TerrainPatchDataset dataset;
 
-    private TerrainPatchDataset dataset;    @BeforeEach
+    @BeforeEach
     void setUp() {
         dataset = new TerrainPatchDataset();
-    }    @Test
+    }
+
+    @Test
     @DisplayName("Dataset should use real NBT extraction when world data available")
     void testRealNBTIntegration() {
         // Skip test if no world data available
@@ -77,7 +79,9 @@ public class TerrainPatchDatasetRealNBTTest {
                 hasProperBiomes = true;
             }
         }        assertTrue(hasProperBiomes, "Should have proper Minecraft biome identifiers");
-    }    @Test
+    }
+
+    @Test
     @DisplayName("Patch extraction should split 16x16 chunks into 2x2 grid of 8x8 patches")
     void testPatchExtractionFromRealChunk() throws IOException {
         // Skip test if no world data available
@@ -107,7 +111,9 @@ public class TerrainPatchDatasetRealNBTTest {
             System.out.println("- Heightmap: 16x16 with heights " +
                 chunkHeightmap[0][0] + " to " + chunkHeightmap[15][15]);            System.out.println("- Biomes: " + chunkBiomes[0] + " (example)");
         }
-    }    @Test
+    }
+
+    @Test
     @DisplayName("Dataset should handle missing or corrupt chunks gracefully")
     void testErrorHandling() {
         // This test should always pass, even without world data
@@ -122,10 +128,11 @@ public class TerrainPatchDatasetRealNBTTest {
             assertDoesNotThrow(() -> {
                 int patches = dataset.loadFromWorldData(regionFiles);
                 // Should complete without throwing, even if some chunks fail
-                assertTrue(patches >= 0, "Patch count should be non-negative");
-            });
+                assertTrue(patches >= 0, "Patch count should be non-negative");            });
         }
-    }    @Test
+    }
+
+    @Test
     @DisplayName("Debug information should be comprehensive")
     void testDebuggingOutput() {
         // This test verifies our debugging output is helpful

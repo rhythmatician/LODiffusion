@@ -65,11 +65,12 @@ class TerrainPatchDatasetTest {
             assertEquals(patchesLoaded, dataset.getPatchCount(), "Patch count should match loaded count");
 
             // Verify patches are actually created
-            assertTrue(dataset.getPatchCount() > 0, "Should have patches after loading");
-            assertNotNull(dataset.getAllPatches(), "getAllPatches should not return null");
+            assertTrue(dataset.getPatchCount() > 0, "Should have patches after loading");            assertNotNull(dataset.getAllPatches(), "getAllPatches should not return null");
             assertFalse(dataset.getAllPatches().isEmpty(), "getAllPatches should not be empty");
         }
-    }    @Test
+    }
+
+    @Test
     void testGetPatch_ValidIndex() {
         // Use cached dataset for faster test execution
         if (TerrainPatchDatasetFixture.isCachedDatasetAvailable()) {
@@ -89,15 +90,16 @@ class TerrainPatchDatasetTest {
         // Test invalid indices on empty dataset
         assertThrows(IndexOutOfBoundsException.class, () -> {
             dataset.getPatch(0);
-        }, "Should throw exception for index 0 on empty dataset");
-
-        assertThrows(IndexOutOfBoundsException.class, () -> {
+        }, "Should throw exception for index 0 on empty dataset");        assertThrows(IndexOutOfBoundsException.class, () -> {
             dataset.getPatch(-1);
         }, "Should throw exception for negative index");
-          assertThrows(IndexOutOfBoundsException.class, () -> {
+
+        assertThrows(IndexOutOfBoundsException.class, () -> {
             dataset.getPatch(10);
         }, "Should throw exception for index beyond dataset size");
-    }    @Test
+    }
+
+    @Test
     void testGetAllPatches_ImmutableCopy() {
         // Use fresh dataset since we need to call methods on the dataset object
         TerrainPatchDataset testDataset = TerrainPatchDatasetFixture.getFreshDataset();
@@ -112,10 +114,11 @@ class TerrainPatchDatasetTest {
             int originalSize = patches1.size();
             if (originalSize > 0) {
                 patches1.clear(); // Modify returned list
-                assertEquals(originalSize, testDataset.getPatchCount(), "Dataset size should be unchanged");
-            }
+                assertEquals(originalSize, testDataset.getPatchCount(), "Dataset size should be unchanged");            }
         }
-    }    @Test
+    }
+
+    @Test
     void testClear() {
         // Use fresh dataset since we need to modify it (clear)
         TerrainPatchDataset testDataset = TerrainPatchDatasetFixture.getFreshDataset();
@@ -130,10 +133,11 @@ class TerrainPatchDatasetTest {
                 
                 assertEquals(0, testDataset.getPatchCount(), "Patch count should be 0 after clear");
                 assertFalse(testDataset.isLoaded(), "Dataset should not be loaded after clear");
-                assertTrue(testDataset.getAllPatches().isEmpty(), "All patches list should be empty after clear");
-            }
+                assertTrue(testDataset.getAllPatches().isEmpty(), "All patches list should be empty after clear");            }
         }
-    }    @Test
+    }
+
+    @Test
     void testGetDatasetSummary_LoadedState() {
         // Use fresh dataset since we need to call methods on the dataset object
         TerrainPatchDataset testDataset = TerrainPatchDatasetFixture.getFreshDataset();
@@ -148,10 +152,12 @@ class TerrainPatchDatasetTest {
     }
 
     @Test
-    void testGetDatasetSummary_NotLoadedState() {
-        // Test summary when not loaded
-        String summary = dataset.getDatasetSummary();        assertEquals("Dataset not loaded", summary, "Summary should indicate not loaded");
-    }    @Test
+    void testGetDatasetSummary_NotLoadedState() {        // Test summary when not loaded
+        String summary = dataset.getDatasetSummary();
+        assertEquals("Dataset not loaded", summary, "Summary should indicate not loaded");
+    }
+
+    @Test
     void testPatchCoordinateValidation() {
         // Use cached dataset for faster test execution
         if (TerrainPatchDatasetFixture.isCachedDatasetAvailable()) {
@@ -166,11 +172,12 @@ class TerrainPatchDatasetTest {
                     assertTrue(patch.getWorldX() % 8 == 0,
                               "Patch world X should be aligned to 8-block boundaries");
                     assertTrue(patch.getWorldZ() % 8 == 0,
-                              "Patch world Z should be aligned to 8-block boundaries");
-                }
+                              "Patch world Z should be aligned to 8-block boundaries");                }
             }
         }
-    }    @Test
+    }
+
+    @Test
     void testPatchDataValidation() {
         // Use cached dataset for faster test execution
         if (TerrainPatchDatasetFixture.isCachedDatasetAvailable()) {
@@ -199,7 +206,9 @@ class TerrainPatchDatasetTest {
                 }
             }
         }
-    }    @Test
+    }
+
+    @Test
     void testMultipleLoadCalls() {
         // Use fresh dataset since we need to call loadFromWorldData multiple times
         if (TestWorldFixtures.isTestDataAvailable()) {
@@ -226,9 +235,11 @@ class TerrainPatchDatasetTest {
 
         // Verify calculation
         int patchesPerRow = TerrainPatchDataset.CHUNK_SIZE / TerrainPatchDataset.PATCH_SIZE;
-        int calculatedPatchesPerChunk = patchesPerRow * patchesPerRow;
-        assertEquals(TerrainPatchDataset.PATCHES_PER_CHUNK, calculatedPatchesPerChunk,                    "PATCHES_PER_CHUNK should match calculated value");
-    }    @Test
+        int calculatedPatchesPerChunk = patchesPerRow * patchesPerRow;        assertEquals(TerrainPatchDataset.PATCHES_PER_CHUNK, calculatedPatchesPerChunk,
+                    "PATCHES_PER_CHUNK should match calculated value");
+    }
+
+    @Test
     void testPatchDistribution() {
         // Use cached dataset for faster test execution
         if (TerrainPatchDatasetFixture.isCachedDatasetAvailable()) {
