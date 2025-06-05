@@ -1,3 +1,6 @@
+
+![LODiffusionLogo](https://github.com/user-attachments/assets/ac6158c9-06ba-4874-9c14-1e80ef2135d5)
+
 # LODiffusion: AI-Powered LOD Terrain Generation for Minecraft
 
 ![CI](https://github.com/rhythmatician/LODiffusion/actions/workflows/ci.yml/badge.svg)
