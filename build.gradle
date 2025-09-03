@@ -66,6 +66,14 @@ dependencies {
 
 	// Kotlin standard library - required by Hephaistos
 	implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.10'
+	
+	// DJL (Deep Java Library) for ONNX inference
+	// TODO: Re-enable once DJL dependency issues are resolved
+	// implementation platform('ai.djl:bom:0.29.0')
+	// implementation 'ai.djl:api'
+	// implementation 'ai.djl.onnxruntime:onnxruntime-engine'
+	// Platform-specific ONNX runtime (auto-detected at runtime)
+	// runtimeOnly 'ai.djl.onnxruntime:onnxruntime-native-auto:1.18.0'
 }
 
 processResources {
