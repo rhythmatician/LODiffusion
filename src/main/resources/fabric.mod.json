@@ -2,7 +2,6 @@
   "schemaVersion": 1,
   "id": "lodiffusion",
   "version": "${version}",
-
   "name": "LODiffusion",
   "description": "AI-powered terrain diffusion for enhanced Level of Detail generation in Minecraft",
   "authors": [
@@ -12,10 +11,8 @@
     "homepage": "https://github.com/rhythmatician/lodiffusion",
     "sources": "https://github.com/rhythmatician/lodiffusion"
   },
-
   "license": "MIT",
   "icon": "assets/lodiffusion/icon.png",
-
   "environment": "*",
   "entrypoints": {
     "main": [
@@ -24,7 +21,8 @@
   },
   "mixins": [
     "lodiffusion.mixins.json"
-  ],  "depends": {
+  ],
+  "depends": {
     "fabricloader": ">=0.16.10",
     "minecraft": "~1.21.4",
     "java": ">=21",
