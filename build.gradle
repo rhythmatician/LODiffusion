@@ -28,6 +28,11 @@ repositories {
 		name = 'JitPack'
 		url = 'https://jitpack.io' 
 	}
+	// Add DJL snapshot repository for latest versions
+	maven {
+		name = 'DJL Snapshot'
+		url = 'https://oss.sonatype.org/content/repositories/snapshots/'
+	}
 }
 
 loom {
@@ -68,12 +73,14 @@ dependencies {
 	implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.10'
 	
 	// DJL (Deep Java Library) for ONNX inference
-	// TODO: Re-enable once DJL dependency issues are resolved
-	// implementation platform('ai.djl:bom:0.29.0')
-	// implementation 'ai.djl:api'
-	// implementation 'ai.djl.onnxruntime:onnxruntime-engine'
-	// Platform-specific ONNX runtime (auto-detected at runtime)
-	// runtimeOnly 'ai.djl.onnxruntime:onnxruntime-native-auto:1.18.0'
+	// Force explicit versions to avoid Fabric Loom classpath issues
+	implementation 'ai.djl:api:0.27.0'
+	implementation 'ai.djl.onnxruntime:onnxruntime-engine:0.27.0'
+	implementation 'com.microsoft.onnxruntime:onnxruntime:1.17.1'
+	
+	// Explicitly add to compile classpath to work around Fabric Loom issues
+	compileOnly 'ai.djl:api:0.27.0'
+	compileOnly 'ai.djl.onnxruntime:onnxruntime-engine:0.27.0'
 }
 
 processResources {
