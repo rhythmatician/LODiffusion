@@ -358,6 +358,309 @@ public class OnnxTerrainGenerator implements AutoCloseable {
         return modelPath;
     }
     
+    // ================================================================================================
+    // DATA PREPROCESSING HELPER METHODS
+    // ================================================================================================
+    
+    /**
+     * Create a parent heightmap from Minecraft chunk data.
+     * Converts block states to binary heightmap format expected by the model.
+     * 
+     * @param chunkBlocks 3D array of block IDs [16][384][16] (y-axis extended for full height)
+     * @param startX Starting X coordinate in the chunk
+     * @param startY Starting Y coordinate in the chunk  
+     * @param startZ Starting Z coordinate in the chunk
+     * @return Parent heightmap [8][8][8] with binary values (0=air, 1=solid)
+     */
+    public static float[][][] createParentHeightmap(int[][][] chunkBlocks, int startX, int startY, int startZ) {
+        float[][][] heightmap = new float[8][8][8];
+        
+        for (int x = 0; x < 8; x++) {
+            for (int y = 0; y < 8; y++) {
+                for (int z = 0; z < 8; z++) {
+                    int chunkX = Math.min(15, startX + x);
+                    int chunkY = Math.min(383, startY + y);
+                    int chunkZ = Math.min(15, startZ + z);
+                    
+                    // Convert block ID to binary (0 = air, non-zero = solid)
+                    heightmap[x][y][z] = (chunkBlocks[chunkX][chunkY][chunkZ] == 0) ? 0.0f : 1.0f;
+                }
+            }
+        }
+        
+        return heightmap;
+    }
+    
+    /**
+     * Create a simplified parent heightmap from height values only.
+     * Useful for terrain generation where only surface height is known.
+     * 
+     * @param heightValues 2D array of height values [8][8]
+     * @param baseY Base Y coordinate to start from
+     * @return Parent heightmap [8][8][8] with solid blocks up to height
+     */
+    public static float[][][] createParentHeightmapFromHeights(int[][] heightValues, int baseY) {
+        if (heightValues == null || heightValues.length != 8) {
+            throw new IllegalArgumentException("heightValues must be 8x8 array");
+        }
+        for (int i = 0; i < 8; i++) {
+            if (heightValues[i] == null || heightValues[i].length != 8) {
+                throw new IllegalArgumentException("heightValues must be 8x8 array");
+            }
+        }
+        
+        float[][][] heightmap = new float[8][8][8];
+        
+        for (int x = 0; x < 8; x++) {
+            for (int z = 0; z < 8; z++) {
+                int surfaceHeight = heightValues[x][z];
+                
+                for (int y = 0; y < 8; y++) {
+                    int worldY = baseY + y;
+                    heightmap[x][y][z] = (worldY <= surfaceHeight) ? 1.0f : 0.0f;
+                }
+            }
+        }
+        
+        return heightmap;
+    }
+    
+    /**
+     * Create one-hot encoded biome data from biome IDs.
+     * Converts Minecraft biome IDs to the one-hot format expected by the model.
+     * 
+     * @param biomeIds 2D array of biome IDs [8][8]
+     * @return One-hot biome data [256][8][8] (supports up to 256 biomes)
+     */
+    public static float[][][] createBiomeData(int[][] biomeIds) {
+        float[][][] biomeData = new float[256][8][8];
+        
+        for (int x = 0; x < 8; x++) {
+            for (int z = 0; z < 8; z++) {
+                int biomeId = Math.max(0, Math.min(255, biomeIds[x][z])); // Clamp to [0, 255]
+                
+                // Set one-hot encoding
+                for (int b = 0; b < 256; b++) {
+                    biomeData[b][x][z] = (b == biomeId) ? 1.0f : 0.0f;
+                }
+            }
+        }
+        
+        return biomeData;
+    }
+    
+    /**
+     * Create uniform biome data for a single biome type.
+     * Useful for testing or when generating terrain with a single biome.
+     * 
+     * @param biomeId The biome ID to use (0-255)
+     * @return One-hot biome data [256][8][8] with the specified biome
+     */
+    public static float[][][] createUniformBiomeData(int biomeId) {
+        int[][] uniformBiomes = new int[8][8];
+        int clampedBiomeId = Math.max(0, Math.min(255, biomeId));
+        
+        for (int x = 0; x < 8; x++) {
+            for (int z = 0; z < 8; z++) {
+                uniformBiomes[x][z] = clampedBiomeId;
+            }
+        }
+        
+        return createBiomeData(uniformBiomes);
+    }
+    
+    /**
+     * Extract block predictions from model output.
+     * Converts the raw block logits to the most likely block ID for each position.
+     * 
+     * @param blockLogits Raw model output [1104][16][16][16]
+     * @return Block IDs [16][16][16] with the most likely block at each position
+     */
+    public static int[][][] extractBlockPredictions(float[][][][] blockLogits) {
+        int[][][] blocks = new int[16][16][16];
+        
+        for (int x = 0; x < 16; x++) {
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    int bestBlock = 0;
+                    float bestLogit = blockLogits[0][x][y][z];
+                    
+                    // Find block type with highest logit
+                    for (int b = 1; b < 1104; b++) {
+                        if (blockLogits[b][x][y][z] > bestLogit) {
+                            bestLogit = blockLogits[b][x][y][z];
+                            bestBlock = b;
+                        }
+                    }
+                    
+                    blocks[x][y][z] = bestBlock;
+                }
+            }
+        }
+        
+        return blocks;
+    }
+    
+    /**
+     * Apply air mask to block predictions.
+     * Sets blocks to air (ID 0) where the air mask indicates air should be present.
+     * 
+     * @param blocks Block predictions [16][16][16]
+     * @param airMask Air mask [1][16][16][16] (values > 0.5 indicate solid, <= 0.5 indicate air)
+     * @return Filtered block predictions with air mask applied
+     */
+    public static int[][][] applyAirMask(int[][][] blocks, float[][][][] airMask) {
+        int[][][] maskedBlocks = new int[16][16][16];
+        
+        for (int x = 0; x < 16; x++) {
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    if (airMask[0][x][y][z] > 0.5f) {
+                        // Solid area - keep the predicted block
+                        maskedBlocks[x][y][z] = blocks[x][y][z];
+                    } else {
+                        // Air area - force to air block
+                        maskedBlocks[x][y][z] = 0; // Air block ID
+                    }
+                }
+            }
+        }
+        
+        return maskedBlocks;
+    }
+    
+    /**
+     * Generate complete terrain from parent data.
+     * Convenience method that handles all preprocessing and postprocessing.
+     * 
+     * @param parentBlocks Parent block data [8][8][8] as block IDs
+     * @param biomeIds Biome IDs [8][8]
+     * @param chunkX Chunk X coordinate
+     * @param chunkZ Chunk Z coordinate
+     * @return Final block predictions [16][16][16] ready for placement
+     */
+    public int[][][] generateCompleteTerrainFromBlocks(int[][][] parentBlocks, int[][] biomeIds, float chunkX, float chunkZ) {
+        // Convert parent blocks to heightmap
+        float[][][] parentHeightmap = new float[8][8][8];
+        for (int x = 0; x < 8; x++) {
+            for (int y = 0; y < 8; y++) {
+                for (int z = 0; z < 8; z++) {
+                    parentHeightmap[x][y][z] = (parentBlocks[x][y][z] == 0) ? 0.0f : 1.0f;
+                }
+            }
+        }
+        
+        // Convert biomes to one-hot encoding
+        float[][][] biomeData = createBiomeData(biomeIds);
+        
+        // Generate terrain using the model
+        TerrainGenerationResult result = generateTerrain(
+            parentHeightmap, 
+            biomeData, 
+            0.0f, // Timestep for inference
+            new float[]{chunkX, chunkZ}
+        );
+        
+        // Extract final block predictions
+        int[][][] blockPredictions = extractBlockPredictions(result.blockLogits);
+        return applyAirMask(blockPredictions, result.airMask);
+    }
+    
+    /**
+     * Generate terrain from height data and biomes.
+     * Simplified interface for height-based terrain generation.
+     * 
+     * @param heightValues Surface heights [8][8]
+     * @param biomeIds Biome IDs [8][8]
+     * @param baseY Base Y coordinate for height calculation
+     * @param chunkX Chunk X coordinate
+     * @param chunkZ Chunk Z coordinate
+     * @return Final block predictions [16][16][16] ready for placement
+     */
+    public int[][][] generateTerrainFromHeights(int[][] heightValues, int[][] biomeIds, int baseY, float chunkX, float chunkZ) {
+        // Create parent heightmap from heights
+        float[][][] parentHeightmap = createParentHeightmapFromHeights(heightValues, baseY);
+        
+        // Convert biomes to one-hot encoding
+        float[][][] biomeData = createBiomeData(biomeIds);
+        
+        // Generate terrain using the model
+        TerrainGenerationResult result = generateTerrain(
+            parentHeightmap, 
+            biomeData, 
+            0.0f, // Timestep for inference
+            new float[]{chunkX, chunkZ}
+        );
+        
+        // Extract final block predictions
+        int[][][] blockPredictions = extractBlockPredictions(result.blockLogits);
+        return applyAirMask(blockPredictions, result.airMask);
+    }
+    
+    /**
+     * Validate input data shapes and ranges.
+     * Throws IllegalArgumentException if data doesn't meet LODiffusion v1 contract.
+     * 
+     * @param parentHeightmap Parent heightmap to validate
+     * @param biomeData Biome data to validate
+     * @param chunkPos Chunk position to validate
+     */
+    public static void validateInputData(float[][][] parentHeightmap, float[][][] biomeData, float[] chunkPos) {
+        // Validate parent heightmap shape
+        if (parentHeightmap.length != 8 || parentHeightmap[0].length != 8 || parentHeightmap[0][0].length != 8) {
+            throw new IllegalArgumentException("Parent heightmap must be [8][8][8], got [" + 
+                parentHeightmap.length + "][" + parentHeightmap[0].length + "][" + parentHeightmap[0][0].length + "]");
+        }
+        
+        // Validate biome data shape
+        if (biomeData.length != 256 || biomeData[0].length != 8 || biomeData[0][0].length != 8) {
+            throw new IllegalArgumentException("Biome data must be [256][8][8], got [" + 
+                biomeData.length + "][" + biomeData[0].length + "][" + biomeData[0][0].length + "]");
+        }
+        
+        // Validate chunk position
+        if (chunkPos.length < 2) {
+            throw new IllegalArgumentException("Chunk position must have at least 2 elements, got " + chunkPos.length);
+        }
+        
+        // Validate parent heightmap values
+        for (int x = 0; x < 8; x++) {
+            for (int y = 0; y < 8; y++) {
+                for (int z = 0; z < 8; z++) {
+                    float value = parentHeightmap[x][y][z];
+                    if (value < 0.0f || value > 1.0f) {
+                        throw new IllegalArgumentException("Parent heightmap values must be in [0,1] range, found " + value + " at [" + x + "][" + y + "][" + z + "]");
+                    }
+                }
+            }
+        }
+        
+        // Validate biome data is one-hot encoded
+        for (int x = 0; x < 8; x++) {
+            for (int z = 0; z < 8; z++) {
+                float sum = 0.0f;
+                int activeCount = 0;
+                
+                for (int b = 0; b < 256; b++) {
+                    float value = biomeData[b][x][z];
+                    if (value < 0.0f || value > 1.0f) {
+                        throw new IllegalArgumentException("Biome data values must be in [0,1] range, found " + value + " at [" + b + "][" + x + "][" + z + "]");
+                    }
+                    sum += value;
+                    if (value > 0.5f) activeCount++;
+                }
+                
+                if (Math.abs(sum - 1.0f) > 0.001f) {
+                    throw new IllegalArgumentException("Biome data must be one-hot encoded (sum=1.0), found sum=" + sum + " at position [" + x + "][" + z + "]");
+                }
+                
+                if (activeCount != 1) {
+                    throw new IllegalArgumentException("Biome data must have exactly one active value per position, found " + activeCount + " at [" + x + "][" + z + "]");
+                }
+            }
+        }
+    }
+    
     @Override
     public void close() {
         try {
