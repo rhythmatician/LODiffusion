@@ -30,6 +30,11 @@ import ai.djl.translate.TranslatorContext;
 public class OnnxTerrainGenerator implements AutoCloseable {
     
     private static final Logger LOGGER = Logger.getLogger(OnnxTerrainGenerator.class.getName());
+    
+    // LODiffusion v1 contract constants
+    public static final int MAX_BLOCK_TYPES = 1104;
+    public static final int INPUT_SIZE = 8;
+    public static final int OUTPUT_SIZE = 16;
     private static final String DEFAULT_MODEL_PATH = "artifacts/quick_test/model.onnx";
     
     private boolean available = false;
@@ -73,6 +78,14 @@ public class OnnxTerrainGenerator implements AutoCloseable {
      */
     private static class TerrainTranslator implements Translator<TerrainInput, TerrainGenerationResult> {
         
+        /**
+         * Prepare input arrays for ONNX model.
+         * Input order MUST match the trained model's signature:
+         * 1. x_parent: [1, 8, 8, 8, 1] - Parent chunk heightmap
+         * 2. x_biomes: [1, 256, 8, 8, 1] - One-hot biome encoding  
+         * 3. x_height: [1, 1, 8, 8, 1] - Height channel from parent
+         * 4. x_lod: [1, 1] - LOD level (always 1 for 8->16 upsampling)
+         */
         @Override
         public NDList processInput(TranslatorContext ctx, TerrainInput input) {
             NDManager manager = ctx.getNDManager();
@@ -105,10 +118,11 @@ public class OnnxTerrainGenerator implements AutoCloseable {
             
             // x_height: [1, 1, 8, 8, 1] - extract height from parent heightmap (use top layer)
             float[] heightFlat = new float[8 * 8];
+            int TOP_LAYER_INDEX = input.parentHeightmap[0].length - 1;
             idx = 0;
             for (int x = 0; x < 8; x++) {
                 for (int z = 0; z < 8; z++) {
-                    heightFlat[idx++] = input.parentHeightmap[x][7][z]; // Use top layer as height
+                    heightFlat[idx++] = input.parentHeightmap[x][TOP_LAYER_INDEX][z]; // Use top layer as height
                 }
             }
             NDArray heightArray = manager.create(heightFlat).reshape(new Shape(1, 1, 8, 8, 1));
@@ -204,7 +218,7 @@ public class OnnxTerrainGenerator implements AutoCloseable {
             
             // Load ONNX model with DJL
             model = Model.newInstance("lodiffusion-terrain-generator");
-            model.load(path, "model");
+            model.load(path);
             
             // Create predictor with our translator
             predictor = model.newPredictor(new TerrainTranslator());
@@ -218,7 +232,7 @@ public class OnnxTerrainGenerator implements AutoCloseable {
         } catch (Exception e) {
             available = false;
             LOGGER.warning("Failed to load ONNX model with DJL: " + e.getMessage() + " - falling back to stub implementation");
-            LOGGER.fine("Stack trace: " + java.util.Arrays.toString(e.getStackTrace()));
+            LOGGER.fine("Exception details: " + e.getClass().getSimpleName() + " at " + (e.getStackTrace().length > 0 ? e.getStackTrace()[0] : "unknown location"));
             // Don't throw - fall back to stub implementation
         }
     }
@@ -270,7 +284,7 @@ public class OnnxTerrainGenerator implements AutoCloseable {
                 
             } catch (Exception e) {
                 LOGGER.warning("ONNX inference failed: " + e.getMessage() + " - falling back to stub");
-                LOGGER.fine("Stack trace: " + java.util.Arrays.toString(e.getStackTrace()));
+                LOGGER.fine("Exception details: " + e.getClass().getSimpleName() + " at " + (e.getStackTrace().length > 0 ? e.getStackTrace()[0] : "unknown location"));
                 // Fall through to stub implementation
             }
         }

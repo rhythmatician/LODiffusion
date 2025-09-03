@@ -67,7 +67,7 @@ public class TerrainGenerationWorkflowTest {
                 for (int y = 0; y < 16; y++) {
                     for (int z = 0; z < 16; z++) {
                         int blockId = generatedTerrain[x][y][z];
-                        assertTrue(blockId >= 0 && blockId < 1104, 
+                        assertTrue(blockId >= 0 && blockId < OnnxTerrainGenerator.MAX_BLOCK_TYPES, 
                             "Block ID should be valid: " + blockId);
                         
                         if (blockId == 0) hasAir = true;
