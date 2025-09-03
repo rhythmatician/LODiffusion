@@ -1,6 +1,17 @@
 package com.rhythmatician.lodiffusion;
 
 public class DiffusionModel {
+  
+  private OnnxTerrainGenerator onnxGenerator;
+  
+  public DiffusionModel() {
+    try {
+      this.onnxGenerator = new OnnxTerrainGenerator();
+    } catch (Exception e) {
+      System.err.println("Warning: Could not initialize ONNX terrain generator, falling back to stub implementation: " + e.getMessage());
+      this.onnxGenerator = null;
+    }
+  }
 
   // LOD → diffusion pass mappings as documented in project requirements
   private static final int[] LOD_DIFFUSION_PASSES = {
@@ -25,6 +36,33 @@ public class DiffusionModel {
    * @param biomes Biome data for context
    */
   public void run(int[][] heightmap, String[] biomes) {
+    // Try ONNX-based terrain generation first
+    if (onnxGenerator != null) {
+      try {
+        // Convert biome strings to biome IDs
+        int[][] biomeIds = convertBiomesToIds(biomes);
+        
+        // Use ONNX terrain generator
+        int[][][] generatedTerrain = onnxGenerator.generateTerrainFromHeights(heightmap, biomeIds, 60, 0, 0);
+        
+        // Extract height information from generated 16x16x16 terrain back to heightmap
+        extractHeightmapFromTerrain(generatedTerrain, heightmap);
+        
+        return; // Successfully used ONNX generator
+      } catch (Exception e) {
+        System.err.println("Warning: ONNX terrain generation failed, falling back to stub: " + e.getMessage());
+        // Fall through to stub implementation
+      }
+    }
+    
+    // Fallback to enhanced stub implementation
+    runStubImplementation(heightmap, biomes);
+  }
+  
+  /**
+   * Fallback stub implementation for when ONNX is not available.
+   */
+  private void runStubImplementation(int[][] heightmap, String[] biomes) {
     // Enhanced diffusion implementation with multiple passes and noise
     int passes = LOD_DIFFUSION_PASSES[0]; // Use highest detail passes for standard run
     float noiseIntensity = LOD_NOISE_INTENSITY[0];
@@ -48,6 +86,54 @@ public class DiffusionModel {
           
           heightmap[x][z] = diffusedValue + variation;
         }
+      }
+    }
+  }
+  
+  /**
+   * Convert biome strings to biome IDs for ONNX processing.
+   */
+  private int[][] convertBiomesToIds(String[] biomes) {
+    int[][] biomeIds = new int[8][8]; // 8x8 for ONNX input
+    
+    for (int x = 0; x < 8; x++) {
+      for (int z = 0; z < 8; z++) {
+        // Sample from 16x16 biome array to 8x8
+        int biomeIndex = Math.min((x * 2) + (z * 2) * 16, biomes.length - 1);
+        String biome = biomes[biomeIndex];
+        
+        // Convert biome string to ID (simplified mapping)
+        int biomeId = 1; // Default to plains
+        if (biome != null) {
+          if (biome.contains("desert")) biomeId = 2;
+          else if (biome.contains("forest")) biomeId = 6;
+          else if (biome.contains("mountain")) biomeId = 3;
+          else if (biome.contains("ocean")) biomeId = 0;
+          // Add more biome mappings as needed
+        }
+        
+        biomeIds[x][z] = biomeId;
+      }
+    }
+    
+    return biomeIds;
+  }
+  
+  /**
+   * Extract heightmap from 16x16x16 generated terrain by finding surface.
+   */
+  private void extractHeightmapFromTerrain(int[][][] terrain, int[][] heightmap) {
+    for (int x = 0; x < 16; x++) {
+      for (int z = 0; z < 16; z++) {
+        // Find the top non-air block
+        int surfaceY = 0;
+        for (int y = 15; y >= 0; y--) {
+          if (terrain[x][y][z] != 0) { // Non-air block
+            surfaceY = 60 + y; // Add base Y offset
+            break;
+          }
+        }
+        heightmap[x][z] = surfaceY;
       }
     }
   }
@@ -175,17 +261,6 @@ public class DiffusionModel {
       case 2: return 0.3f; // Temperature channel - moderate diffusion
       default: return 0.4f; // Default for other channels
     }
-  }
-
-  /**
-   * Get LOD factor for scaling diffusion intensity.
-   * Uses the predefined LOD noise intensity mappings.
-   * @param lod Level of Detail
-   * @return Factor to scale diffusion (lower LOD = less processing)
-   */
-  private float getLODFactor(int lod) {
-    int lodIndex = Math.min(lod, LOD_NOISE_INTENSITY.length - 1);
-    return LOD_NOISE_INTENSITY[lodIndex];
   }
 
   /**
