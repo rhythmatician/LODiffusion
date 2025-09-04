@@ -14,9 +14,12 @@ public final class AdapterRegistry {
     private static final Map<String, OnnxAdapter> ADAPTERS = new HashMap<>();
     
     static {
-        // Register available adapters
-        register(new Heightmap16x16Adapter());
-        register(new Voxel8x8x8Adapter());
+        // Register progressive LOD refinement adapters
+        register(new ProgressiveLOD4to3Adapter());  // 1x1x1 → 2x2x2
+        register(new ProgressiveLOD3to2Adapter());  // 2x2x2 → 4x4x4
+        register(new ProgressiveLOD2to1Adapter());  // 4x4x4 → 8x8x8
+        register(new ProgressiveLOD1to0Adapter());  // 8x8x8 → 16x16x16
+        register(new Heightmap16x16Adapter());      // Heightmap enhancement (non-progressive)
     }
     
     /**
