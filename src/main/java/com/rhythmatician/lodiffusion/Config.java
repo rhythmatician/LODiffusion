@@ -26,6 +26,8 @@ public final class Config {
   private static final AtomicReference<JsonObject> CACHED = new AtomicReference<>();
   private static final Path CONFIG_DIR = Paths.get("config", "lodiffusion");
   private static final Path RUNTIME_FILE = CONFIG_DIR.resolve("runtime.json");
+  
+  /** Classpath resource path to the default configuration JSON file */
   private static final String DEFAULTS_RESOURCE = "/lodiffusion.defaults.json";
 
   private Config() {}
