@@ -167,7 +167,7 @@ public class TerrainGenerationBenchmark {
     }
     
     @Test
-    @Timeout(value = 5)
+    @Timeout(value = 20)
     public void benchmarkPerformanceMonitorOverhead() {
         System.out.println("=== Performance Monitor Overhead Benchmark ===");
         

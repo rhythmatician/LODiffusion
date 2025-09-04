@@ -91,14 +91,19 @@ public final class Config {
     return t;
   }
 
+  private static JsonObject getDebugObject() {
+    JsonObject merged = merged();
+    return merged.has("debug") && merged.get("debug").isJsonObject() ? merged.getAsJsonObject("debug") : null;
+  }
+
   public static boolean logTimings() {
-    JsonObject debug = merged().has("debug") && merged().get("debug").isJsonObject() ? merged().getAsJsonObject("debug") : null;
+    JsonObject debug = getDebugObject();
     if (debug == null) return false;
     return debug.has("logTimings") && debug.get("logTimings").getAsBoolean();
   }
 
   public static Optional<Path> metricsCsv() {
-    JsonObject debug = merged().has("debug") && merged().get("debug").isJsonObject() ? merged().getAsJsonObject("debug") : null;
+    JsonObject debug = getDebugObject();
     if (debug == null) return Optional.empty();
     if (!debug.has("dumpCsv")) return Optional.empty();
     String v = debug.get("dumpCsv").getAsString();
