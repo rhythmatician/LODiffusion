@@ -78,7 +78,7 @@ jobs:
   # Test job - runs tests and generates coverage reports
   test:
     name: Tests & Coverage
-    runs-on: windows-latest
+    runs-on: windows-2022
     
     steps:
       - name: Checkout repository
@@ -161,7 +161,7 @@ jobs:
   # Build job - ensures the mod can be built successfully
   build:
     name: Build Mod
-    runs-on: windows-latest
+    runs-on: windows-2022
     needs: [lint, test]  # Only run if lint and test pass
     
     steps:
