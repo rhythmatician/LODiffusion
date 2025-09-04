@@ -20,7 +20,7 @@ import org.junit.jupiter.api.Test;
 @Tag("inference")
 class OnnxInferenceTest {
 
-    private static final String MODEL_PATH = "artifacts/quick_test/model.onnx";
+    private static final String MODEL_PATH = "artifacts/chunk_16x16/model.onnx";
     
     @BeforeEach
     void setUp() {

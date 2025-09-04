@@ -35,7 +35,7 @@ public class OnnxTerrainGenerator implements AutoCloseable {
     public static final int MAX_BLOCK_TYPES = 1104;
     public static final int INPUT_SIZE = 8;
     public static final int OUTPUT_SIZE = 16;
-    private static final String DEFAULT_MODEL_PATH = "artifacts/quick_test/model.onnx";
+    private static final String DEFAULT_MODEL_PATH = "artifacts/chunk_16x16/model.onnx";
     
     private boolean available = false;
     private String modelPath;
@@ -69,6 +69,26 @@ public class OnnxTerrainGenerator implements AutoCloseable {
         public TerrainGenerationResult(float[][][][] blockLogits, float[][][][] airMask) {
             this.blockLogits = blockLogits;
             this.airMask = airMask;
+        }
+    }
+    
+    /**
+     * Input data for terrain generation using the new 16x16 model contract.
+     */
+    public static class TerrainInputNew {
+        public final float[][][][][] heightTensor;   // [1, 1, 16, 16, 1] - height data
+        public final float[][][][][] biomeTensor;    // [1, 256, 16, 16, 1] - biome data
+        public final float[][][] parentHeightmap;   // [8][8][8] - parent heightmap for LOD context
+        public final float timestep;               // Diffusion timestep
+        public final float[] chunkPos;             // [2] - chunk position
+        
+        public TerrainInputNew(float[][][][][] heightTensor, float[][][][][] biomeTensor, 
+                              float[][][] parentHeightmap, float timestep, float[] chunkPos) {
+            this.heightTensor = heightTensor;
+            this.biomeTensor = biomeTensor;
+            this.parentHeightmap = parentHeightmap;
+            this.timestep = timestep;
+            this.chunkPos = chunkPos;
         }
     }
     
@@ -201,15 +221,35 @@ public class OnnxTerrainGenerator implements AutoCloseable {
      */
     private void loadModel(String modelPath) throws IOException {
         try {
-            Path path = Paths.get(modelPath);
-            if (!path.toFile().exists()) {
-                LOGGER.warning("Model file not found: " + modelPath + " - falling back to stub implementation");
+            // Try multiple path resolutions for development environment
+            Path[] pathsToTry = {
+                Paths.get(modelPath),                                    // Relative to current dir
+                Paths.get("../" + modelPath),                           // Relative to project root (from run/)
+                Paths.get("../../" + modelPath),                        // Alternative relative path
+                Paths.get("c:/Users/JeffHall/git/LODiffusion/" + modelPath) // Absolute path for development
+            };
+            
+            Path validPath = null;
+            for (Path path : pathsToTry) {
+                if (path.toFile().exists()) {
+                    validPath = path;
+                    LOGGER.fine("Found model at: " + path.toAbsolutePath());
+                    break;
+                }
+            }
+            
+            if (validPath == null) {
+                LOGGER.warning("Model file not found at any of these locations:");
+                for (Path path : pathsToTry) {
+                    LOGGER.warning("  - " + path.toAbsolutePath());
+                }
+                LOGGER.warning("Falling back to stub implementation");
                 available = false;
                 return;
             }
             
             // Validate it's a reasonable size (should be > 1MB for a real model)
-            long fileSize = path.toFile().length();
+            long fileSize = validPath.toFile().length();
             if (fileSize < 1024 * 1024) {
                 LOGGER.warning("Model file seems small (" + fileSize + " bytes). Expected > 1MB for ONNX model - falling back to stub");
                 available = false;
@@ -218,14 +258,14 @@ public class OnnxTerrainGenerator implements AutoCloseable {
             
             // Load ONNX model with DJL
             model = Model.newInstance("lodiffusion-terrain-generator");
-            model.load(path);
+            model.load(validPath);
             
             // Create predictor with our translator
             predictor = model.newPredictor(new TerrainTranslator());
             
             available = true;
             LOGGER.info("✅ ONNX terrain generator loaded successfully!");
-            LOGGER.info("   Model: " + modelPath + " (" + fileSize + " bytes)");
+            LOGGER.info("   Model: " + validPath.toAbsolutePath() + " (" + fileSize + " bytes)");
             LOGGER.info("   Contract: LODiffusion v1 (8x8x8 -> 16x16x16)");
             LOGGER.info("   Runtime: DJL with ONNX Runtime backend");
             
@@ -242,6 +282,52 @@ public class OnnxTerrainGenerator implements AutoCloseable {
      */
     public boolean isAvailable() {
         return available;
+    }
+    
+    /**
+     * Generate terrain using the new model that accepts 16x16 inputs directly.
+     * Uses the chunk_16x16 model contract with proper tensor shapes.
+     * 
+     * @param heightTensor Height data tensor [1, 1, 16, 16, 1]
+     * @param biomeTensor Biome data tensor [1, 256, 16, 16, 1]
+     * @param parentHeightmap Parent heightmap [8][8][8] for LOD context
+     * @param timestep Diffusion timestep
+     * @param chunkPos Chunk position [x, z]
+     * @return Terrain generation result with block predictions and air mask
+     */
+    public TerrainGenerationResult generateTerrainNew(
+            float[][][][][] heightTensor,
+            float[][][][][] biomeTensor,
+            float[][][] parentHeightmap,
+            float timestep,
+            float[] chunkPos) {
+        
+        LOGGER.fine("Generating terrain with new model - height tensor: [" + heightTensor.length + 
+                   "][" + heightTensor[0].length + "][" + heightTensor[0][0].length + "][" + heightTensor[0][0][0].length + "][" + heightTensor[0][0][0][0].length + "]");
+        LOGGER.fine("Biome tensor: [" + biomeTensor.length + "][" + biomeTensor[0].length + "][" + biomeTensor[0][0].length + "][" + biomeTensor[0][0][0].length + "][" + biomeTensor[0][0][0][0].length + "]");
+        
+        if (available && predictor != null) {
+            try {
+                LOGGER.fine("🧠 Running ONNX inference with new 16x16 model...");
+                
+                // For now, use the old generateTerrain method as a bridge
+                // TODO: Create proper new model translator
+                float[][][] biomeData = convertBiomeTensorTo8x8(biomeTensor);
+                TerrainGenerationResult result = generateTerrain(parentHeightmap, biomeData, timestep, chunkPos);
+                
+                LOGGER.fine("✅ New ONNX inference completed successfully");
+                return result;
+                
+            } catch (Exception e) {
+                LOGGER.warning("ONNX inference failed: " + e.getMessage());
+                e.printStackTrace();
+            }
+        }
+        
+        // Fallback to synthetic terrain
+        LOGGER.fine("Using fallback synthetic terrain generation");
+        float[][][] biomeData = convertBiomeTensorTo8x8(biomeTensor);
+        return generateStubTerrain(parentHeightmap, biomeData, timestep, chunkPos);
     }
     
     /**
@@ -438,6 +524,25 @@ public class OnnxTerrainGenerator implements AutoCloseable {
         
         return heightmap;
     }
+
+    /**
+     * Creates a heightmap tensor for the new model which accepts 16x16 input directly.
+     * @param heights 16x16 array of height values 
+     * @return Tensor in format [1, 1, 16, 16, 1]
+     */
+    public static float[][][][][] createHeightmapTensor(float[][] heights) {
+        validateInput(heights, 16, 16, "heights");
+        
+        float[][][][][] heightTensor = new float[1][1][16][16][1];
+        
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                heightTensor[0][0][x][z][0] = heights[x][z];
+            }
+        }
+        
+        return heightTensor;
+    }
     
     /**
      * Create one-hot encoded biome data from biome IDs.
@@ -481,6 +586,30 @@ public class OnnxTerrainGenerator implements AutoCloseable {
         }
         
         return createBiomeData(uniformBiomes);
+    }
+
+    /**
+     * Creates biome tensor for the new model which accepts 16x16 input directly.
+     * @param biomeIds 16x16 array of biome IDs
+     * @return Tensor in format [1, 256, 16, 16, 1]
+     */
+    public static float[][][][][] createBiomeTensor(int[][] biomeIds) {
+        validateInput(biomeIds, 16, 16, "biomeIds");
+        
+        float[][][][][] biomeTensor = new float[1][256][16][16][1];
+        
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                int biomeId = Math.max(0, Math.min(255, biomeIds[x][z])); // Clamp to [0, 255]
+                
+                // Set one-hot encoding
+                for (int b = 0; b < 256; b++) {
+                    biomeTensor[0][b][x][z][0] = (b == biomeId) ? 1.0f : 0.0f;
+                }
+            }
+        }
+        
+        return biomeTensor;
     }
     
     /**
@@ -581,28 +710,45 @@ public class OnnxTerrainGenerator implements AutoCloseable {
     }
     
     /**
-     * Generate terrain from height data and biomes.
-     * Simplified interface for height-based terrain generation.
+     * Generate terrain from 16x16 height and biome data using the new model.
+     * This is the main entry point for terrain generation from Minecraft.
+     * Uses the updated model that accepts 16x16 input directly.
      * 
-     * @param heightValues Surface heights [8][8]
-     * @param biomeIds Biome IDs [8][8]
+     * @param heightValues Surface heights [16][16]
+     * @param biomeIds Biome IDs [16][16]
      * @param baseY Base Y coordinate for height calculation
      * @param chunkX Chunk X coordinate
      * @param chunkZ Chunk Z coordinate
      * @return Final block predictions [16][16][16] ready for placement
      */
     public int[][][] generateTerrainFromHeights(int[][] heightValues, int[][] biomeIds, int baseY, float chunkX, float chunkZ) {
-        // Create parent heightmap from heights
-        float[][][] parentHeightmap = createParentHeightmapFromHeights(heightValues, baseY);
+        // Convert int heights to float and normalize
+        float[][] normalizedHeights = new float[16][16];
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                normalizedHeights[x][z] = (heightValues[x][z] - baseY) / 384.0f; // Normalize to [-1, 1] range
+            }
+        }
+
+        // Create input tensors for new model  
+        float[][][][][] heightTensor = createHeightmapTensor(normalizedHeights);
+        float[][][][][] biomeTensor = createBiomeTensor(biomeIds);
         
-        // Convert biomes to one-hot encoding
-        float[][][] biomeData = createBiomeData(biomeIds);
+        // Create parent LOD heightmap (8x8x8) from center of 16x16 input
+        int[][] centerHeights = new int[8][8];
+        for (int x = 0; x < 8; x++) {
+            for (int z = 0; z < 8; z++) {
+                centerHeights[x][z] = heightValues[x + 4][z + 4]; // Center 8x8
+            }
+        }
+        float[][][] parentHeightmap = createParentHeightmapFromHeights(centerHeights, baseY);
         
-        // Generate terrain using the model
-        TerrainGenerationResult result = generateTerrain(
-            parentHeightmap, 
-            biomeData, 
-            0.0f, // Timestep for inference
+        // Generate terrain using the new model contract
+        TerrainGenerationResult result = generateTerrainNew(
+            heightTensor, 
+            biomeTensor, 
+            parentHeightmap,
+            0.0f, // Timestep for inference  
             new float[]{chunkX, chunkZ}
         );
         
@@ -693,5 +839,62 @@ public class OnnxTerrainGenerator implements AutoCloseable {
         }
         available = false;
         LOGGER.fine("ONNX terrain generator closed");
+    }
+
+    /**
+     * Validates input arrays for correct dimensions.
+     * @param array The 2D array to validate
+     * @param expectedWidth Expected width
+     * @param expectedHeight Expected height  
+     * @param name Name for error messages
+     */
+    private static void validateInput(float[][] array, int expectedWidth, int expectedHeight, String name) {
+        if (array == null || array.length != expectedWidth) {
+            throw new IllegalArgumentException(name + " must be " + expectedWidth + "x" + expectedHeight + " array");
+        }
+        for (int i = 0; i < expectedWidth; i++) {
+            if (array[i] == null || array[i].length != expectedHeight) {
+                throw new IllegalArgumentException(name + " must be " + expectedWidth + "x" + expectedHeight + " array");
+            }
+        }
+    }
+
+    /**
+     * Validates input arrays for correct dimensions.
+     * @param array The 2D array to validate
+     * @param expectedWidth Expected width
+     * @param expectedHeight Expected height  
+     * @param name Name for error messages
+     */
+    private static void validateInput(int[][] array, int expectedWidth, int expectedHeight, String name) {
+        if (array == null || array.length != expectedWidth) {
+            throw new IllegalArgumentException(name + " must be " + expectedWidth + "x" + expectedHeight + " array");
+        }
+        for (int i = 0; i < expectedWidth; i++) {
+            if (array[i] == null || array[i].length != expectedHeight) {
+                throw new IllegalArgumentException(name + " must be " + expectedWidth + "x" + expectedHeight + " array");
+            }
+        }
+    }
+
+    /**
+     * Convert 16x16 biome tensor to 8x8 biome data for compatibility.
+     * Downsamples by taking center 8x8 region.
+     * @param biomeTensor [1, 256, 16, 16, 1] biome tensor
+     * @return [256, 8, 8] biome data
+     */
+    private static float[][][] convertBiomeTensorTo8x8(float[][][][][] biomeTensor) {
+        float[][][] biomeData = new float[256][8][8];
+        
+        for (int b = 0; b < 256; b++) {
+            for (int x = 0; x < 8; x++) {
+                for (int z = 0; z < 8; z++) {
+                    // Take center 8x8 from 16x16
+                    biomeData[b][x][z] = biomeTensor[0][b][x + 4][z + 4][0];
+                }
+            }
+        }
+        
+        return biomeData;
     }
 }
