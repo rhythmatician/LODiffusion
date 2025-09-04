@@ -13,7 +13,7 @@ import org.junit.jupiter.api.Test;
 import com.rhythmatician.lodiffusion.terrain.adapter.AdapterRegistry;
 import com.rhythmatician.lodiffusion.terrain.adapter.Heightmap16x16Adapter;
 import com.rhythmatician.lodiffusion.terrain.adapter.OnnxAdapter;
-import com.rhythmatician.lodiffusion.terrain.adapter.Voxel8x8x8Adapter;
+import com.rhythmatician.lodiffusion.terrain.adapter.ProgressiveLOD1to0Adapter;
 
 /**
  * Smoke tests for the ONNX adapter system.
@@ -30,7 +30,7 @@ public class AdapterSmokeTest {
         
         // Test specific adapters
         assertTrue(AdapterRegistry.hasAdapter("heightmap16x16"), "Should have heightmap16x16 adapter");
-        assertTrue(AdapterRegistry.hasAdapter("voxel8x8x8"), "Should have voxel8x8x8 adapter");
+        assertTrue(AdapterRegistry.hasAdapter("progressive_lod1to0"), "Should have progressive LOD1→0 adapter");
         
         // Test unknown adapter
         assertFalse(AdapterRegistry.hasAdapter("unknown"), "Should not have unknown adapter");
@@ -49,13 +49,13 @@ public class AdapterSmokeTest {
     }
     
     @Test
-    public void testVoxelAdapter() {
-        OnnxAdapter adapter = AdapterRegistry.getAdapter("voxel8x8x8");
-        assertNotNull(adapter, "Voxel adapter should be available");
-        assertTrue(adapter instanceof Voxel8x8x8Adapter, "Should be correct adapter type");
+    public void testProgressiveLODAdapter() {
+        OnnxAdapter adapter = AdapterRegistry.getAdapter("progressive_lod1to0");
+        assertNotNull(adapter, "Progressive LOD1→0 adapter should be available");
+        assertTrue(adapter instanceof ProgressiveLOD1to0Adapter, "Should be correct adapter type");
         
         // Test properties
-        assertEquals("voxel8x8x8", adapter.getAdapterName());
+        assertEquals("progressive_lod1to0", adapter.getAdapterName());
         assertArrayEquals(new long[]{1, 1, 8, 8, 8}, adapter.getExpectedInputShape());
         assertArrayEquals(new long[]{1, 1, 16, 16, 16}, adapter.getExpectedOutputShape());
     }
@@ -64,10 +64,10 @@ public class AdapterSmokeTest {
     public void testAdapterCompatibility() {
         // Test that adapters can handle basic compatibility checks
         OnnxAdapter heightmapAdapter = AdapterRegistry.getAdapter("heightmap16x16");
-        OnnxAdapter voxelAdapter = AdapterRegistry.getAdapter("voxel8x8x8");
+        OnnxAdapter progressiveAdapter = AdapterRegistry.getAdapter("progressive_lod1to0");
         
         // These should not throw exceptions (even if they return false without a real model)
         assertDoesNotThrow(() -> heightmapAdapter.isCompatible(null));
-        assertDoesNotThrow(() -> voxelAdapter.isCompatible(null));
+        assertDoesNotThrow(() -> progressiveAdapter.isCompatible(null));
     }
 }
