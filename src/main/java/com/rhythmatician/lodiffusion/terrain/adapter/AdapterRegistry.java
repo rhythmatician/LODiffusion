@@ -15,7 +15,7 @@ public final class AdapterRegistry {
     
     static {
         // Register available adapters
-        register(new Heightmap8x8Adapter());
+        register(new Heightmap16x16Adapter());
         register(new Voxel8x8x8Adapter());
     }
     

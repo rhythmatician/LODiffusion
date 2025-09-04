@@ -167,6 +167,8 @@ public final class LodiffusionCommand {
                 source.sendFeedback(() -> Text.literal(finalChunk), false);
                 
                 // Small delay between chunks to prevent flooding
+                try {
+                    Thread.sleep(100);
                 } catch (InterruptedException ignored) {
                     Thread.currentThread().interrupt();
                 }
