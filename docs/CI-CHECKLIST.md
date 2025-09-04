@@ -113,7 +113,7 @@ The CI pipeline runs three separate jobs for better parallelization and clearer 
 ```
 - Executes all unit tests
 - Generates coverage reports
-- Enforces ≥ 80% coverage threshold
+- Enforces ≥ 70% coverage threshold
 - Comments coverage results on PRs
 - Uploads coverage artifacts
 

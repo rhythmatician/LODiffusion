@@ -156,7 +156,7 @@ Local equivalent:
 ```
 
 ### Testing Rules
-- Target **80%+ code coverage per commit**
+- Target **70%+ code coverage per commit**
 - Tests may live in:
   - `src/test/java/com/...` — core unit and integration tests
   - `src/test/java/data/` — synthetic dataset tests

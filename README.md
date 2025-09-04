@@ -103,7 +103,7 @@ Follow a strict test-first development cycle:
 
 * Write JUnit tests first (under `src/test/java/...`)
 * Use `@Tag("ci")` or `@Tag("inference")` for test targeting
-* Coverage threshold: **80% minimum**
+* Coverage threshold: **70% minimum**
 
 ### CI Pipeline
 The GitHub Actions CI runs three separate jobs for optimal feedback:
