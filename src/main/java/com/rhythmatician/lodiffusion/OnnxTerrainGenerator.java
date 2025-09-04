@@ -246,12 +246,11 @@ public class OnnxTerrainGenerator implements AutoCloseable {
      */
     private void loadModel(String modelPath) throws IOException {
         try {
-            // Try multiple path resolutions for development environment
+            // Try multiple path resolutions - model is now included in source code
             Path[] pathsToTry = {
                 Paths.get(modelPath),                                    // Relative to current dir
                 Paths.get("../" + modelPath),                           // Relative to project root (from run/)
-                Paths.get("../../" + modelPath),                        // Alternative relative path
-                Paths.get("c:/Users/JeffHall/git/LODiffusion/" + modelPath) // Absolute path for development
+                Paths.get("../../" + modelPath)                         // Alternative relative path
             };
             
             Path validPath = null;
