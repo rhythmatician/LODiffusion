@@ -13,15 +13,19 @@ import net.minecraft.world.Heightmap;
 import net.minecraft.world.chunk.Chunk;
 
 /**
- * Adapter for heightmap-based terrain generation.
- * Input: 8x8 heightmap (downsampled from 16x16)
- * Output: 16x16 heightmap (full chunk resolution)
+ * Adapter for heightmap-based terrain enhancement.
+ * Input: 16x16 heightmap (from Fabric/vanilla generation)
+ * Output: 16x16 enhanced heightmap (AI-refined terrain)
  * Data format: float32, normalized to [-1, 1] range
+ * 
+ * Note: This adapter enhances existing terrain rather than generating from scratch.
+ * The "8x8" in the name refers to the model's internal processing resolution,
+ * but input/output are both 16x16 to match Minecraft chunk dimensions.
  */
-public class Heightmap8x8Adapter implements OnnxAdapter {
+public class Heightmap16x16Adapter implements OnnxAdapter {
     
-    private static final String ADAPTER_NAME = "heightmap8x8";
-    private static final long[] INPUT_SHAPE = {1, 1, 8, 8};   // [batch, channels, height, width]
+    private static final String ADAPTER_NAME = "heightmap16x16";
+    private static final long[] INPUT_SHAPE = {1, 1, 16, 16};   // [batch, channels, height, width]
     private static final long[] OUTPUT_SHAPE = {1, 1, 16, 16}; // [batch, channels, height, width]
     
     // Normalization constants for heightmap values
@@ -31,20 +35,17 @@ public class Heightmap8x8Adapter implements OnnxAdapter {
     @Override
     public NDArray extractInput(Chunk chunk, ChunkPos pos, long seed, NDManager manager) {
         try {
-            // Extract 16x16 heightmap from chunk
-            int[][] fullHeightmap = extractFullHeightmap(chunk);
+            // Extract 16x16 heightmap from chunk (this is the natural Minecraft size)
+            float[][] heightmap16x16 = extractFullHeightmap(chunk);
             
-            // Downsample to 8x8 for model input
-            float[][] input8x8 = downsampleHeightmap(fullHeightmap);
+            // Normalize to [-1, 1] range for model input
+            normalizeHeightmap(heightmap16x16);
             
-            // Normalize to [-1, 1] range
-            normalizeHeightmap(input8x8);
-            
-            // Convert to NDArray with proper shape [1, 1, 8, 8]
-            return manager.create(input8x8).reshape(INPUT_SHAPE);
+            // Convert to NDArray with proper shape [1, 1, 16, 16]
+            return manager.create(heightmap16x16).reshape(INPUT_SHAPE);
             
         } catch (Exception e) {
-            HelloTerrainMod.LOGGER.error("[Heightmap8x8Adapter] Failed to extract input: " + e.getMessage(), e);
+            HelloTerrainMod.LOGGER.error("[Heightmap16x16Adapter] Failed to extract input: " + e.getMessage(), e);
             // Return zeros as fallback
             return manager.zeros(new Shape(INPUT_SHAPE), DataType.FLOAT32);
         }
@@ -55,7 +56,7 @@ public class Heightmap8x8Adapter implements OnnxAdapter {
         try {
             // Validate output shape
             if (!java.util.Arrays.equals(output.getShape().getShape(), OUTPUT_SHAPE)) {
-                HelloTerrainMod.LOGGER.warn("[Heightmap8x8Adapter] Unexpected output shape: " + 
+                HelloTerrainMod.LOGGER.warn("[Heightmap16x16Adapter] Unexpected output shape: " + 
                     java.util.Arrays.toString(output.getShape().getShape()));
                 return;
             }
@@ -75,10 +76,10 @@ public class Heightmap8x8Adapter implements OnnxAdapter {
             // Apply heightmap to chunk with safety bounds
             applyHeightmapToChunk(chunk, output16x16);
             
-            HelloTerrainMod.LOGGER.debug("[Heightmap8x8Adapter] Applied heightmap to chunk ({}, {})", pos.x, pos.z);
+            HelloTerrainMod.LOGGER.debug("[Heightmap16x16Adapter] Applied enhanced heightmap to chunk ({}, {})", pos.x, pos.z);
             
         } catch (Exception e) {
-            HelloTerrainMod.LOGGER.error("[Heightmap8x8Adapter] Failed to apply output: " + e.getMessage(), e);
+            HelloTerrainMod.LOGGER.error("[Heightmap16x16Adapter] Failed to apply output: " + e.getMessage(), e);
         }
     }
     
@@ -90,9 +91,41 @@ public class Heightmap8x8Adapter implements OnnxAdapter {
     @Override
     public boolean isCompatible(Model model) {
         try {
-            // Check if model has correct input/output shapes
-            // This is a simplified check - in practice you'd query model metadata
-            return true; // TODO: Implement proper model shape validation
+            if (model == null) return false;
+            
+            // Check input and output shapes using DJL model descriptor
+            // For ONNX models, we can query the model's input/output metadata
+            var inputShapes = model.describeInput();
+            var outputShapes = model.describeOutput();
+            
+            // Verify we have exactly one input and one output
+            if (inputShapes.size() != 1 || outputShapes.size() != 1) {
+                HelloTerrainMod.LOGGER.debug("[Heightmap8x8Adapter] Model has incorrect number of inputs/outputs: {}/{}", 
+                    inputShapes.size(), outputShapes.size());
+                return false;
+            }
+            
+            // Check input shape matches expected [1, 1, 8, 8]
+            var inputDescriptor = inputShapes.values().iterator().next();
+            var expectedInputShape = new ai.djl.ndarray.types.Shape(INPUT_SHAPE);
+            if (!inputDescriptor.getShape().equals(expectedInputShape)) {
+                HelloTerrainMod.LOGGER.debug("[Heightmap8x8Adapter] Input shape mismatch. Expected: {}, Got: {}", 
+                    expectedInputShape, inputDescriptor.getShape());
+                return false;
+            }
+            
+            // Check output shape matches expected [1, 1, 16, 16]
+            var outputDescriptor = outputShapes.values().iterator().next();
+            var expectedOutputShape = new ai.djl.ndarray.types.Shape(OUTPUT_SHAPE);
+            if (!outputDescriptor.getShape().equals(expectedOutputShape)) {
+                HelloTerrainMod.LOGGER.debug("[Heightmap8x8Adapter] Output shape mismatch. Expected: {}, Got: {}", 
+                    expectedOutputShape, outputDescriptor.getShape());
+                return false;
+            }
+            
+            HelloTerrainMod.LOGGER.debug("[Heightmap8x8Adapter] Model compatibility validated successfully");
+            return true;
+            
         } catch (Exception e) {
             HelloTerrainMod.LOGGER.warn("[Heightmap8x8Adapter] Model compatibility check failed: " + e.getMessage());
             return false;
@@ -111,35 +144,17 @@ public class Heightmap8x8Adapter implements OnnxAdapter {
     
     // Private helper methods
     
-    private int[][] extractFullHeightmap(Chunk chunk) {
-        int[][] heightmap = new int[16][16];
+    private float[][] extractFullHeightmap(Chunk chunk) {
+        float[][] heightmap = new float[16][16];
         Heightmap surfaceHeightmap = chunk.getHeightmap(Heightmap.Type.WORLD_SURFACE);
         
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
-                heightmap[x][z] = surfaceHeightmap.get(x, z);
+                heightmap[x][z] = (float) surfaceHeightmap.get(x, z);
             }
         }
         
         return heightmap;
-    }
-    
-    private float[][] downsampleHeightmap(int[][] full16x16) {
-        float[][] downsampled = new float[8][8];
-        
-        // Average 2x2 blocks to get 8x8 from 16x16
-        for (int x = 0; x < 8; x++) {
-            for (int z = 0; z < 8; z++) {
-                int sum = 0;
-                sum += full16x16[x * 2][z * 2];
-                sum += full16x16[x * 2 + 1][z * 2];
-                sum += full16x16[x * 2][z * 2 + 1];
-                sum += full16x16[x * 2 + 1][z * 2 + 1];
-                downsampled[x][z] = sum / 4.0f;
-            }
-        }
-        
-        return downsampled;
     }
     
     private void normalizeHeightmap(float[][] heightmap) {
