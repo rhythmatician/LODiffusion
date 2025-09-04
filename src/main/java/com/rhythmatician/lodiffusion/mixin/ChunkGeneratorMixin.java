@@ -39,8 +39,9 @@ public class ChunkGeneratorMixin {
         } else {
             // Temporary fallback during testing - will be removed once ONNX is stable
             String reason = !Config.useOnnxTerrain() ? "ONNX terrain disabled in config" : "ONNX generator not ready";
-            HelloTerrainMod.LOGGER.warn("[LODiffusion] {} for chunk ({}, {}) - using basic fallback", reason, pos.x, pos.z);
-            FALLBACK_GENERATOR.generateChunk(pos, chunk, world.getSeed());
+            HelloTerrainMod.LOGGER.warn("[LODiffusion] {} for chunk ({}, {}) - panic!", reason, pos.x, pos.z);
+            // FALLBACK_GENERATOR.generateChunk(pos, chunk, world.getSeed());
+            throw new IllegalStateException("Terrain generation failed");
         }
     }
 }
