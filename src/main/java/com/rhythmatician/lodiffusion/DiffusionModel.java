@@ -92,14 +92,15 @@ public class DiffusionModel {
   
   /**
    * Convert biome strings to biome IDs for ONNX processing.
+   * Updated for new 16x16 model that accepts 16x16 biome input directly.
    */
   private int[][] convertBiomesToIds(String[] biomes) {
-    int[][] biomeIds = new int[8][8]; // 8x8 for ONNX input
+    int[][] biomeIds = new int[16][16]; // 16x16 for new ONNX model
     
-    for (int x = 0; x < 8; x++) {
-      for (int z = 0; z < 8; z++) {
-        // Sample from 16x16 biome array to 8x8
-        int biomeIndex = Math.min((x * 2) + (z * 2) * 16, biomes.length - 1);
+    for (int x = 0; x < 16; x++) {
+      for (int z = 0; z < 16; z++) {
+        // Direct mapping from 16x16 biome array
+        int biomeIndex = Math.min(x + z * 16, biomes.length - 1);
         String biome = biomes[biomeIndex];
         
         // Convert biome string to ID (simplified mapping)

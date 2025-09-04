@@ -20,27 +20,43 @@ public class TerrainGenerationWorkflowTest {
 
     @Test
     public void testCompleteWorkflowFromHeightData() throws IOException {
-        // Given: Simulated Minecraft terrain data
+        // Given: Simulated Minecraft terrain data (16x16 for new model)
         int[][] heightValues = {
-            {64, 65, 66, 67, 66, 65, 64, 63},
-            {65, 66, 67, 68, 67, 66, 65, 64},
-            {66, 67, 68, 69, 68, 67, 66, 65},
-            {67, 68, 69, 70, 69, 68, 67, 66},
-            {66, 67, 68, 69, 68, 67, 66, 65},
-            {65, 66, 67, 68, 67, 66, 65, 64},
-            {64, 65, 66, 67, 66, 65, 64, 63},
-            {63, 64, 65, 66, 65, 64, 63, 62}
+            {64, 65, 66, 67, 66, 65, 64, 63, 64, 65, 66, 67, 66, 65, 64, 63},
+            {65, 66, 67, 68, 67, 66, 65, 64, 65, 66, 67, 68, 67, 66, 65, 64},
+            {66, 67, 68, 69, 68, 67, 66, 65, 66, 67, 68, 69, 68, 67, 66, 65},
+            {67, 68, 69, 70, 69, 68, 67, 66, 67, 68, 69, 70, 69, 68, 67, 66},
+            {66, 67, 68, 69, 68, 67, 66, 65, 66, 67, 68, 69, 68, 67, 66, 65},
+            {65, 66, 67, 68, 67, 66, 65, 64, 65, 66, 67, 68, 67, 66, 65, 64},
+            {64, 65, 66, 67, 66, 65, 64, 63, 64, 65, 66, 67, 66, 65, 64, 63},
+            {63, 64, 65, 66, 65, 64, 63, 62, 63, 64, 65, 66, 65, 64, 63, 62},
+            {64, 65, 66, 67, 66, 65, 64, 63, 64, 65, 66, 67, 66, 65, 64, 63},
+            {65, 66, 67, 68, 67, 66, 65, 64, 65, 66, 67, 68, 67, 66, 65, 64},
+            {66, 67, 68, 69, 68, 67, 66, 65, 66, 67, 68, 69, 68, 67, 66, 65},
+            {67, 68, 69, 70, 69, 68, 67, 66, 67, 68, 69, 70, 69, 68, 67, 66},
+            {66, 67, 68, 69, 68, 67, 66, 65, 66, 67, 68, 69, 68, 67, 66, 65},
+            {65, 66, 67, 68, 67, 66, 65, 64, 65, 66, 67, 68, 67, 66, 65, 64},
+            {64, 65, 66, 67, 66, 65, 64, 63, 64, 65, 66, 67, 66, 65, 64, 63},
+            {63, 64, 65, 66, 65, 64, 63, 62, 63, 64, 65, 66, 65, 64, 63, 62}
         };
         
         int[][] biomeIds = {
-            {1, 1, 1, 1, 1, 1, 1, 1}, // Plains
-            {1, 1, 2, 2, 2, 2, 1, 1}, // Plains + Desert
-            {1, 2, 2, 6, 6, 2, 2, 1}, // Desert + Forest
-            {2, 2, 6, 6, 6, 6, 2, 2}, // Mixed biomes
-            {2, 2, 6, 6, 6, 6, 2, 2},
-            {1, 2, 2, 6, 6, 2, 2, 1},
-            {1, 1, 2, 2, 2, 2, 1, 1},
-            {1, 1, 1, 1, 1, 1, 1, 1}
+            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}, // Plains
+            {1, 1, 2, 2, 2, 2, 1, 1, 1, 1, 2, 2, 2, 2, 1, 1}, // Plains + Desert
+            {1, 2, 2, 6, 6, 2, 2, 1, 1, 2, 2, 6, 6, 2, 2, 1}, // Desert + Forest
+            {2, 2, 6, 6, 6, 6, 2, 2, 2, 2, 6, 6, 6, 6, 2, 2}, // Mixed biomes
+            {2, 2, 6, 6, 6, 6, 2, 2, 2, 2, 6, 6, 6, 6, 2, 2},
+            {1, 2, 2, 6, 6, 2, 2, 1, 1, 2, 2, 6, 6, 2, 2, 1},
+            {1, 1, 2, 2, 2, 2, 1, 1, 1, 1, 2, 2, 2, 2, 1, 1},
+            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1},
+            {1, 1, 2, 2, 2, 2, 1, 1, 1, 1, 2, 2, 2, 2, 1, 1},
+            {1, 2, 2, 6, 6, 2, 2, 1, 1, 2, 2, 6, 6, 2, 2, 1},
+            {2, 2, 6, 6, 6, 6, 2, 2, 2, 2, 6, 6, 6, 6, 2, 2},
+            {2, 2, 6, 6, 6, 6, 2, 2, 2, 2, 6, 6, 6, 6, 2, 2},
+            {1, 2, 2, 6, 6, 2, 2, 1, 1, 2, 2, 6, 6, 2, 2, 1},
+            {1, 1, 2, 2, 2, 2, 1, 1, 1, 1, 2, 2, 2, 2, 1, 1},
+            {1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1}
         };
         
         int baseY = 60;
@@ -163,18 +179,18 @@ public class TerrainGenerationWorkflowTest {
         // Test that the validation catches invalid data in the workflow
         
         try (OnnxTerrainGenerator generator = new OnnxTerrainGenerator()) {
-            // Test with invalid height values
-            int[][] invalidHeights = new int[7][8]; // Wrong size
+            // Test with invalid height values for center 8x8 extraction (parent heightmap)
+            int[][] invalidHeights = new int[7][8]; // Wrong size for 8x8 center extraction
             
             assertThrows(IllegalArgumentException.class, () -> {
                 OnnxTerrainGenerator.createParentHeightmapFromHeights(invalidHeights, 60);
             }, "Should reject invalid height array size");
             
             // Test with invalid biome IDs - this should work due to clamping
-            int[][] validHeights = new int[8][8];
-            int[][] extremeBiomes = new int[8][8];
-            for (int x = 0; x < 8; x++) {
-                for (int z = 0; z < 8; z++) {
+            int[][] validHeights = new int[16][16]; // 16x16 for new model
+            int[][] extremeBiomes = new int[16][16]; // 16x16 for new model
+            for (int x = 0; x < 16; x++) {
+                for (int z = 0; z < 16; z++) {
                     validHeights[x][z] = 64;
                     extremeBiomes[x][z] = (x == 0 && z == 0) ? -100 : 1000; // Extreme values
                 }
