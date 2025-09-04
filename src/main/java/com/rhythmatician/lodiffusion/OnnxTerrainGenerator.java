@@ -39,8 +39,18 @@ public class OnnxTerrainGenerator implements AutoCloseable {
     
     private boolean available = false;
     private String modelPath;
-    private Model model;
-    private Predictor<TerrainInput, TerrainGenerationResult> predictor;
+    
+    // Thread-safe model loading with lazy initialization
+    private volatile Model model;
+    private final ThreadLocal<Predictor<TerrainInput, TerrainGenerationResult>> predictorTL = 
+        ThreadLocal.withInitial(() -> {
+            try {
+                return getModel().newPredictor(new TerrainTranslator());
+            } catch (Exception e) {
+                LOGGER.warning("Failed to create predictor: " + e.getMessage());
+                return null;
+            }
+        });
     
     /**
      * Input data for terrain generation following LODiffusion v1 contract.
@@ -215,7 +225,22 @@ public class OnnxTerrainGenerator implements AutoCloseable {
         this.modelPath = modelPath;
         loadModel(modelPath);
     }
-    
+
+    /**
+     * Get the loaded model, initializing it if necessary (thread-safe).
+     */
+    private Model getModel() throws IOException {
+        Model m = model;
+        if (m != null) return m;
+        
+        synchronized (this) {
+            if (model == null) {
+                loadModel(modelPath);
+            }
+            return model;
+        }
+    }
+
     /**
      * Load the ONNX model using DJL.
      */
@@ -260,9 +285,6 @@ public class OnnxTerrainGenerator implements AutoCloseable {
             model = Model.newInstance("lodiffusion-terrain-generator");
             model.load(validPath);
             
-            // Create predictor with our translator
-            predictor = model.newPredictor(new TerrainTranslator());
-            
             available = true;
             LOGGER.info("✅ ONNX terrain generator loaded successfully!");
             LOGGER.info("   Model: " + validPath.toAbsolutePath() + " (" + fileSize + " bytes)");
@@ -306,7 +328,7 @@ public class OnnxTerrainGenerator implements AutoCloseable {
                    "][" + heightTensor[0].length + "][" + heightTensor[0][0].length + "][" + heightTensor[0][0][0].length + "][" + heightTensor[0][0][0][0].length + "]");
         LOGGER.fine("Biome tensor: [" + biomeTensor.length + "][" + biomeTensor[0].length + "][" + biomeTensor[0][0].length + "][" + biomeTensor[0][0][0].length + "][" + biomeTensor[0][0][0][0].length + "]");
         
-        if (available && predictor != null) {
+        if (available && predictorTL.get() != null) {
             try {
                 LOGGER.fine("🧠 Running ONNX inference with new 16x16 model...");
                 
@@ -353,10 +375,15 @@ public class OnnxTerrainGenerator implements AutoCloseable {
                    "][" + parentHeightmap[0].length + "][" + parentHeightmap[0][0].length + "]");
         LOGGER.fine("Biome data shape: [" + biomeData.length + "][" + biomeData[0].length + "][" + biomeData[0][0].length + "]");
         
-        if (available && predictor != null) {
-            // Use actual ONNX inference
+        if (available) {
+            // Use actual ONNX inference with thread-safe predictor
             try {
                 LOGGER.fine("🧠 Running ONNX inference with DJL...");
+                
+                Predictor<TerrainInput, TerrainGenerationResult> predictor = predictorTL.get();
+                if (predictor == null) {
+                    throw new RuntimeException("Failed to get thread-local predictor");
+                }
                 
                 TerrainInput input = new TerrainInput(parentHeightmap, biomeData, timestep, chunkPos);
                 TerrainGenerationResult result = predictor.predict(input);
@@ -824,11 +851,10 @@ public class OnnxTerrainGenerator implements AutoCloseable {
     @Override
     public void close() {
         try {
-            if (predictor != null) {
-                predictor.close();
-                predictor = null;
-                LOGGER.fine("DJL predictor closed");
-            }
+            // Close all thread-local predictors
+            predictorTL.remove();
+            LOGGER.fine("Thread-local predictors cleared");
+            
             if (model != null) {
                 model.close();
                 model = null;
