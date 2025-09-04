@@ -77,15 +77,10 @@ dependencies {
 	// Kotlin standard library - required by Hephaistos
 	implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.10'
 	
-	// DJL (Deep Java Library) for ONNX inference
-	// Force explicit versions to avoid Fabric Loom classpath issues
-	implementation 'ai.djl:api:0.27.0'
-	implementation 'ai.djl.onnxruntime:onnxruntime-engine:0.27.0'
-	implementation 'com.microsoft.onnxruntime:onnxruntime:1.17.1'
-	
-	// Explicitly add to compile classpath to work around Fabric Loom issues
-	compileOnly 'ai.djl:api:0.27.0'
-	compileOnly 'ai.djl.onnxruntime:onnxruntime-engine:0.27.0'
+	// DJL (Deep Java Library) for ONNX inference using BOM for version management
+	implementation platform('ai.djl:bom:0.27.0')
+	implementation 'ai.djl:api'
+	runtimeOnly 'ai.djl.onnxruntime:onnxruntime-engine'
 }
 
 processResources {
