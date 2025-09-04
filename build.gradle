@@ -77,10 +77,13 @@ dependencies {
 	// Kotlin standard library - required by Hephaistos
 	implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.10'
 	
-	// DJL (Deep Java Library) for ONNX inference using BOM for version management
-	implementation platform('ai.djl:bom:0.27.0')
+	// DJL (Deep Java Library) for ONNX inference using BOM for version management (updated to 0.30.0 per ONNX integration roadmap)
+	implementation platform('ai.djl:bom:0.30.0')
 	implementation 'ai.djl:api'
 	runtimeOnly 'ai.djl.onnxruntime:onnxruntime-engine'
+
+	// Gson for lightweight JSON config loading (runtime toggle + metrics paths)
+	implementation 'com.google.code.gson:gson:2.11.0'
 }
 
 processResources {
