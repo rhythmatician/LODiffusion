@@ -28,6 +28,11 @@ repositories {
 		name = 'JitPack'
 		url = 'https://jitpack.io' 
 	}
+	// Add DJL snapshot repository for latest versions
+	maven {
+		name = 'DJL Snapshot'
+		url = 'https://oss.sonatype.org/content/repositories/snapshots/'
+	}
 }
 
 loom {
@@ -49,11 +54,16 @@ dependencies {
 
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
+	
+	// Distant Horizons integration - using local JAR files
+	compileOnly files('mods/DistantHorizonsApi-4.0.0.jar')
+	modRuntimeOnly files('mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar')
+
 	// NOTE: Distant Horizons integration is runtime-only via reflection
 	// DH doesn't publish to Maven Central, so we avoid compile-time dependencies
 	// Users need to install DH separately for LOD features to work
 	// Runtime detection handles DH presence/absence gracefully
-	
+
 	// JUnit 5 for testing
 	testImplementation 'org.junit.jupiter:junit-jupiter:5.9.2'
 	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
@@ -66,6 +76,11 @@ dependencies {
 
 	// Kotlin standard library - required by Hephaistos
 	implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.10'
+	
+	// DJL (Deep Java Library) for ONNX inference using BOM for version management
+	implementation platform('ai.djl:bom:0.27.0')
+	implementation 'ai.djl:api'
+	runtimeOnly 'ai.djl.onnxruntime:onnxruntime-engine'
 }
 
 processResources {

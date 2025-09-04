@@ -118,7 +118,7 @@ venv.bak/
 
 # PyTorch/ML models
 *.pth
-*.onnx
+# *.onnx  # Unignoring until VoxelTree includes builds in CD
 *.pt
 *.model
 checkpoints/

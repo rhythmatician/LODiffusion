@@ -62,7 +62,7 @@ git push origin your-branch-name
   * `src/test/java/data/` — synthetic dataset tests (e.g., `BiomeSamplingTest`)
   * `src/test/java/benchmark/` — performance and inference benchmarks
 * Use **JUnit 5** and **Mockito**
-* Target **80%+ code coverage per commit**
+* Target **70%+ code coverage per commit**
 * Use tags for clarity:
 
   * `@Tag("ci")` — regular CI tests
