@@ -35,6 +35,12 @@ jobs:
       - name: Grant execute permission to gradlew.bat
         run: git update-index --chmod=+x gradlew.bat
 
+      - name: Download DistantHorizons JAR
+        run: |
+          mkdir -p mods
+          curl -L -o mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/raw/Forge/build/libs/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar?job=build:%20%5B1.21.4%5D"
+          curl -L -o mods/DistantHorizonsApi-4.0.0.jar "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/raw/Forge/build/libs/DistantHorizonsApi-4.0.0.jar?job=build:%20%5B1.21.4%5D"
+
       - name: Run lint checks
         run: ./gradlew.bat lint
 
@@ -65,6 +71,12 @@ jobs:
 
       - name: Grant execute permission to gradlew.bat
         run: git update-index --chmod=+x gradlew.bat
+
+      - name: Download DistantHorizons JAR
+        run: |
+          mkdir -p mods
+          curl -L -o mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/raw/Forge/build/libs/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar?job=build:%20%5B1.21.4%5D"
+          curl -L -o mods/DistantHorizonsApi-4.0.0.jar "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/raw/Forge/build/libs/DistantHorizonsApi-4.0.0.jar?job=build:%20%5B1.21.4%5D"
 
       - name: Run tests with coverage
         run: ./gradlew.bat test jacocoTestReport jacocoTestCoverageVerification
@@ -112,6 +124,12 @@ jobs:
 
       - name: Grant execute permission to gradlew.bat
         run: git update-index --chmod=+x gradlew.bat
+
+      - name: Download DistantHorizons JAR
+        run: |
+          mkdir -p mods
+          curl -L -o mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/raw/Forge/build/libs/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar?job=build:%20%5B1.21.4%5D"
+          curl -L -o mods/DistantHorizonsApi-4.0.0.jar "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/raw/Forge/build/libs/DistantHorizonsApi-4.0.0.jar?job=build:%20%5B1.21.4%5D"
 
       - name: Build mod JAR
         run: ./gradlew.bat build --exclude-task test
