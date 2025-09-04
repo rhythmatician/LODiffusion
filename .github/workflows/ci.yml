@@ -10,7 +10,7 @@ jobs:
   # Lint job - fastest, fails quickly on code style issues
   lint:
     name: Code Quality & Linting
-    runs-on: windows-latest
+    runs-on: windows-2022
     
     steps:
       - name: Checkout repository
@@ -253,13 +253,26 @@ jobs:
         with:
           lfs: true
 
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup dependencies (create stub JARs for CodeQL)
+        run: |
+          mkdir -p mods
+          echo "Creating stub JARs for CodeQL analysis..."
+          jar cf mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar -C . README.md
+          jar cf mods/DistantHorizonsApi-4.0.0.jar -C . README.md
+
       - name: Initialize CodeQL
-        uses: github/codeql-action/init@v2
+        uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
 
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v2
+      - name: Build with Gradle (custom build for CodeQL)
+        run: ./gradlew build -x test
 
       - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v2
+        uses: github/codeql-action/analyze@v3
