@@ -26,6 +26,7 @@ jobs:
 
       - name: Restore Gradle cache
         uses: actions/cache@v4
+        continue-on-error: true
         with:
           path: |
             ~\.gradle\caches
@@ -79,6 +80,9 @@ jobs:
   test:
     name: Tests & Coverage
     runs-on: windows-2022
+    permissions:
+      contents: read
+      pull-requests: write
     
     steps:
       - name: Checkout repository
@@ -94,6 +98,7 @@ jobs:
 
       - name: Restore Gradle cache
         uses: actions/cache@v4
+        continue-on-error: true
         with:
           path: |
             ~\.gradle\caches
@@ -178,6 +183,7 @@ jobs:
 
       - name: Restore Gradle cache
         uses: actions/cache@v4
+        continue-on-error: true
         with:
           path: |
             ~\.gradle\caches
@@ -259,17 +265,54 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - name: Setup dependencies (create stub JARs for CodeQL)
+      - name: Restore Gradle cache
+        uses: actions/cache@v4
+        continue-on-error: true
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Setup dependencies (download real JARs for CodeQL)
         run: |
           mkdir -p mods
-          echo "Creating stub JARs for CodeQL analysis..."
-          jar cf mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar -C . README.md
-          jar cf mods/DistantHorizonsApi-4.0.0.jar -C . README.md
+          echo "Downloading real DistantHorizons JARs for CodeQL analysis..."
+          
+          # Download main build artifacts
+          curl -L "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=build:%20%5B1.21.4%5D" -o "dh-main-artifacts.zip"
+          unzip -q "dh-main-artifacts.zip"
+          
+          # Find and copy main JAR
+          find . -name "DistantHorizons-fabric-*.jar" -exec cp {} "mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar" \; -quit
+          
+          # Download API artifacts  
+          curl -L "https://gitlab.com/distant-horizons-team/distant-horizons/-/jobs/artifacts/main/download?job=api" -o "dh-api-artifacts.zip"
+          unzip -q "dh-api-artifacts.zip"
+          
+          # Find and copy API JAR
+          find . -name "DistantHorizonsApi-*.jar" -exec cp {} "mods/DistantHorizonsApi-4.0.0.jar" \; -quit
+          
+          # Fallback: create stub JARs if download failed
+          if [ ! -f "mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar" ]; then
+              jar cf mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar -C . README.md
+          fi
+          if [ ! -f "mods/DistantHorizonsApi-4.0.0.jar" ]; then
+              jar cf mods/DistantHorizonsApi-4.0.0.jar -C . README.md
+          fi
+          
+          # Verify what we have
+          ls -la mods/
 
       - name: Initialize CodeQL
         uses: github/codeql-action/init@v3
         with:
           languages: ${{ matrix.language }}
+
+      - name: Grant execute permission to gradlew
+        run: chmod +x gradlew
 
       - name: Build with Gradle (custom build for CodeQL)
         run: ./gradlew build -x test
