@@ -31,17 +31,33 @@ public class OnnxTerrainGenerator implements AutoCloseable {
     
     private static final Logger LOGGER = Logger.getLogger(OnnxTerrainGenerator.class.getName());
     
+    // Progressive model paths (updated for new onnx_export models)
+    private static final String PROGRESSIVE_MODEL_BASE = "onnx_export/flexible_unet3d_";
+    private static final String DEFAULT_MODEL_PATH = "artifacts/chunk_16x16/model.onnx"; // Legacy fallback
+    
+    // Progressive LOD model paths
+    private static final String MODEL_LOD4TO3 = PROGRESSIVE_MODEL_BASE + "lod4to3.onnx";
+    private static final String MODEL_LOD3TO2 = PROGRESSIVE_MODEL_BASE + "lod3to2.onnx"; 
+    private static final String MODEL_LOD2TO1 = PROGRESSIVE_MODEL_BASE + "lod2to1.onnx";
+    private static final String MODEL_LOD1TO0 = PROGRESSIVE_MODEL_BASE + "lod1to0.onnx";
+    
     // LODiffusion v1 contract constants
     public static final int MAX_BLOCK_TYPES = 1104;
     public static final int INPUT_SIZE = 8;
     public static final int OUTPUT_SIZE = 16;
-    private static final String DEFAULT_MODEL_PATH = "artifacts/chunk_16x16/model.onnx";
     
     private boolean available = false;
     private String modelPath;
     
+    // Progressive model management
+    private boolean useProgressiveModels = true;
+    private volatile Model modelLod4to3;
+    private volatile Model modelLod3to2;
+    private volatile Model modelLod2to1;
+    private volatile Model modelLod1to0;
+    
     // Thread-safe model loading with lazy initialization
-    private volatile Model model;
+    private volatile Model model; // Legacy model for fallback
     private final ThreadLocal<Predictor<TerrainInput, TerrainGenerationResult>> predictorTL = 
         ThreadLocal.withInitial(() -> {
             try {
@@ -52,6 +68,24 @@ public class OnnxTerrainGenerator implements AutoCloseable {
             }
         });
     
+    /**
+     * Input data for progressive terrain generation.
+     */
+    public static class ProgressiveTerrainInput {
+        public final float[][][][][] parentVoxel;    // Progressive parent voxels [1,1,X,X,X]
+        public final float[][][][] biomePatch;       // Biome data [1,256,16,16] 
+        public final float[][][][][] heightmapPatch; // Height data [1,1,16,16,1]
+        public final float[][][][][] riverPatch;     // River feature data [1,1,16,16,1]
+        
+        public ProgressiveTerrainInput(float[][][][][] parentVoxel, float[][][][] biomePatch, 
+                                     float[][][][][] heightmapPatch, float[][][][][] riverPatch) {
+            this.parentVoxel = parentVoxel;
+            this.biomePatch = biomePatch;
+            this.heightmapPatch = heightmapPatch;
+            this.riverPatch = riverPatch;
+        }
+    }
+
     /**
      * Input data for terrain generation following LODiffusion v1 contract.
      */
@@ -102,6 +136,154 @@ public class OnnxTerrainGenerator implements AutoCloseable {
         }
     }
     
+    /**
+     * DJL Translator for Progressive LOD models.
+     * Converts Java data to NDArrays for new progressive models with updated input names.
+     */
+    private static class ProgressiveTerrainTranslator implements Translator<ProgressiveTerrainInput, TerrainGenerationResult> {
+        
+        @Override
+        public NDList processInput(TranslatorContext ctx, ProgressiveTerrainInput input) {
+            NDManager manager = ctx.getNDManager();
+            
+            // parent_voxel: [1, 1, X, X, X] - already in correct 5D format
+            int[] parentShape = {
+                input.parentVoxel.length,
+                input.parentVoxel[0].length,
+                input.parentVoxel[0][0].length,
+                input.parentVoxel[0][0][0].length,
+                input.parentVoxel[0][0][0][0].length
+            };
+            float[] parentFlat = flatten5D(input.parentVoxel);
+            // Convert int[] to long[] for DJL Shape constructor
+            long[] parentShapeLong = new long[parentShape.length];
+            for (int i = 0; i < parentShape.length; i++) {
+                parentShapeLong[i] = parentShape[i];
+            }
+            NDArray parentArray = manager.create(parentFlat).reshape(new Shape(parentShapeLong));
+            
+            // biome_patch: [1, 256, 16, 16] - already in correct 4D format  
+            int[] biomeShape = {
+                input.biomePatch.length,
+                input.biomePatch[0].length,
+                input.biomePatch[0][0].length,
+                input.biomePatch[0][0][0].length
+            };
+            float[] biomeFlat = flatten4D(input.biomePatch);
+            // Convert int[] to long[] for DJL Shape constructor
+            long[] biomeShapeLong = new long[biomeShape.length];
+            for (int i = 0; i < biomeShape.length; i++) {
+                biomeShapeLong[i] = biomeShape[i];
+            }
+            NDArray biomeArray = manager.create(biomeFlat).reshape(new Shape(biomeShapeLong));
+            
+            // heightmap_patch: [1, 1, 16, 16, 1] - already in correct 5D format
+            int[] heightShape = {
+                input.heightmapPatch.length,
+                input.heightmapPatch[0].length,
+                input.heightmapPatch[0][0].length,
+                input.heightmapPatch[0][0][0].length,
+                input.heightmapPatch[0][0][0][0].length
+            };
+            float[] heightFlat = flatten5D(input.heightmapPatch);
+            // Convert int[] to long[] for DJL Shape constructor
+            long[] heightShapeLong = new long[heightShape.length];
+            for (int i = 0; i < heightShape.length; i++) {
+                heightShapeLong[i] = heightShape[i];
+            }
+            NDArray heightArray = manager.create(heightFlat).reshape(new Shape(heightShapeLong));
+            
+            // river_patch: [1, 1, 16, 16, 1] - already in correct 5D format
+            float[] riverFlat = flatten5D(input.riverPatch);
+            NDArray riverArray = manager.create(riverFlat).reshape(new Shape(heightShapeLong)); // Same shape as height
+            
+            // Return inputs in order expected by progressive models
+            return new NDList(parentArray, biomeArray, heightArray, riverArray);
+        }
+        
+        @Override
+        public TerrainGenerationResult processOutput(TranslatorContext ctx, NDList list) {
+            // Progressive models output: air_mask_logits, block_type_logits
+            NDArray airMaskLogits = list.get(0);
+            NDArray blockTypeLogits = list.get(1);
+            
+            // Convert to Java arrays with correct BCHWD order for terrain generation
+            float[][][][] airMask = convertNDArrayTo4D(airMaskLogits);
+            float[][][][] blockLogits = convertNDArrayTo4D(blockTypeLogits);
+            
+            return new TerrainGenerationResult(blockLogits, airMask);
+        }
+        
+        @Override
+        public Batchifier getBatchifier() {
+            return null; // No batching for terrain generation
+        }
+        
+        // Helper methods for array flattening
+        private float[] flatten5D(float[][][][][] array) {
+            int size = array.length * array[0].length * array[0][0].length * 
+                      array[0][0][0].length * array[0][0][0][0].length;
+            float[] result = new float[size];
+            int idx = 0;
+            for (int i = 0; i < array.length; i++) {
+                for (int j = 0; j < array[0].length; j++) {
+                    for (int k = 0; k < array[0][0].length; k++) {
+                        for (int l = 0; l < array[0][0][0].length; l++) {
+                            for (int m = 0; m < array[0][0][0][0].length; m++) {
+                                result[idx++] = array[i][j][k][l][m];
+                            }
+                        }
+                    }
+                }
+            }
+            return result;
+        }
+        
+        private float[] flatten4D(float[][][][] array) {
+            int size = array.length * array[0].length * array[0][0].length * array[0][0][0].length;
+            float[] result = new float[size];
+            int idx = 0;
+            for (int i = 0; i < array.length; i++) {
+                for (int j = 0; j < array[0].length; j++) {
+                    for (int k = 0; k < array[0][0].length; k++) {
+                        for (int l = 0; l < array[0][0][0].length; l++) {
+                            result[idx++] = array[i][j][k][l];
+                        }
+                    }
+                }
+            }
+            return result;
+        }
+        
+        // Helper method to convert NDArray to 4D Java array
+        private float[][][][] convertNDArrayTo4D(NDArray ndArray) {
+            long[] shape = ndArray.getShape().getShape();
+            if (shape.length != 4) {
+                throw new IllegalArgumentException("Expected 4D array, got " + shape.length + "D");
+            }
+            
+            int dim0 = (int) shape[0];
+            int dim1 = (int) shape[1]; 
+            int dim2 = (int) shape[2];
+            int dim3 = (int) shape[3];
+            
+            float[] flat = ndArray.toFloatArray();
+            float[][][][] result = new float[dim0][dim1][dim2][dim3];
+            
+            int idx = 0;
+            for (int i = 0; i < dim0; i++) {
+                for (int j = 0; j < dim1; j++) {
+                    for (int k = 0; k < dim2; k++) {
+                        for (int l = 0; l < dim3; l++) {
+                            result[i][j][k][l] = flat[idx++];
+                        }
+                    }
+                }
+            }
+            return result;
+        }
+    }
+
     /**
      * DJL Translator for LODiffusion v1 contract.
      * Converts Java data to NDArrays and back.
@@ -223,7 +405,19 @@ public class OnnxTerrainGenerator implements AutoCloseable {
      */
     public OnnxTerrainGenerator(String modelPath) throws IOException {
         this.modelPath = modelPath;
-        loadModel(modelPath);
+        
+        // Try to load progressive models first
+        try {
+            loadProgressiveModels();
+        } catch (Exception e) {
+            LOGGER.warning("Failed to load progressive models, falling back to legacy: " + e.getMessage());
+            useProgressiveModels = false;
+        }
+        
+        // Load legacy model as fallback (only if progressive models aren't available)
+        if (!available) {
+            loadModel(modelPath);
+        }
     }
 
     /**
@@ -299,12 +493,175 @@ public class OnnxTerrainGenerator implements AutoCloseable {
     }
     
     /**
+     * Load all progressive LOD models.
+     */
+    private void loadProgressiveModels() throws IOException {
+        if (!useProgressiveModels) {
+            LOGGER.info("Progressive models disabled, using legacy model only");
+            return;
+        }
+        
+        LOGGER.info("Loading progressive LOD models...");
+        
+        try {
+            modelLod4to3 = loadSingleProgressiveModel(MODEL_LOD4TO3, "LOD4→3");
+            modelLod3to2 = loadSingleProgressiveModel(MODEL_LOD3TO2, "LOD3→2");
+            modelLod2to1 = loadSingleProgressiveModel(MODEL_LOD2TO1, "LOD2→1");
+            modelLod1to0 = loadSingleProgressiveModel(MODEL_LOD1TO0, "LOD1→0");
+            
+            if (modelLod4to3 != null && modelLod3to2 != null && 
+                modelLod2to1 != null && modelLod1to0 != null) {
+                LOGGER.info("✅ All progressive LOD models loaded successfully!");
+                LOGGER.info("   Progressive refinement: LOD4→LOD3→LOD2→LOD1→LOD0");
+                LOGGER.info("   Input contract: parent_voxel, biome_patch, heightmap_patch, river_patch");
+                LOGGER.info("   Output contract: air_mask_logits, block_type_logits");
+                available = true; // Mark as available since progressive models loaded
+            } else {
+                LOGGER.warning("Failed to load some progressive models, falling back to legacy");
+                useProgressiveModels = false;
+            }
+            
+        } catch (Exception e) {
+            LOGGER.warning("Failed to load progressive models: " + e.getMessage());
+            useProgressiveModels = false;
+        }
+    }
+    
+    /**
+     * Load a single progressive model.
+     */
+    private Model loadSingleProgressiveModel(String modelPath, String lodStage) throws IOException {
+        Path[] pathsToTry = {
+            Paths.get(modelPath),
+            Paths.get("../" + modelPath),
+            Paths.get("../../" + modelPath)
+        };
+        
+        for (Path path : pathsToTry) {
+            if (path.toFile().exists()) {
+                long fileSize = path.toFile().length();
+                if (fileSize < 1024 * 1024) {
+                    LOGGER.warning(lodStage + " model too small (" + fileSize + " bytes)");
+                    continue;
+                }
+                
+                try {
+                    Model progressiveModel = Model.newInstance("lodiffusion-" + lodStage.toLowerCase());
+                    progressiveModel.load(path);
+                    LOGGER.info("   " + lodStage + ": " + path.getFileName() + " (" + fileSize + " bytes)");
+                    return progressiveModel;
+                } catch (Exception e) {
+                    LOGGER.warning("Failed to load " + lodStage + " model: " + e.getMessage());
+                    // Continue to try next path
+                }
+            }
+        }
+        
+        LOGGER.warning(lodStage + " model not found at: " + modelPath);
+        return null;
+    }
+    
+    /**
      * Check if the generator is available for use.
      */
     public boolean isAvailable() {
         return available;
     }
     
+    /**
+     * Generate terrain using progressive LOD refinement (LOD4→LOD3→LOD2→LOD1→LOD0).
+     * This is the main entry point for progressive terrain generation.
+     * 
+     * @param biomeIds 16x16 array of biome IDs
+     * @param heightValues 16x16 array of base height values 
+     * @param chunkX Chunk X coordinate
+     * @param chunkZ Chunk Z coordinate
+     * @return Complete 16x16x16 terrain with progressive refinement
+     */
+    public int[][][] generateProgressiveTerrain(int[][] biomeIds, int[][] heightValues, float chunkX, float chunkZ) {
+        if (!useProgressiveModels || !areProgressiveModelsLoaded()) {
+            LOGGER.warning("Progressive models not available, falling back to legacy generation");
+            return generateTerrainFromHeights(heightValues, biomeIds, 64, chunkX, chunkZ);
+        }
+        
+        try {
+            LOGGER.fine("Starting progressive LOD terrain generation for chunk (" + chunkX + ", " + chunkZ + ")");
+            
+            // Prepare input data
+            float[][][][] biomePatch = createBiomePatch(biomeIds);          // [1,256,16,16]
+            float[][][][][] heightmapPatch = createHeightmapPatch(heightValues); // [1,1,16,16,1]
+            float[][][][][] riverPatch = createRiverPatch();                // [1,1,16,16,1] (stub for now)
+            
+            // Stage 1: LOD4→LOD3 (1x1x1 → 2x2x2)
+            float[][][][][] parentVoxel4 = createInitialParentVoxel(); // [1,1,1,1,1]
+            ProgressiveTerrainInput input4to3 = new ProgressiveTerrainInput(
+                parentVoxel4, biomePatch, heightmapPatch, riverPatch);
+            TerrainGenerationResult result3 = generateLodStage(modelLod4to3, input4to3, "LOD4→3");
+            
+            // Stage 2: LOD3→LOD2 (2x2x2 → 4x4x4)
+            float[][][][][] parentVoxel3 = convertResultToParentVoxel(result3, 2, 2, 2);
+            ProgressiveTerrainInput input3to2 = new ProgressiveTerrainInput(
+                parentVoxel3, biomePatch, heightmapPatch, riverPatch);
+            TerrainGenerationResult result2 = generateLodStage(modelLod3to2, input3to2, "LOD3→2");
+            
+            // Stage 3: LOD2→LOD1 (4x4x4 → 8x8x8)
+            float[][][][][] parentVoxel2 = convertResultToParentVoxel(result2, 4, 4, 4);
+            ProgressiveTerrainInput input2to1 = new ProgressiveTerrainInput(
+                parentVoxel2, biomePatch, heightmapPatch, riverPatch);
+            TerrainGenerationResult result1 = generateLodStage(modelLod2to1, input2to1, "LOD2→1");
+            
+            // Stage 4: LOD1→LOD0 (8x8x8 → 16x16x16)
+            float[][][][][] parentVoxel1 = convertResultToParentVoxel(result1, 8, 8, 8);
+            ProgressiveTerrainInput input1to0 = new ProgressiveTerrainInput(
+                parentVoxel1, biomePatch, heightmapPatch, riverPatch);
+            TerrainGenerationResult result0 = generateLodStage(modelLod1to0, input1to0, "LOD1→0");
+            
+            // Convert final result to block IDs
+            int[][][] blockPredictions = extractBlockPredictions(result0.blockLogits);
+            int[][][] finalTerrain = applyAirMask(blockPredictions, result0.airMask);
+            
+            LOGGER.fine("✅ Progressive LOD terrain generation completed successfully");
+            return finalTerrain;
+            
+        } catch (Exception e) {
+            LOGGER.warning("Progressive terrain generation failed, falling back to legacy: " + e.getMessage());
+            return generateTerrainFromHeights(heightValues, biomeIds, 64, chunkX, chunkZ);
+        }
+    }
+    
+    /**
+     * Generate a single LOD stage using the appropriate model.
+     */
+    private TerrainGenerationResult generateLodStage(Model model, ProgressiveTerrainInput input, String stage) {
+        try {
+            LOGGER.fine("Running " + stage + " inference...");
+            
+            Predictor<ProgressiveTerrainInput, TerrainGenerationResult> predictor = 
+                model.newPredictor(new ProgressiveTerrainTranslator());
+            
+            TerrainGenerationResult result = predictor.predict(input);
+            predictor.close();
+            
+            LOGGER.fine(stage + " completed - output shapes: " + 
+                       result.blockLogits.length + "x" + result.blockLogits[0].length + "x" +
+                       result.blockLogits[0][0].length + "x" + result.blockLogits[0][0][0].length);
+            
+            return result;
+            
+        } catch (Exception e) {
+            LOGGER.warning(stage + " inference failed: " + e.getMessage());
+            throw new RuntimeException("Progressive LOD stage " + stage + " failed", e);
+        }
+    }
+    
+    /**
+     * Check if all progressive models are loaded.
+     */
+    private boolean areProgressiveModelsLoaded() {
+        return modelLod4to3 != null && modelLod3to2 != null && 
+               modelLod2to1 != null && modelLod1to0 != null;
+    }
+
     /**
      * Generate terrain using the new model that accepts 16x16 inputs directly.
      * Uses the chunk_16x16 model contract with proper tensor shapes.
@@ -853,6 +1210,25 @@ public class OnnxTerrainGenerator implements AutoCloseable {
             predictorTL.remove();
             LOGGER.fine("Thread-local predictors cleared");
             
+            // Close progressive models
+            if (modelLod4to3 != null) {
+                modelLod4to3.close();
+                modelLod4to3 = null;
+            }
+            if (modelLod3to2 != null) {
+                modelLod3to2.close();
+                modelLod3to2 = null;
+            }
+            if (modelLod2to1 != null) {
+                modelLod2to1.close();
+                modelLod2to1 = null;
+            }
+            if (modelLod1to0 != null) {
+                modelLod1to0.close();
+                modelLod1to0 = null;
+            }
+            
+            // Close legacy model
             if (model != null) {
                 model.close();
                 model = null;
@@ -920,5 +1296,81 @@ public class OnnxTerrainGenerator implements AutoCloseable {
         }
         
         return biomeData;
+    }
+    
+    // ================================================================================================
+    // PROGRESSIVE LOD HELPER METHODS
+    // ================================================================================================
+    
+    /**
+     * Create biome patch in progressive format [1, 256, 16, 16].
+     */
+    private static float[][][][] createBiomePatch(int[][] biomeIds) {
+        float[][][][] biomePatch = new float[1][256][16][16];
+        
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                int biomeId = Math.max(0, Math.min(255, biomeIds[x][z]));
+                biomePatch[0][biomeId][x][z] = 1.0f; // One-hot encoding
+            }
+        }
+        
+        return biomePatch;
+    }
+    
+    /**
+     * Create heightmap patch in progressive format [1, 1, 16, 16, 1].
+     */
+    private static float[][][][][] createHeightmapPatch(int[][] heightValues) {
+        float[][][][][] heightmapPatch = new float[1][1][16][16][1];
+        
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                // Normalize height to [-1, 1] range
+                heightmapPatch[0][0][x][z][0] = (heightValues[x][z] - 64) / 64.0f;
+            }
+        }
+        
+        return heightmapPatch;
+    }
+    
+    /**
+     * Create river patch in progressive format [1, 1, 16, 16, 1].
+     * Currently returns zeros - can be enhanced with actual river data.
+     */
+    private static float[][][][][] createRiverPatch() {
+        return new float[1][1][16][16][1]; // All zeros for now
+    }
+    
+    /**
+     * Create initial parent voxel for LOD4 stage [1, 1, 1, 1, 1].
+     * Represents the entire subchunk as a single voxel.
+     */
+    private static float[][][][][] createInitialParentVoxel() {
+        float[][][][][] parentVoxel = new float[1][1][1][1][1];
+        parentVoxel[0][0][0][0][0] = 0.5f; // Neutral starting value
+        return parentVoxel;
+    }
+    
+    /**
+     * Convert terrain generation result to parent voxel for next LOD stage.
+     * Uses air mask to determine solid/air classification.
+     */
+    private static float[][][][][] convertResultToParentVoxel(TerrainGenerationResult result, int x, int y, int z) {
+        float[][][][][] parentVoxel = new float[1][1][x][y][z];
+        
+        // Extract air mask and convert to parent voxel representation
+        float[][][][] airMask = result.airMask;
+        
+        for (int i = 0; i < x; i++) {
+            for (int j = 0; j < y; j++) {
+                for (int k = 0; k < z; k++) {
+                    // Use air mask to determine if voxel is solid (1.0) or air (0.0)
+                    parentVoxel[0][0][i][j][k] = (airMask[0][i][j][k] > 0.5f) ? 1.0f : 0.0f;
+                }
+            }
+        }
+        
+        return parentVoxel;
     }
 }

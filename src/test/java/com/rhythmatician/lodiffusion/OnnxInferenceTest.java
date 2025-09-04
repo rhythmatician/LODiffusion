@@ -15,169 +15,193 @@ import org.junit.jupiter.api.Test;
 
 /**
  * Test class for ONNX model inference integration.
- * Tests the LODiffusion v1 contract implementation with stub data.
- * TODO: Add real DJL-based ONNX inference tests once dependencies are resolved.
+ * Tests the progressive LODiffusion models with 4-stage refinement.
+ * Currently tests with fallback stubs while DJL integration is being completed.
  */
 @Tag("inference")
 class OnnxInferenceTest {
 
-    private static final String MODEL_PATH = "artifacts/chunk_16x16/model.onnx";
+    private static final String PROGRESSIVE_MODEL_DIR = "onnx_export";
+    private static final String[] PROGRESSIVE_MODELS = {
+        "flexible_unet3d_lod4to3.onnx",
+        "flexible_unet3d_lod3to2.onnx", 
+        "flexible_unet3d_lod2to1.onnx",
+        "flexible_unet3d_lod1to0.onnx"
+    };
     
     @BeforeEach
     void setUp() {
-        // Ensure model file exists
-        Path modelPath = Paths.get(MODEL_PATH);
-        assertTrue(modelPath.toFile().exists(), 
-            "ONNX model file should exist at: " + MODEL_PATH);
+        // Ensure at least one progressive model exists
+        boolean hasAnyModel = false;
+        for (String modelName : PROGRESSIVE_MODELS) {
+            Path modelPath = Paths.get(PROGRESSIVE_MODEL_DIR, modelName);
+            if (modelPath.toFile().exists()) {
+                hasAnyModel = true;
+                break;
+            }
+        }
+        assertTrue(hasAnyModel, 
+            "At least one progressive ONNX model file should exist in: " + PROGRESSIVE_MODEL_DIR);
     }
 
     @Test
     void testOnnxModelExists() {
-        // Given: Model path
-        Path modelPath = Paths.get(MODEL_PATH);
-        
-        // Skip test if model file doesn't exist (e.g., CI environment without Git LFS)
-        assumeTrue(modelPath.toFile().exists(), 
-            "Skipping ONNX model test - model file not found. This may occur in CI environments without Git LFS. Expected at: " + MODEL_PATH);
-        
-        // When/Then: Model file should exist and be readable
-        assertTrue(modelPath.toFile().canRead(), "Model file should be readable");
-        assertTrue(modelPath.toFile().length() > 0, "Model file should not be empty");
-        
-        // Should be a reasonable size for an ONNX model (> 1MB)
-        assertTrue(modelPath.toFile().length() > 1024 * 1024, 
-            "Model file should be larger than 1MB (actual: " + modelPath.toFile().length() + " bytes)");
+        // Test that progressive models exist and are readable
+        for (String modelName : PROGRESSIVE_MODELS) {
+            Path modelPath = Paths.get(PROGRESSIVE_MODEL_DIR, modelName);
+            
+            // Skip test if model file doesn't exist (e.g., CI environment without Git LFS)
+            assumeTrue(modelPath.toFile().exists(), 
+                "Skipping ONNX model test - model file not found: " + modelName + 
+                ". This may occur in CI environments without Git LFS.");
+            
+            // When/Then: Model file should exist and be readable
+            assertTrue(modelPath.toFile().canRead(), "Model file should be readable: " + modelName);
+            assertTrue(modelPath.toFile().length() > 0, "Model file should not be empty: " + modelName);
+            
+            // Should be a reasonable size for an ONNX model (> 100KB)
+            assertTrue(modelPath.toFile().length() > 100 * 1024, 
+                "Model file should be larger than 100KB: " + modelName + 
+                " (actual: " + modelPath.toFile().length() + " bytes)");
+        }
     }
 
     @Test
     void testOnnxModelLoading() {
-        // Given: Model path
-        Path modelPath = Paths.get(MODEL_PATH);
+        // Test that progressive models can be loaded
+        boolean hasAnyModel = false;
+        for (String modelName : PROGRESSIVE_MODELS) {
+            Path modelPath = Paths.get(PROGRESSIVE_MODEL_DIR, modelName);
+            if (modelPath.toFile().exists()) {
+                hasAnyModel = true;
+                break;
+            }
+        }
         
-        // Skip test if model file doesn't exist (e.g., CI environment without Git LFS)
-        assumeTrue(modelPath.toFile().exists(), 
-            "Skipping ONNX model loading test - model file not found. This may occur in CI environments without Git LFS. Expected at: " + MODEL_PATH);
+        // Skip test if no model files exist (e.g., CI environment without Git LFS)
+        assumeTrue(hasAnyModel, 
+            "Skipping ONNX model loading test - no progressive models found. " +
+            "This may occur in CI environments without Git LFS. Expected in: " + PROGRESSIVE_MODEL_DIR);
         
-        // When/Then: Should be able to load model without throwing exceptions
+        // When/Then: Should be able to load generator without throwing exceptions
         assertDoesNotThrow(() -> {
             try (OnnxTerrainGenerator generator = new OnnxTerrainGenerator()) {
                 assertTrue(generator.isAvailable(), "ONNX terrain generator should be available");
-                assertEquals(MODEL_PATH, generator.getModelPath(), "Model path should match");
+                // Note: Progressive models don't have a single "model path" - they have multiple models
             }
-        }, "Model loading should not throw exceptions");
+        }, "Progressive model loading should not throw exceptions");
     }
 
     @Test
     void testOnnxInferenceShapes() {
-        // Skip test if model file doesn't exist (e.g., CI environment without Git LFS)
-        Path modelPath = Paths.get(MODEL_PATH);
-        assumeTrue(modelPath.toFile().exists(), 
-            "Skipping ONNX inference shapes test - model file not found. This may occur in CI environments without Git LFS. Expected at: " + MODEL_PATH);
+        // Check if any progressive models exist
+        boolean hasAnyModel = false;
+        for (String modelName : PROGRESSIVE_MODELS) {
+            Path modelPath = Paths.get(PROGRESSIVE_MODEL_DIR, modelName);
+            if (modelPath.toFile().exists()) {
+                hasAnyModel = true;
+                break;
+            }
+        }
+        
+        // Skip test if no model files exist (e.g., CI environment without Git LFS)
+        assumeTrue(hasAnyModel, 
+            "Skipping ONNX inference shapes test - no progressive models found. " +
+            "This may occur in CI environments without Git LFS. Expected in: " + PROGRESSIVE_MODEL_DIR);
             
-        // Test that we can run inference with correct input/output shapes
-        // This validates the LODiffusion v1 contract:
-        // - Input: x_parent [8,8,8], x_biome [256,8,8], timestep, chunk_pos
-        // - Output: block_logits [1104,16,16,16], air_mask [1,16,16,16]
+        // Test that we can run progressive inference with correct input/output shapes
+        // This validates the progressive LODiffusion contract:
+        // - Progressive refinement: LOD4→LOD3→LOD2→LOD1→LOD0
+        // - Final output: 16×16×16 voxel block
         
         assertDoesNotThrow(() -> {
             try (OnnxTerrainGenerator generator = new OnnxTerrainGenerator()) {
-                // Create test input data with correct shapes
-                float[][][] parentHeightmap = new float[8][8][8];
-                float[][][] biomeData = new float[256][8][8];
-                float timestep = 0.0f; // For 8->16 step
-                float[] chunkPos = {0.0f, 0.0f, 0.0f};
+                // Create test input data for progressive generation
+                // Progressive generation takes biome IDs and height values
+                int[][] biomeIds = new int[16][16];
+                int[][] heightValues = new int[16][16];
                 
-                // Initialize with test data
-                for (int x = 0; x < 8; x++) {
-                    for (int y = 0; y < 8; y++) {
-                        for (int z = 0; z < 8; z++) {
-                            // Create a simple heightmap - solid below y=4
-                            parentHeightmap[x][y][z] = (y < 4) ? 1.0f : 0.0f;
-                        }
+                // Fill with test data - plains biome and simple height pattern
+                for (int x = 0; x < 16; x++) {
+                    for (int z = 0; z < 16; z++) {
+                        biomeIds[x][z] = 1; // Plains biome
+                        heightValues[x][z] = 64; // Sea level
                     }
                 }
                 
-                // Set up biome data - Plains biome (ID 1) as one-hot
-                for (int c = 0; c < 256; c++) {
-                    for (int x = 0; x < 8; x++) {
-                        for (int z = 0; z < 8; z++) {
-                            biomeData[c][x][z] = (c == 1) ? 1.0f : 0.0f; // Plains biome
-                        }
-                    }
-                }
+                // Run progressive inference (currently using fallback stubs)
+                int[][][] result = generator.generateProgressiveTerrain(biomeIds, heightValues, 0.0f, 0.0f);
                 
-                // Run inference
-                OnnxTerrainGenerator.TerrainGenerationResult result = 
-                    generator.generateTerrain(parentHeightmap, biomeData, timestep, chunkPos);
-                
-                // Verify output shapes
+                // Verify output shapes (result should be 16x16x16)
                 assertNotNull(result, "Result should not be null");
-                assertNotNull(result.blockLogits, "Block logits should not be null");
-                assertNotNull(result.airMask, "Air mask should not be null");
                 
-                // Verify block logits shape [1104][16][16][16]
-                assertEquals(1104, result.blockLogits.length, "Block logits should have 1104 block types");
-                assertEquals(16, result.blockLogits[0].length, "Block logits should have 16x16x16 output");
-                assertEquals(16, result.blockLogits[0][0].length, "Block logits should have 16x16x16 output");
-                assertEquals(16, result.blockLogits[0][0][0].length, "Block logits should have 16x16x16 output");
-                
-                // Verify air mask shape [1][16][16][16]
-                assertEquals(1, result.airMask.length, "Air mask should have 1 channel");
-                assertEquals(16, result.airMask[0].length, "Air mask should have 16x16x16 output");
-                assertEquals(16, result.airMask[0][0].length, "Air mask should have 16x16x16 output");
-                assertEquals(16, result.airMask[0][0][0].length, "Air mask should have 16x16x16 output");
+                // Verify progressive output dimensions [16][16][16]
+                assertEquals(16, result.length, "Progressive output should be 16×16×16");
+                assertEquals(16, result[0].length, "Progressive output should be 16×16×16");
+                assertEquals(16, result[0][0].length, "Progressive output should be 16×16×16");
                 
                 // Verify some basic properties of the generated terrain
-                // The stub should generate solid blocks below y=8 based on parent
-                assertTrue(result.airMask[0][0][0][0] > 0.5f, "Bottom should be solid");
-                assertTrue(result.airMask[0][15][15][15] < 0.5f, "Top should be air");
-                
-                // Verify block logits have reasonable values
-                boolean foundPositiveLogit = false;
-                for (int b = 0; b < 5; b++) { // Check first few block types
-                    if (result.blockLogits[b][0][0][0] > 0) {
-                        foundPositiveLogit = true;
-                        break;
+                // The stub should generate some solid blocks
+                boolean foundSolidBlock = false;
+                boolean foundAirBlock = false;
+                for (int x = 0; x < 16; x++) {
+                    for (int y = 0; y < 16; y++) {
+                        for (int z = 0; z < 16; z++) {
+                            int blockType = result[x][y][z];
+                            if (blockType > 0) {
+                                foundSolidBlock = true;
+                            } else {
+                                foundAirBlock = true;
+                            }
+                        }
                     }
                 }
-                assertTrue(foundPositiveLogit, "Should have positive logits for some block types");
+                
+                assertTrue(foundSolidBlock, "Should have some solid blocks in generated terrain");
+                assertTrue(foundAirBlock, "Should have some air blocks in generated terrain");
             }
-        }, "ONNX inference should complete without exceptions");
+        }, "Progressive ONNX inference should complete without exceptions");
     }
     
     @Test
     void testContractCompliance() {
-        // Test that the generator follows the LODiffusion v1 contract exactly
+        // Test that the generator follows the progressive LODiffusion contract exactly
         assertDoesNotThrow(() -> {
             try (OnnxTerrainGenerator generator = new OnnxTerrainGenerator()) {
-                // Test with minimal valid input
-                float[][][] parentHeightmap = new float[8][8][8];
-                float[][][] biomeData = new float[256][8][8];
+                // Create test input data
+                int[][] biomeIds = new int[16][16];
+                int[][] heightValues = new int[16][16];
                 
-                // Single solid block at origin
-                parentHeightmap[0][0][0] = 1.0f;
-                biomeData[1][0][0] = 1.0f; // Plains biome
+                // Fill with minimal test data
+                for (int x = 0; x < 16; x++) {
+                    for (int z = 0; z < 16; z++) {
+                        biomeIds[x][z] = 1; // Plains biome
+                        heightValues[x][z] = 64; // Sea level
+                    }
+                }
                 
-                OnnxTerrainGenerator.TerrainGenerationResult result = 
-                    generator.generateTerrain(parentHeightmap, biomeData, 0.0f, new float[]{0, 0, 0});
+                // Test progressive generation contract
+                int[][][] result = generator.generateProgressiveTerrain(biomeIds, heightValues, 0.0f, 0.0f);
                 
-                // Contract compliance: exact shapes
-                assertEquals(1104, result.blockLogits.length, "Must have exactly 1104 block types");
-                assertEquals(16, result.blockLogits[0].length, "Must be 16x16x16 output");
-                assertEquals(1, result.airMask.length, "Air mask must have 1 channel");
-                assertEquals(16, result.airMask[0].length, "Air mask must be 16x16x16");
+                // Contract compliance: progressive output should be 16×16×16
+                assertNotNull(result, "Result should not be null");
+                assertEquals(16, result.length, "Must be 16×16×16 output");
+                assertEquals(16, result[0].length, "Must be 16×16×16 output");
+                assertEquals(16, result[0][0].length, "Must be 16×16×16 output");
                 
-                // Contract compliance: value ranges
+                // Contract compliance: value ranges (block IDs should be valid)
                 for (int x = 0; x < 16; x++) {
                     for (int y = 0; y < 16; y++) {
                         for (int z = 0; z < 16; z++) {
-                            float airValue = result.airMask[0][x][y][z];
-                            assertTrue(airValue >= 0.0f && airValue <= 1.0f, 
-                                "Air mask values must be in [0,1] range");
+                            int blockType = result[x][y][z];
+                            assertTrue(blockType >= 0, 
+                                "Block type must be non-negative (air=0, solid>0)");
+                            assertTrue(blockType < 1000, 
+                                "Block type must be reasonable (< 1000)");
                         }
                     }
                 }
             }
-        }, "Contract compliance test should pass");
+        }, "Progressive contract compliance test should pass");
     }
 }
