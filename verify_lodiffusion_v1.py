@@ -4,54 +4,54 @@ import numpy as np
 import onnx
 import onnxruntime as ort
 
-# Progressive LOD refinement contracts
+# Progressive LOD refinement contracts (updated for flexible_unet3d models)
 PROGRESSIVE_LOD_CONTRACTS = {
     "lod4to3": {
         "inputs": {
-            "x_parent": [1, 1, 1, 1, 1],  # Single voxel (entire subchunk)
-            "x_biome": [1, "NB", 16, 16, 1],  # Biome data (16x16 chunk)
-            "x_height": [1, 1, 16, 16, 1],  # Height data (16x16 chunk)
-            "x_lod": [1, 1],  # LOD level
+            "parent_voxel": [1, 1, 1, 1, 1],  # Single voxel (entire subchunk)
+            "biome_patch": [1, 256, 16, 16],  # Biome data (one-hot encoded)
+            "heightmap_patch": [1, 1, 16, 16, 1],  # Height data (16x16 chunk)
+            "river_patch": [1, 1, 16, 16, 1],  # River feature data
         },
         "outputs": {
-            "air_mask": [1, 1, 2, 2, 2],  # 2x2x2 air/solid mask
-            "block_logits": [1, 1104, 2, 2, 2],  # 2x2x2 block type probabilities
+            "air_mask_logits": [1, 1, 2, 2, 2],  # 2x2x2 air/solid mask
+            "block_type_logits": [1, 1104, 2, 2, 2],  # 2x2x2 block types
         },
     },
     "lod3to2": {
         "inputs": {
-            "x_parent": [1, 1, 2, 2, 2],  # 2x2x2 parent voxels
-            "x_biome": [1, "NB", 16, 16, 1],  # Biome data (16x16 chunk)
-            "x_height": [1, 1, 16, 16, 1],  # Height data (16x16 chunk)
-            "x_lod": [1, 1],  # LOD level
+            "parent_voxel": [1, 1, 2, 2, 2],  # 2x2x2 parent voxels
+            "biome_patch": [1, 256, 16, 16],  # Biome data (one-hot encoded)
+            "heightmap_patch": [1, 1, 16, 16, 1],  # Height data (16x16 chunk)
+            "river_patch": [1, 1, 16, 16, 1],  # River feature data
         },
         "outputs": {
-            "air_mask": [1, 1, 4, 4, 4],  # 4x4x4 air/solid mask
-            "block_logits": [1, 1104, 4, 4, 4],  # 4x4x4 block type probabilities
+            "air_mask_logits": [1, 1, 4, 4, 4],  # 4x4x4 air/solid mask
+            "block_type_logits": [1, 1104, 4, 4, 4],  # 4x4x4 block types
         },
     },
     "lod2to1": {
         "inputs": {
-            "x_parent": [1, 1, 4, 4, 4],  # 4x4x4 parent voxels
-            "x_biome": [1, "NB", 16, 16, 1],  # Biome data (16x16 chunk)
-            "x_height": [1, 1, 16, 16, 1],  # Height data (16x16 chunk)
-            "x_lod": [1, 1],  # LOD level
+            "parent_voxel": [1, 1, 4, 4, 4],  # 4x4x4 parent voxels
+            "biome_patch": [1, 256, 16, 16],  # Biome data (one-hot encoded)
+            "heightmap_patch": [1, 1, 16, 16, 1],  # Height data (16x16 chunk)
+            "river_patch": [1, 1, 16, 16, 1],  # River feature data
         },
         "outputs": {
-            "air_mask": [1, 1, 8, 8, 8],  # 8x8x8 air/solid mask
-            "block_logits": [1, 1104, 8, 8, 8],  # 8x8x8 block type probabilities
+            "air_mask_logits": [1, 1, 8, 8, 8],  # 8x8x8 air/solid mask
+            "block_type_logits": [1, 1104, 8, 8, 8],  # 8x8x8 block types
         },
     },
     "lod1to0": {
         "inputs": {
-            "x_parent": [1, 1, 8, 8, 8],  # 8x8x8 parent voxels
-            "x_biome": [1, "NB", 16, 16, 1],  # Biome data (16x16 chunk)
-            "x_height": [1, 1, 16, 16, 1],  # Height data (16x16 chunk)
-            "x_lod": [1, 1],  # LOD level
+            "parent_voxel": [1, 1, 8, 8, 8],  # 8x8x8 parent voxels
+            "biome_patch": [1, 256, 16, 16],  # Biome data (one-hot encoded)
+            "heightmap_patch": [1, 1, 16, 16, 1],  # Height data (16x16 chunk)
+            "river_patch": [1, 1, 16, 16, 1],  # River feature data
         },
         "outputs": {
-            "air_mask": [1, 1, 16, 16, 16],  # 16x16x16 air/solid mask
-            "block_logits": [1, 1104, 16, 16, 16],  # 16x16x16 block type probabilities
+            "air_mask_logits": [1, 1, 16, 16, 16],  # 16x16x16 air/solid mask
+            "block_type_logits": [1, 1104, 16, 16, 16],  # 16x16x16 block types
         },
     },
 }
@@ -143,39 +143,75 @@ def main(path, lod_type="lod1to0"):
             print(f"FAIL: output {name} has dynamic shape")
             return 1
 
-    # shape checks (NB allowed to vary but >1)
+    # shape checks (handle new input names for progressive models)
     def eq(a, b):
         return all(x == y for x, y in zip(a, b))
 
-    if ins["x_parent"] != REQ["inputs"]["x_parent"]:
-        print(
-            f"FAIL: x_parent shape - got: {ins['x_parent']}, "
-            f"want: {REQ['inputs']['x_parent']}"
-        )
-        return 1
-    if ins["x_height"] != REQ["inputs"]["x_height"]:
-        print(
-            f"FAIL: x_height shape - got: {ins['x_height']}, "
-            f"want: {REQ['inputs']['x_height']}"
-        )
-        return 1
-    if ins["x_lod"] != REQ["inputs"]["x_lod"]:
-        print(
-            f"FAIL: x_lod shape - got: {ins['x_lod']}, "
-            f"want: {REQ['inputs']['x_lod']}"
-        )
-        return 1
-    xb = ins["x_biome"]
-    if not (validate_biome_shape(xb)):
-        print(f"FAIL: x_biome shape {xb}")
-        return 1
+    if lod_type == "legacy":
+        # Legacy validation with x_parent, x_biome, x_height, x_lod
+        if ins["x_parent"] != REQ["inputs"]["x_parent"]:
+            print(
+                f"FAIL: x_parent shape - got: {ins['x_parent']}, "
+                f"want: {REQ['inputs']['x_parent']}"
+            )
+            return 1
+        if ins["x_height"] != REQ["inputs"]["x_height"]:
+            print(
+                f"FAIL: x_height shape - got: {ins['x_height']}, "
+                f"want: {REQ['inputs']['x_height']}"
+            )
+            return 1
+        if ins["x_lod"] != REQ["inputs"]["x_lod"]:
+            print(
+                f"FAIL: x_lod shape - got: {ins['x_lod']}, "
+                f"want: {REQ['inputs']['x_lod']}"
+            )
+            return 1
+        xb = ins["x_biome"]
+        if not (validate_biome_shape(xb)):
+            print(f"FAIL: x_biome shape {xb}")
+            return 1
 
-    if outs["air_mask"] != REQ["outputs"]["air_mask"]:
-        print(f"FAIL: air_mask shape {outs['air_mask']}")
-        return 1
-    if outs["block_logits"] != REQ["outputs"]["block_logits"]:
-        print(f"FAIL: block_logits shape {outs['block_logits']}")
-        return 1
+        if outs["air_mask"] != REQ["outputs"]["air_mask"]:
+            print(f"FAIL: air_mask shape {outs['air_mask']}")
+            return 1
+        if outs["block_logits"] != REQ["outputs"]["block_logits"]:
+            print(f"FAIL: block_logits shape {outs['block_logits']}")
+            return 1
+    else:
+        # Progressive model validation with new input names
+        if ins["parent_voxel"] != REQ["inputs"]["parent_voxel"]:
+            print(
+                f"FAIL: parent_voxel shape - got: {ins['parent_voxel']}, "
+                f"want: {REQ['inputs']['parent_voxel']}"
+            )
+            return 1
+        if ins["biome_patch"] != REQ["inputs"]["biome_patch"]:
+            print(
+                f"FAIL: biome_patch shape - got: {ins['biome_patch']}, "
+                f"want: {REQ['inputs']['biome_patch']}"
+            )
+            return 1
+        if ins["heightmap_patch"] != REQ["inputs"]["heightmap_patch"]:
+            print(
+                f"FAIL: heightmap_patch shape - "
+                f"got: {ins['heightmap_patch']}, "
+                f"want: {REQ['inputs']['heightmap_patch']}"
+            )
+            return 1
+        if ins["river_patch"] != REQ["inputs"]["river_patch"]:
+            print(
+                f"FAIL: river_patch shape - got: {ins['river_patch']}, "
+                f"want: {REQ['inputs']['river_patch']}"
+            )
+            return 1
+
+        if outs["air_mask_logits"] != REQ["outputs"]["air_mask_logits"]:
+            print(f"FAIL: air_mask_logits shape {outs['air_mask_logits']}")
+            return 1
+        if outs["block_type_logits"] != REQ["outputs"]["block_type_logits"]:
+            print(f"FAIL: block_type_logits shape {outs['block_type_logits']}")
+            return 1
 
     # runtime smoke: single-thread, dummy inputs
     sess_opt = ort.SessionOptions()
@@ -184,30 +220,52 @@ def main(path, lod_type="lod1to0"):
     sess = ort.InferenceSession(
         path, sess_options=sess_opt, providers=["CPUExecutionProvider"]
     )
-    NB = xb[1]
 
-    # Create test inputs based on parent shape
-    parent_shape = REQ["inputs"]["x_parent"]
-    x = {
-        "x_parent": np.zeros(parent_shape, np.float32),
-        "x_biome": np.eye(NB, dtype=np.float32)[
-            np.zeros((1, 16, 16, 1), int)
-        ].transpose(0, 4, 1, 2, 3),
-        "x_height": np.zeros((1, 1, 16, 16, 1), np.float32),
-        "x_lod": np.zeros((1, 1), np.float32),
-    }
-    y = sess.run(None, x)
+    if lod_type == "legacy":
+        NB = xb[1]
+        # Create test inputs based on parent shape
+        parent_shape = REQ["inputs"]["x_parent"]
+        x = {
+            "x_parent": np.zeros(parent_shape, np.float32),
+            "x_biome": np.eye(NB, dtype=np.float32)[
+                np.zeros((1, 16, 16, 1), int)
+            ].transpose(0, 4, 1, 2, 3),
+            "x_height": np.zeros((1, 1, 16, 16, 1), np.float32),
+            "x_lod": np.zeros((1, 1), np.float32),
+        }
+        y = sess.run(None, x)
 
-    expected_air_shape = tuple(REQ["outputs"]["air_mask"])
-    expected_logits_shape = tuple(REQ["outputs"]["block_logits"])
-    ok = y[1].shape == expected_air_shape and y[0].shape == expected_logits_shape
-    if not ok:
-        print(f"FAIL: runtime output shapes {y[0].shape}, {y[1].shape}")
-        print(f"Expected: {expected_logits_shape}, {expected_air_shape}")
-        return 1
+        expected_air_shape = tuple(REQ["outputs"]["air_mask"])
+        expected_logits_shape = tuple(REQ["outputs"]["block_logits"])
+        ok = y[1].shape == expected_air_shape and y[0].shape == expected_logits_shape
+        if not ok:
+            print(f"FAIL: runtime output shapes {y[0].shape}, {y[1].shape}")
+            print(f"Expected: {expected_logits_shape}, {expected_air_shape}")
+            return 1
+        NB_str = f"NB={NB}"
+    else:
+        # Progressive models with new input names
+        parent_shape = REQ["inputs"]["parent_voxel"]
+        x = {
+            "parent_voxel": np.zeros(parent_shape, np.float32),
+            "biome_patch": np.zeros((1, 256, 16, 16), np.float32),
+            "heightmap_patch": np.zeros((1, 1, 16, 16, 1), np.float32),
+            "river_patch": np.zeros((1, 1, 16, 16, 1), np.float32),
+        }
+        y = sess.run(None, x)
+
+        expected_air_shape = tuple(REQ["outputs"]["air_mask_logits"])
+        expected_logits_shape = tuple(REQ["outputs"]["block_type_logits"])
+        ok = y[0].shape == expected_air_shape and y[1].shape == expected_logits_shape
+        if not ok:
+            print(f"FAIL: runtime output shapes {y[0].shape}, {y[1].shape}")
+            print(f"Expected: {expected_air_shape}, {expected_logits_shape}")
+            return 1
+        NB_str = "biomes=256"
 
     print(
-        f"READY: {lod_type} contract, opset {opset}, NB={NB}, " f"shapes OK, runtime OK"
+        f"READY: {lod_type} contract, opset {opset}, {NB_str}, "
+        f"shapes OK, runtime OK"
     )
     return 0
 
@@ -249,7 +307,10 @@ if __name__ == "__main__":
         lod_type = args.lod_type
         if lod_type == "legacy":
             # Use the original contract for legacy mode
-            req = {
+            print(f"=== Contract for {lod_type} ===")
+            import json
+
+            legacy_contract = {
                 "inputs": {
                     "x_parent": [1, 1, 8, 8, 8],
                     "x_biome": [1, "NB", 16, 16, 1],
@@ -261,14 +322,13 @@ if __name__ == "__main__":
                     "block_logits": [1, 1104, 16, 16, 16],
                 },
             }
-        else:
-            req = PROGRESSIVE_LOD_CONTRACTS.get(lod_type)
-
-        if req is not None:
+            print(json.dumps(legacy_contract, indent=2))
+            sys.exit(0)
+        elif lod_type in PROGRESSIVE_LOD_CONTRACTS:
             print(f"=== Contract for {lod_type} ===")
             import json
 
-            print(json.dumps(req, indent=2))
+            print(json.dumps(PROGRESSIVE_LOD_CONTRACTS[lod_type], indent=2))
             sys.exit(0)
         else:
             print(f"FAIL: Unknown LOD type '{lod_type}'")
