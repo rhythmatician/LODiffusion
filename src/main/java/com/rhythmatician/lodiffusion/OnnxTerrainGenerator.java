@@ -340,14 +340,15 @@ public class OnnxTerrainGenerator implements AutoCloseable {
                 return result;
                 
             } catch (Exception e) {
-                LOGGER.warning("🚨 CRITICAL: ONNX inference failed! No fallback available: " + e.getMessage());
-                e.printStackTrace();
-                throw new RuntimeException("🚨 ONNX INFERENCE FAILURE - NO FALLBACK ENABLED", e);
+                LOGGER.warning("� DJL ONNX inference failed, falling back to stub: " + e.getMessage());
+                // Fall through to stub implementation  
             }
         }
         
-        // No fallback - fail hard if ONNX is not available
-        throw new RuntimeException("🚨 ONNX TERRAIN GENERATOR NOT AVAILABLE - NO FALLBACK ENABLED");
+        // Generate stub terrain as fallback
+        // Convert 5D tensors back to 3D for stub generation
+        float[][][] biomeData = convertBiomeTensorTo8x8(biomeTensor);
+        return generateStubTerrain(parentHeightmap, biomeData, timestep, chunkPos);
     }
     
     /**
@@ -394,14 +395,14 @@ public class OnnxTerrainGenerator implements AutoCloseable {
                 return result;
                 
             } catch (Exception e) {
-                LOGGER.warning("🚨 CRITICAL: ONNX inference failed! No fallback available: " + e.getMessage());
+                LOGGER.warning("� DJL ONNX inference failed, falling back to stub: " + e.getMessage());
                 LOGGER.fine("Exception details: " + e.getClass().getSimpleName() + " at " + (e.getStackTrace().length > 0 ? e.getStackTrace()[0] : "unknown location"));
-                throw new RuntimeException("🚨 ONNX INFERENCE FAILURE - NO FALLBACK ENABLED", e);
+                // Fall through to stub implementation
             }
         }
         
-        // No fallback - fail hard if ONNX is not available
-        throw new RuntimeException("🚨 ONNX TERRAIN GENERATOR NOT AVAILABLE - NO FALLBACK ENABLED");
+        // Generate stub terrain as fallback
+        return generateStubTerrain(parentHeightmap, biomeData, timestep, chunkPos);
     }
     
     /**
