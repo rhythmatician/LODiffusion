@@ -340,15 +340,14 @@ public class OnnxTerrainGenerator implements AutoCloseable {
                 return result;
                 
             } catch (Exception e) {
-                LOGGER.warning("ONNX inference failed: " + e.getMessage());
+                LOGGER.warning("🚨 CRITICAL: ONNX inference failed! No fallback available: " + e.getMessage());
                 e.printStackTrace();
+                throw new RuntimeException("🚨 ONNX INFERENCE FAILURE - NO FALLBACK ENABLED", e);
             }
         }
         
-        // Fallback to synthetic terrain
-        LOGGER.fine("Using fallback synthetic terrain generation");
-        float[][][] biomeData = convertBiomeTensorTo8x8(biomeTensor);
-        return generateStubTerrain(parentHeightmap, biomeData, timestep, chunkPos);
+        // No fallback - fail hard if ONNX is not available
+        throw new RuntimeException("🚨 ONNX TERRAIN GENERATOR NOT AVAILABLE - NO FALLBACK ENABLED");
     }
     
     /**
@@ -395,15 +394,14 @@ public class OnnxTerrainGenerator implements AutoCloseable {
                 return result;
                 
             } catch (Exception e) {
-                LOGGER.warning("ONNX inference failed: " + e.getMessage() + " - falling back to stub");
+                LOGGER.warning("🚨 CRITICAL: ONNX inference failed! No fallback available: " + e.getMessage());
                 LOGGER.fine("Exception details: " + e.getClass().getSimpleName() + " at " + (e.getStackTrace().length > 0 ? e.getStackTrace()[0] : "unknown location"));
-                // Fall through to stub implementation
+                throw new RuntimeException("🚨 ONNX INFERENCE FAILURE - NO FALLBACK ENABLED", e);
             }
         }
         
-        // Fallback to stub implementation
-        LOGGER.fine("📋 Using stub implementation (ONNX not available)");
-        return generateStubTerrain(parentHeightmap, biomeData, timestep, chunkPos);
+        // No fallback - fail hard if ONNX is not available
+        throw new RuntimeException("🚨 ONNX TERRAIN GENERATOR NOT AVAILABLE - NO FALLBACK ENABLED");
     }
     
     /**

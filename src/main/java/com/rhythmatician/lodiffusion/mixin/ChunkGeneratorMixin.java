@@ -10,7 +10,6 @@ import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import com.rhythmatician.lodiffusion.terrain.OnnxTerrainGenerator;
 import com.rhythmatician.lodiffusion.terrain.TerrainGenerator;
 import com.rhythmatician.lodiffusion.terrain.VanillaLikeTerrainGenerator;
-import com.rhythmatician.lodiffusion.util.PerformanceMonitor;
 
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.StructureWorldAccess;
@@ -26,29 +25,22 @@ public class ChunkGeneratorMixin {
     
     /**
      * Inject into the surface generation step to apply our terrain generation.
-     * Uses ONNX if available and enabled, falls back to vanilla-like generation otherwise.
+     * Uses ONNX if available and enabled, fails hard otherwise.
      */
     @Inject(method = "generateFeatures", at = @At("TAIL"))
     private void onGenerateFeatures(StructureWorldAccess world, Chunk chunk, StructureAccessor structureAccessor, CallbackInfo ci) {
-        try {
-            ChunkPos pos = chunk.getPos();
-            
-            // Check if ONNX terrain generation is enabled
-            if (Config.useOnnxTerrain() && OnnxTerrainGenerator.isReady()) {
-                HelloTerrainMod.LOGGER.info("[LODiffusion] Generating chunk at ({}, {}) with ONNX terrain", pos.x, pos.z);
-                ONNX_GENERATOR.generateChunk(pos, chunk, world.getSeed());
-                HelloTerrainMod.LOGGER.debug("[LODiffusion] Applied ONNX terrain generation to chunk ({}, {})", pos.x, pos.z);
-            } else {
-                // Use fallback terrain generation
-                HelloTerrainMod.LOGGER.info("[LODiffusion] Generating chunk at ({}, {}) with fallback terrain", pos.x, pos.z);
-                FALLBACK_GENERATOR.generateChunk(pos, chunk, world.getSeed());
-                PerformanceMonitor.incrementCounter(PerformanceMonitor.FALLBACK_USES);
-                HelloTerrainMod.LOGGER.debug("[LODiffusion] Applied fallback terrain generation to chunk ({}, {})", pos.x, pos.z);
-            }
-            
-        } catch (Exception e) {
-            HelloTerrainMod.LOGGER.error("[LODiffusion] Error generating terrain for chunk: " + e.getMessage(), e);
-            // Emergency fallback - do nothing to avoid corrupting world generation
+        ChunkPos pos = chunk.getPos();
+        
+        // Check if ONNX terrain generation is enabled
+        if (Config.useOnnxTerrain() && OnnxTerrainGenerator.isReady()) {
+            HelloTerrainMod.LOGGER.info("[LODiffusion] Generating chunk at ({}, {}) with ONNX terrain", pos.x, pos.z);
+            ONNX_GENERATOR.generateChunk(pos, chunk, world.getSeed());
+            HelloTerrainMod.LOGGER.debug("[LODiffusion] Applied ONNX terrain generation to chunk ({}, {})", pos.x, pos.z);
+        } else {
+            // No fallback - fail hard to make ONNX issues obvious
+            String reason = !Config.useOnnxTerrain() ? "ONNX terrain disabled in config" : "ONNX generator not ready";
+            HelloTerrainMod.LOGGER.error("🚨 CRITICAL: " + reason + " for chunk (" + pos.x + ", " + pos.z + ") - NO FALLBACK ENABLED");
+            throw new RuntimeException("🚨 ONNX TERRAIN GENERATION FAILURE - NO FALLBACK ENABLED: " + reason);
         }
     }
 }

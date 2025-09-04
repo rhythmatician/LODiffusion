@@ -50,13 +50,14 @@ public class DiffusionModel {
         
         return; // Successfully used ONNX generator
       } catch (Exception e) {
-        System.err.println("Warning: ONNX terrain generation failed, falling back to stub: " + e.getMessage());
-        // Fall through to stub implementation
+        System.err.println("🚨 CRITICAL: ONNX terrain generation failed! No fallback available: " + e.getMessage());
+        e.printStackTrace();
+        throw new RuntimeException("🚨 ONNX TERRAIN GENERATION FAILURE - NO FALLBACK ENABLED", e);
       }
     }
     
-    // Fallback to enhanced stub implementation
-    runStubImplementation(heightmap, biomes);
+    // No fallback - fail hard if ONNX is not available
+    throw new RuntimeException("🚨 ONNX TERRAIN GENERATOR NOT AVAILABLE - NO FALLBACK ENABLED");
   }
   
   /**
