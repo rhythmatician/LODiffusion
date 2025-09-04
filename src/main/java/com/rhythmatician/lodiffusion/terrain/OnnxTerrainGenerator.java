@@ -24,6 +24,7 @@ import net.minecraft.world.chunk.Chunk;
 public class OnnxTerrainGenerator implements TerrainGenerator {
     
     @Override
+    @SuppressWarnings("try") // Suppress warnings for unused timer variables (they're auto-closed for timing)
     public void generateChunk(ChunkPos pos, Chunk chunk, long seed) {
         try (var totalTimer = PerformanceMonitor.startTiming(PerformanceMonitor.TOTAL_GENERATION_TIME)) {
             PerformanceMonitor.incrementCounter(PerformanceMonitor.CHUNKS_GENERATED);
