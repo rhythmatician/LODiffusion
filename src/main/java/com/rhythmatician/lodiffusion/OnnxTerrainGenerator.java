@@ -607,67 +607,64 @@ public class OnnxTerrainGenerator implements AutoCloseable {
      */
     public int[][][] generateProgressiveTerrain(int[][] biomeIds, int[][] heightValues, float chunkX, float chunkZ) {
         if (!useProgressiveModels || !areProgressiveModelsLoaded()) {
-            LOGGER.warning("Progressive models not available, falling back to legacy generation");
-            return generateTerrainFromHeights(heightValues, biomeIds, 64, chunkX, chunkZ);
+            throw new IllegalStateException("Progressive models not available - ONNX generation required, no fallbacks allowed");
         }
         
-        try {
-            LOGGER.info("🚀 Starting 4-stage progressive LOD terrain generation for chunk (" + chunkX + ", " + chunkZ + ")");
-            LOGGER.info("📊 Progressive refinement chain: LOD4(1³)→LOD3(2³)→LOD2(4³)→LOD1(8³)→LOD0(16³)");
-            
-            // Prepare input data
-            float[][][][] biomePatch = createBiomePatch(biomeIds);          // [1,256,16,16]
-            float[][][][][] heightmapPatch = createHeightmapPatch(heightValues); // [1,1,16,16,1]
-            float[][][][][] riverPatch = createRiverPatch();                // [1,1,16,16,1] (stub for now)
-            
-            // Stage 1: LOD4→LOD3 (1x1x1 → 2x2x2)
-            LOGGER.info("🔄 Stage 1/4: Refining from LOD4 (1³) to LOD3 (2³) for chunk (" + chunkX + ", " + chunkZ + ")");
-            float[][][][][] parentVoxel4 = createInitialParentVoxel(); // [1,1,1,1,1]
-            ProgressiveTerrainInput input4to3 = new ProgressiveTerrainInput(
-                parentVoxel4, biomePatch, heightmapPatch, riverPatch);
-            TerrainGenerationResult result3 = generateLodStage(modelLod4to3, input4to3, "LOD4→3");
-            
-            // Stage 2: LOD3→LOD2 (2x2x2 → 4x4x4)
-            LOGGER.info("🔄 Stage 2/4: Refining from LOD3 (2³) to LOD2 (4³) for chunk (" + chunkX + ", " + chunkZ + ")");
-            float[][][][][] parentVoxel3 = convertResultToParentVoxel(result3, 2, 2, 2);
-            ProgressiveTerrainInput input3to2 = new ProgressiveTerrainInput(
-                parentVoxel3, biomePatch, heightmapPatch, riverPatch);
-            TerrainGenerationResult result2 = generateLodStage(modelLod3to2, input3to2, "LOD3→2");
-            
-            // Stage 3: LOD2→LOD1 (4x4x4 → 8x8x8)
-            LOGGER.info("🔄 Stage 3/4: Refining from LOD2 (4³) to LOD1 (8³) for chunk (" + chunkX + ", " + chunkZ + ")");
-            float[][][][][] parentVoxel2 = convertResultToParentVoxel(result2, 4, 4, 4);
-            ProgressiveTerrainInput input2to1 = new ProgressiveTerrainInput(
-                parentVoxel2, biomePatch, heightmapPatch, riverPatch);
-            TerrainGenerationResult result1 = generateLodStage(modelLod2to1, input2to1, "LOD2→1");
-            
-            // Stage 4: LOD1→LOD0 (8x8x8 → 16x16x16)
-            LOGGER.info("🔄 Stage 4/4: Refining from LOD1 (8³) to LOD0 (16³) for chunk (" + chunkX + ", " + chunkZ + ")");
-            float[][][][][] parentVoxel1 = convertResultToParentVoxel(result1, 8, 8, 8);
-            ProgressiveTerrainInput input1to0 = new ProgressiveTerrainInput(
-                parentVoxel1, biomePatch, heightmapPatch, riverPatch);
-            TerrainGenerationResult result0 = generateLodStage(modelLod1to0, input1to0, "LOD1→0");
-            
-            // Convert final result to block IDs
-            int[][][] blockPredictions = extractBlockPredictions(result0.blockLogits);
-            int[][][] finalTerrain = applyAirMask(blockPredictions, result0.airMask);
-            
-            LOGGER.info("🎉 Progressive LOD terrain generation completed successfully for chunk (" + chunkX + ", " + chunkZ + ")");
-            return finalTerrain;
-            
-        } catch (Exception e) {
-            LOGGER.warning("Progressive terrain generation failed, falling back to legacy: " + e.getMessage());
-            return generateTerrainFromHeights(heightValues, biomeIds, 64, chunkX, chunkZ);
-        }
+        LOGGER.info("🚀 Starting 4-stage progressive LOD terrain generation for chunk (" + chunkX + ", " + chunkZ + ")");
+        LOGGER.info("📊 Progressive refinement chain: LOD4(1³)→LOD3(2³)→LOD2(4³)→LOD1(8³)→LOD0(16³)");
+        
+        // Prepare input data
+        float[][][][] biomePatch = createBiomePatch(biomeIds);          // [1,256,16,16]
+        float[][][][][] heightmapPatch = createHeightmapPatch(heightValues); // [1,1,16,16,1]
+        float[][][][][] riverPatch = createRiverPatch();                // [1,1,16,16,1] (stub for now)
+        
+        // Stage 1: LOD4→LOD3 (1x1x1 → 2x2x2)
+        LOGGER.info("🔄 Stage 1/4: Refining from LOD4 (1³) to LOD3 (2³) for chunk (" + chunkX + ", " + chunkZ + ")");
+        float[][][][][] parentVoxel4 = createInitialParentVoxel(); // [1,1,1,1,1]
+        ProgressiveTerrainInput input4to3 = new ProgressiveTerrainInput(
+            parentVoxel4, biomePatch, heightmapPatch, riverPatch);
+        TerrainGenerationResult result3 = generateLodStage(modelLod4to3, input4to3, "LOD4→3");
+        
+        // Stage 2: LOD3→LOD2 (2x2x2 → 4x4x4)
+        LOGGER.info("🔄 Stage 2/4: Refining from LOD3 (2³) to LOD2 (4³) for chunk (" + chunkX + ", " + chunkZ + ")");
+        float[][][][][] parentVoxel3 = convertResultToParentVoxel(result3, 2, 2, 2);
+        ProgressiveTerrainInput input3to2 = new ProgressiveTerrainInput(
+            parentVoxel3, biomePatch, heightmapPatch, riverPatch);
+        TerrainGenerationResult result2 = generateLodStage(modelLod3to2, input3to2, "LOD3→2");
+        
+        // Stage 3: LOD2→LOD1 (4x4x4 → 8x8x8)
+        LOGGER.info("🔄 Stage 3/4: Refining from LOD2 (4³) to LOD1 (8³) for chunk (" + chunkX + ", " + chunkZ + ")");
+        float[][][][][] parentVoxel2 = convertResultToParentVoxel(result2, 4, 4, 4);
+        ProgressiveTerrainInput input2to1 = new ProgressiveTerrainInput(
+            parentVoxel2, biomePatch, heightmapPatch, riverPatch);
+        TerrainGenerationResult result1 = generateLodStage(modelLod2to1, input2to1, "LOD2→1");
+        
+        // Stage 4: LOD1→LOD0 (8x8x8 → 16x16x16)
+        LOGGER.info("🔄 Stage 4/4: Refining from LOD1 (8³) to LOD0 (16³) for chunk (" + chunkX + ", " + chunkZ + ")");
+        float[][][][][] parentVoxel1 = convertResultToParentVoxel(result1, 8, 8, 8);
+        ProgressiveTerrainInput input1to0 = new ProgressiveTerrainInput(
+            parentVoxel1, biomePatch, heightmapPatch, riverPatch);
+        TerrainGenerationResult result0 = generateLodStage(modelLod1to0, input1to0, "LOD1→0");
+        
+        // Convert final result to block IDs
+        int[][][] blockPredictions = extractBlockPredictions(result0.blockLogits);
+        int[][][] finalTerrain = applyAirMask(blockPredictions, result0.airMask);
+        
+        LOGGER.info("🎉 Progressive LOD terrain generation completed successfully for chunk (" + chunkX + ", " + chunkZ + ")");
+        return finalTerrain;
     }
     
     /**
      * Generate a single LOD stage using the appropriate model.
      */
     private TerrainGenerationResult generateLodStage(Model model, ProgressiveTerrainInput input, String stage) {
+        LOGGER.info("🔄 Starting " + stage + " refinement inference...");
+        
+        if (model == null) {
+            throw new IllegalStateException("Model for " + stage + " is null - ONNX generation required, no fallbacks allowed");
+        }
+        
         try {
-            LOGGER.info("🔄 Starting " + stage + " refinement inference...");
-            
             Predictor<ProgressiveTerrainInput, TerrainGenerationResult> predictor = 
                 model.newPredictor(new ProgressiveTerrainTranslator());
             
@@ -681,8 +678,9 @@ public class OnnxTerrainGenerator implements AutoCloseable {
             return result;
             
         } catch (Exception e) {
-            LOGGER.warning("❌ " + stage + " inference failed: " + e.getMessage());
-            throw new RuntimeException("Progressive LOD stage " + stage + " failed", e);
+            LOGGER.severe("❌ " + stage + " inference failed: " + e.getMessage());
+            e.printStackTrace();
+            throw new RuntimeException("Progressive LOD stage " + stage + " failed - ONNX generation required, no fallbacks allowed", e);
         }
     }
     
