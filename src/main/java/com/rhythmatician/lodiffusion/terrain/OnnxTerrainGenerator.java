@@ -65,17 +65,17 @@ public class OnnxTerrainGenerator implements TerrainGenerator {
         int[][] heightmap = extractHeightmapFromChunk(chunk);
         int[][] biomeIds = extractBiomeIdsFromChunk(chunk);
         
-        // Use progressive terrain generator
-        HelloTerrainMod.LOGGER.debug("[OnnxTerrainGenerator] Calling progressive terrain generation...");
-        int[][][] generatedTerrain = progressiveGenerator.generateTerrainFromHeights(
-            heightmap, biomeIds, calculateBaseY(heightmap), pos.x, pos.z
+        // Use progressive terrain generator with the new 4-stage refinement
+        HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] 🚀 Starting progressive terrain generation for chunk ({}, {})", pos.x, pos.z);
+        int[][][] generatedTerrain = progressiveGenerator.generateProgressiveTerrain(
+            biomeIds, heightmap, pos.x, pos.z
         );
         
         // Apply generated terrain back to chunk
         applyTerrainToChunk(chunk, generatedTerrain, calculateBaseY(heightmap));
         
         PerformanceMonitor.incrementCounter(PerformanceMonitor.ONNX_INFERENCES);
-        HelloTerrainMod.LOGGER.debug("[OnnxTerrainGenerator] Successfully generated progressive terrain for chunk ({}, {})", pos.x, pos.z);
+        HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] ✅ Successfully completed progressive terrain generation for chunk ({}, {})", pos.x, pos.z);
     }
     
     /**
