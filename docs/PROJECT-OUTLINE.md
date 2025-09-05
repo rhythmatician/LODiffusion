@@ -1,190 +1,189 @@
-## 🔭 **AI-Diffusion Minecraft Mod – LODiffusion**
+## 🔭 **LODiffusion — Minecraft Mod (Fabric 1.21.4)**
 
 ### 🎯 **Mission**
 
-Generate plausible terrain in distant chunks using a **discrete diffusion model**, with progressive fidelity across Levels of Detail (LODs), tightly integrated with Distant Horizons.
+Render plausible terrain for far chunks via a progressive LOD pipeline driven by **VoxelTree** models, keeping strong parity with vanilla and tight compatibility with **Distant Horizons** (DH). Priorities: correctness → stability → speed.
 
 ---
 
-## 🗺️ **Refined Project Roadmap**
+## 🗺️ **Project Roadmap**
 
 ### **PHASE 0 — Developer Infrastructure (Complete ✅)**
 
-* Git + GitHub Actions with PR CI + JaCoCo + Lint
-* Fabric mod scaffolding + Java 17 + Gradle 8.x
-* Terminal permissions, TDD config, test suite (JUnit 5 + Mockito)
-
-### **PHASE 1 — Core Diffusion Engine (Complete ✅)**
-
-* Multi-pass, tile-aware `DiffusionModel.run()` with LOD-sensitive logic
-* Multi-channel support: `float[][][]` (height, biome, temp)
-* Blending via `getTileEdgeFactor()`
-* > 90 unit tests and real-world .mca patch tests
-
-### **PHASE 2 — World Integration & Hook Points (Complete ✅)**
-
-* `DiffusionChunkGenerator` API implemented and tested
-* `LODManagerCompat` + `DistantHorizonsCompat` runtime-safe wrappers
-* `IDhApiWorldGenerator` registration complete
-* > 84% coverage on DH-related logic
-
-### **PHASE 3 — Data Extraction for Training (Complete ✅)**
-
-* ✅ NBT parsing implemented with Hephaistos v1.1.8
-* ✅ Handles pre-1.18 and 1.18+ biome formats
-* ✅ Packed heightmaps decoded from LongArrayTag
-* ✅ `RegionFileCache` supports thread-safe caching & profiling
-* ✅ Performance optimizations: 48ms → 0ms cache hits, 8 chunks in 11ms
-* ✅ Proper SLF4J logging conversion completed
-* ✅ **Architectural cleanup completed**: Separated production code from test infrastructure
-* ✅ **Test infrastructure optimized**: `TerrainPatchDatasetFixture` with intelligent caching
-* ✅ **Build reliability improved**: Git-tracked test data for CI compatibility
-* ✅ **Code quality enhanced**: All @Test formatting violations fixed
-
-**PHASE 3 COMPLETE** - Ready for training pipeline development
-
-### **PHASE 4 — Model Training Pipeline**
-
-* [ ] U-Net model: sinusoidal timestep, conditional input (height + biome)
-* [ ] Export to ONNX with LOD metadata
-* [ ] Quantized model for DJL runtime use
-
-### **PHASE 5 — Runtime Inference Engine**
-
-* [ ] Java ONNX loading via DJL or JNI
-* [ ] `DiffusionRunner` class
-* [ ] Memoized patch predictions per LOD
-* [ ] Visual debug overlays
-
-### **PHASE 6 — Tuning, Debugging, UI**
-
-* [ ] Toggle vanilla/AI terrain
-* [ ] In-game LOD parameter tuning
-* [ ] Benchmarking support
-
-### **PHASE 7 — Packaging, Distribution**
-
-* [ ] Embed model metadata (hash, LODs, etc.)
-* [ ] Publish to Modrinth + Curseforge
-* [ ] Bundle example-world, test suite, CLI
+* Fabric mod scaffolding (Java 17, Gradle 8.x), CI (Actions) + JaCoCo + Lint
+* TDD setup (JUnit 5 + Mockito), deterministic test fixtures and seeds
 
 ---
 
-## 🧱 Modular Breakdown
+### **PHASE 1 — Core LOD Engine & Runtime Contracts (🆕 In-progress)**
 
-| Module                    | Purpose                                       | Status         |
-| ------------------------- | --------------------------------------------- | -------------- |
-| `DiffusionModel`          | Multi-pass, LOD-aware diffusion logic         | ✅ Complete     |
-| `DiffusionChunkGenerator` | Fabric terrain hook & integration             | ✅ Complete     |
-| `ChunkDataExtractor`      | Region file parsing + patch extraction        | ✅ Complete     |
-| `RegionFileCache`         | I/O + coordinate cache with profiling         | ✅ Complete     |
-| `DistantHorizonsCompat`   | Runtime-safe bridge to DH API                 | ✅ Complete     |
-| `LODManagerCompat`        | Unified LOD query interface                   | ✅ Complete     |
-| `RealWorldDataTest`       | Integration test suite on real `.mca` data    | ✅ Complete     |
-| `TerrainPatch`            | 8x8 patch representation for training         | ✅ Complete     |
-| `TerrainPatchDataset`     | Dataset loader for `.npy`/`.pt` training data | ✅ Complete     |
-| `TestWorldFixtures`       | Test infrastructure and data management       | ✅ Complete     |
-| `TerrainPatchDatasetFixture` | Performance-optimized test caching         | ✅ Complete     |
-| `train.py`                | U-Net training scaffold                       | 📅 Planned      |
+**Goal:** Replace the old “single diffusion pass” with a **5-stage refinement ladder** and shared input contract with VoxelTree.
 
----
+**What’s new**
 
-## 🔖 Next Steps (Branches to Create)
+* **Five models**: `Init(→LOD4)`, `LOD4→3`, `3→2`, `2→1`, `1→0`
+* **Shared cached inputs** (from worldgen), **identical** across all five models:
 
-Following the **micro-commit strategy** outlined in `.github/copilot-instructions.md`:
+  * `x_height_planes` **\[1,5,1,16,16]** (surface, ocean\_floor, slope\_x, slope\_z, curvature)
+  * `x_biome_quart` **\[1,6,4,4,4]** (quart lattice features)
+  * `x_router6` **\[1,6,1,16,16]** (Router-6 at one Y slice)
+  * *(opt)* `x_barrier` **\[1,1,1,16,16]**, *(opt)* `x_aquifer3` **\[1,3,1,16,16]**, *(opt)* `x_cave_prior4` **\[1,1,4,4,4]**
+  * Scalars: `x_chunk_pos` **\[1,2]**, `x_lod` **\[1,1]**
+* **Per-stage parent prior** only:
 
-### Immediate Next Tasks
-1. `feat/training-data-cli` — CLI export to `.npy`/`.pt` training data
-2. `feat/u-net-training` — U-Net model training pipeline with PyTorch
-3. `feat/onnx-export` — Model export to ONNX format for Java inference
-4. `feat/djl-inference` — Java DJL integration for runtime inference
-5. `feat/visual-debug` — In-game debug overlays and terrain toggles
+  * `x_parent_prev`: `[1,1,D,D,D]` with **D ∈ {1,2,4,8}\`** (zeros for Init; previous output otherwise)
+* **Outputs (per stage)**: `block_logits [1,N,D,D,D]`, `air_mask [1,1,D,D,D]` where D={1,2,4,8,16}
 
-### Training Pipeline Priority
-- **Phase 4** is now ready to begin with clean data extraction foundation
-- Focus on U-Net architecture with sinusoidal timestep encoding
-- Conditional input support for height + biome data
-- LOD-aware training for progressive detail generation
+**Rules**
 
-### Branch Management Guidelines
-- Maximum 200 lines of changes per PR
-- PRs should be reviewable in < 10 minutes
-- Auto-merge enabled for Copilot-reviewed PRs with no open threads
-- Commit every 15-20 minutes during development
+* **No upsampling in the mod** (ever). LODiffusion passes the cached native-grid tensors as-is; each ONNX model performs any resizing/broadcast internally with static ops.
+* **Vanilla `carve()` at LOD0 only.** Distant terrain skips carve; near terrain (LOD0) calls vanilla carve to finalize caves/aquifers/structures.
 
-### Recently Completed ✅
-- ✅ **Architectural Cleanup Complete**: Clean separation of production vs test code
-- ✅ **Performance Optimization**: `TerrainPatchDatasetFixture` with intelligent caching
-- ✅ **Build Reliability**: Git-tracked test data for CI compatibility
-- ✅ **Code Quality**: All @Test formatting violations fixed, lint clean
-- ✅ **Test Infrastructure**: `TestWorldFixtures` for centralized test data management
-- ✅ **ChunkDataExtractor Optimization**: RegionFileCache, coordinate caching, profiling
-- ✅ **SLF4J Logging Conversion**: Proper logging instead of System.out/System.err
+**Deliverables**
+
+* `TerrainPipeline` (progress controller), `ModelOrchestrator` (five-model runner), `TensorPacker` (strict shapes), `FeatureCache` (LRU + optional disk sidecar)
 
 ---
 
-## 📖 Resources & Links
+### **PHASE 2 — World Integration & Noise Capture (🆕 In-progress)**
 
-* See `README.md` for CI setup and local testing commands
-* See `EXAMPLE-WORLD-USAGE.md` for `.mca` region file structure
-* See `ARCHITECTURAL-CLEANUP-REFLECTION.md` for recent architectural improvements
-* See `CHUNK-EXTRACTOR-OPTIMIZATION-REFLECTION.md` for performance benchmarks
-* See `CI-CHECKLIST.md` for pre-PR validation steps
-* See `COVERAGE-IMPROVEMENT-REFLECTION.md` for coverage optimization insights
+**Goal:** Gather the *same* signals vanilla has at generation time, cache at source granularity (no upsampling).
+
+**Components**
+
+* **NoiseTap** (runtime sampler):
+
+  * Heightmaps: 16×16 (WG types); derive slope/curv
+  * Biomes: 4×4×4 quart lattice (compact features)
+  * NoiseRouter slices: 16×16 @ one Y (Router-6 + optional barrier/aquifer)
+  * *(Optional)* Coarse 3D cave prior: 4×4×4 (or 8×8×8)
+  * Chunk coords `(x,z)`; world height limits; sea level (scalar)
+* **FeatureCache**:
+
+  * In-memory LRU keyed by `ChunkPos`
+  * Optional sidecar: `lod_cache/<dim>/<region>/c.<x>.<z>.nf.bin` (or `.npz`)
+  * Strict immutability (except `x_parent_prev`)
+
+**Testing**
+
+* Parity tests: cached fields vs direct API reads (epsilon match)
+* Determinism: same seed + coords → same cached tensors
 
 ---
 
-## 🧵 Development Workflow
+### **PHASE 3 — DJL Inference & Model Lifecycle (🆕 Planned)**
 
-### Micro-Commit Strategy
-- Each feature/fix gets its own focused branch (`test/add-xyz-test`, `feat/implement-abc`, `docs/update-def`)
-- One logical change per commit:
-  - Add test → `test:` commit
-  - Implement → `feat:` commit
-  - Fix → `fix:` commit
-  - Doc → `docs:` commit
+**Goal:** Robust, fast, memory-safe inference for five models.
 
-### CI Pipeline
-Each commit/PR runs:
-1. **Lint**: `./gradlew lint` — must pass first
-2. **Test + Coverage**: `./gradlew test jacocoTestReport`
-3. **Build Mod**: `./gradlew build` (only if lint + test pass)
+**Tasks**
 
-Local equivalent:
-```bash
-./gradlew clean lint test jacocoTestReport build
+* **ONNX loader (DJL ONNX Runtime)**: shared `ModelZoo`, lazy load per model
+* **TensorPacker**: map `FeatureCache` → exact ONNX input names/shapes (no resize)
+* **Refinement loop**:
+
+  1. `Init` (D=1) → `x_parent_prev(1³)`
+  2. `1→2` → `2→4` → `4→8` → `8→16` (propagate `x_parent_prev`)
+  3. Write 16³ to chunk; call **vanilla `carve()`**
+* **Perf controls**: per-stage timers, pool NDArrays, cap memory/threads
+
+**Acceptance**
+
+* All 5 models pass numeric parity with VoxelTree’s `test_vectors.npz`
+* Total per-chunk inference time < 100ms on target CPU
+
+---
+
+### **PHASE 4 — DH Integration & LOD Policy (🆕 Planned)**
+
+**Goal:** Only generate as much as needed for current DH LOD.
+
+**Features**
+
+* `LODManagerCompat`: query DH LOD for a chunk
+* **Work policy**:
+
+  * LOD4/3/2: prepare `x_parent_prev` progressively
+  * LOD1→0 promotion: run final model (16³) + **vanilla carve()**
+* **Edge blending**: use `air_mask` for smooth borders; respect DH tile boundaries
+* **Switches**: vanilla vs AI, per-LOD enable/disable, overlay debug
+
+---
+
+### **PHASE 5 — UI, Debug, and Metrics (🆕 Planned)**
+
+* Toggles: model packs on/off, optional channels on/off
+* Visual overlays: `air_mask`, seam highlighters, Router-6 inspector
+* Counters: cache hit/miss, sampling ms, inference ms per stage
+
+---
+
+### **PHASE 6 — Packaging & Distribution (🆕 Planned)**
+
+* Bundle: `model.onnx` ×5, `model_config.json` ×5, `test_vectors.npz`, model hash
+* Settings: JSON/TOML for toggles + paths
+* Releases: Modrinth/CurseForge artifacts; version gate on Fabric/Yarn
+
+---
+
+## 🧱 **Module Breakdown (Updated)**
+
+| Module                    | Purpose                                                                 | Status                      |
+| ------------------------- | ----------------------------------------------------------------------- | --------------------------- |
+| `NoiseTap`                | Capture vanilla signals at source granularity (16×16, 4×4×4, etc.)      | 🆕 WIP                      |
+| `FeatureCache`            | Per-chunk cache (LRU + sidecar), immutable payloads                     | 🆕 WIP                      |
+| `TensorPacker`            | Convert `FeatureCache` to ONNX inputs (exact shapes), no resize         | 🆕 WIP                      |
+| `ModelOrchestrator`       | Load/run 5 models in sequence, manage `x_parent_prev`                   | 🆕 WIP                      |
+| `TerrainPipeline`         | LOD policy: when to run which model; final write to chunk + **carve()** | 🆕 WIP                      |
+| `DistantHorizonsCompat`   | DH LOD queries + safe guards                                            | ✅                           |
+| `DiffusionChunkGenerator` | Integration point (hooks and chunk writes)                              | ✅ (to be refit to pipeline) |
+| `Diagnostics`             | Timers, counters, overlays                                              | 🆕 Planned                  |
+
+---
+
+## 🔗 **Interface with VoxelTree (Exact Contract)**
+
+**VoxelTree delivers (per model):**
+
+1. `model.onnx` (static shapes)
+2. `model_config.json`
+
+   * Input names & shapes (as listed above)
+   * Normalization (heights min-max, router/aquifer z-score, flags, coord scale)
+   * Block palette / `N_blocks`
+3. `test_vectors.npz` (golden: inputs → outputs)
+
+**LODiffusion guarantees:**
+
+* Feed **exact cached inputs** (no upsampling) + stage-correct `x_parent_prev`
+* Apply the same normalization fields from `model_config.json`
+* Validate against `test_vectors.npz` during startup (smoke parity)
+* Respect static shapes (fail fast on mismatch)
+
+**Data flow (per chunk):**
+
+```
+NoiseTap.capture() → FeatureCache
+   ↓ (no resize)
+TensorPacker → ONNX (Init) → parent(1³)
+   → ONNX (2³) → parent(2³)
+   → ONNX (4³) → parent(4³)
+   → ONNX (8³) → parent(8³)
+   → ONNX (16³) → write blocks
+   → vanilla carve() at LOD0
 ```
 
-### Testing Rules
-- Target **70%+ code coverage per commit**
-- Tests may live in:
-  - `src/test/java/com/...` — core unit and integration tests
-  - `src/test/java/data/` — synthetic dataset tests
-  - `src/test/java/benchmark/` — performance benchmarks
-- Use JUnit 5 and Mockito
-- Use tags for clarity: `@Tag("ci")`, `@Tag("inference")`, `@Tag("benchmark")`
+---
+
+## ⚙️ **Performance Targets & Policies**
+
+* **Sampling/cache** (first touch): ≤ 20–35 ms (depends on optional channels)
+* **Inference** (all models combined, near player): ≤ 100 ms/patch on mid-range CPU
+* **Memory**: ≤ \~2 MB/patch (NDArray pooling), LRU of \~128 chunks (configurable)
+* **Determinism**: identical inputs → identical outputs (unit test enforced)
 
 ---
 
-## 🏗️ Architecture Notes
+## ✅ **What We’re Keeping / Dropping**
 
-### Chunk Generation & Diffusion
-- In `DiffusionChunkGenerator.buildSurface(...)`:
-  - Sample vanilla heightmap + biomes
-  - Call `DiffusionModel.run(...)`
-- **LOD chaining is required**: each refinement builds on the prior LOD
-- Stubbed multi-channel logic must be test-guided and forward-compatible
-
-### Distant Horizons Integration
-- Runtime detection only (via `ModDetection.isDistantHorizonsLoaded()`)
-- API dependency is `compileOnly`
-- Use `LODManager.getChunkLOD(...)` for LOD level detection
-- Implement fallback wrappers in `LODManagerCompat`, `DistantHorizonsCompat`
-
-### Performance Considerations
-- **RegionFileCache**: Avoid reopening .mca files for every chunk
-- **Coordinate Caching**: Cache parsed region coordinates
-- **Profiling Infrastructure**: Optional timing measurements for optimization
-- **Batch Processing**: Process multiple chunks from same region efficiently
-- **Test Infrastructure**: `TerrainPatchDatasetFixture` caching eliminates redundant NBT parsing
-- **CI Reliability**: Git-tracked test data ensures consistent builds across environments
+* ✅ Keep vanilla **carve()**; only run at **LOD0**
+* ✅ Keep cache-at-source (16×16 planes, 4×4×4 biomes, 16×16 Router-6 slice)
