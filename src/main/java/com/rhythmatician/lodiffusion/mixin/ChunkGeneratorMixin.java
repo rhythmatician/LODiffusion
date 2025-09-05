@@ -9,7 +9,6 @@ import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import com.rhythmatician.lodiffusion.terrain.OnnxTerrainGenerator;
 import com.rhythmatician.lodiffusion.terrain.TerrainGenerator;
-import com.rhythmatician.lodiffusion.terrain.VanillaLikeTerrainGenerator;
 
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.StructureWorldAccess;
@@ -21,7 +20,7 @@ import net.minecraft.world.gen.chunk.ChunkGenerator;
 public class ChunkGeneratorMixin {
     
     private static final TerrainGenerator ONNX_GENERATOR = new OnnxTerrainGenerator();
-    private static final TerrainGenerator FALLBACK_GENERATOR = new VanillaLikeTerrainGenerator();
+    // private static final TerrainGenerator FALLBACK_GENERATOR = new VanillaLikeTerrainGenerator();
     
     /**
      * Inject into the surface generation step to apply our terrain generation.
@@ -39,9 +38,12 @@ public class ChunkGeneratorMixin {
         } else {
             // Temporary fallback during testing - will be removed once ONNX is stable
             String reason = !Config.useOnnxTerrain() ? "ONNX terrain disabled in config" : "ONNX generator not ready";
-            HelloTerrainMod.LOGGER.warn("[LODiffusion] {} for chunk ({}, {}) - panic!", reason, pos.x, pos.z);
+            HelloTerrainMod.LOGGER.warn("[LODiffusion] {} for chunk ({}, {}) - DEBUG INFO:", reason, pos.x, pos.z);
+            HelloTerrainMod.LOGGER.warn("[LODiffusion] useOnnxTerrain: {}", Config.useOnnxTerrain());
+            HelloTerrainMod.LOGGER.warn("[LODiffusion] isReady: {}", OnnxTerrainGenerator.isReady());
+            HelloTerrainMod.LOGGER.warn("[LODiffusion] Status: {}", OnnxTerrainGenerator.getStatusInfo());
             // FALLBACK_GENERATOR.generateChunk(pos, chunk, world.getSeed());
-            throw new IllegalStateException("Terrain generation failed");
+            throw new IllegalStateException("Terrain generation failed - check logs above for details");
         }
     }
 }

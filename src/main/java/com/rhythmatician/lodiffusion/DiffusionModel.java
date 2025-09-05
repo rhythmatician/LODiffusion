@@ -60,36 +60,6 @@ public class DiffusionModel {
     throw new RuntimeException("🚨 ONNX TERRAIN GENERATOR NOT AVAILABLE - NO FALLBACK ENABLED");
   }
   
-  /**
-   * Fallback stub implementation for when ONNX is not available.
-   */
-  private void runStubImplementation(int[][] heightmap, String[] biomes) {
-    // Enhanced diffusion implementation with multiple passes and noise
-    int passes = LOD_DIFFUSION_PASSES[0]; // Use highest detail passes for standard run
-    float noiseIntensity = LOD_NOISE_INTENSITY[0];
-
-    // Apply multiple diffusion passes for better quality
-    for (int pass = 0; pass < passes; pass++) {
-      for (int x = 1; x < 15; x++) {
-        for (int z = 1; z < 15; z++) {
-          // Calculate weighted average of neighbors with tile-aware behavior
-          int neighbors = heightmap[x-1][z] + heightmap[x+1][z] +
-                         heightmap[x][z-1] + heightmap[x][z+1];
-          int average = neighbors / 4;
-
-          // Apply progressive diffusion with decreasing intensity per pass
-          float passStrength = 1.0f - (pass * 0.3f);
-          int variation = Math.round(getBiomeVariation(biomes, x, z) * noiseIntensity * passStrength);
-          
-          // Tile-aware processing: reduce diffusion at tile boundaries (every 16 blocks)
-          float tileEdgeFactor = getTileEdgeFactor(x, z);
-          int diffusedValue = Math.round(((heightmap[x][z] + (average * passStrength)) / (1.0f + passStrength)) * tileEdgeFactor);
-          
-          heightmap[x][z] = diffusedValue + variation;
-        }
-      }
-    }
-  }
   
   /**
    * Convert biome strings to biome IDs for ONNX processing.

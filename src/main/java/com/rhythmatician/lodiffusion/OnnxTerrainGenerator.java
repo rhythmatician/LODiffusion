@@ -30,6 +30,7 @@ import ai.djl.translate.TranslatorContext;
 public class OnnxTerrainGenerator implements AutoCloseable {
     
     private static final Logger LOGGER = Logger.getLogger(OnnxTerrainGenerator.class.getName());
+    private static volatile OnnxTerrainGenerator instance;
     
     // Progressive model paths (updated for new onnx_export models)
     private static final String PROGRESSIVE_MODEL_BASE = "onnx_export/flexible_unet3d_";
@@ -396,6 +397,27 @@ public class OnnxTerrainGenerator implements AutoCloseable {
     /**
      * Default constructor using default model path.
      */
+    /**
+     * Get the singleton instance of OnnxTerrainGenerator.
+     * Creates a new instance if one doesn't exist.
+     * @return the OnnxTerrainGenerator instance
+     */
+    public static OnnxTerrainGenerator getInstance() {
+        if (instance == null) {
+            synchronized (OnnxTerrainGenerator.class) {
+                if (instance == null) {
+                    try {
+                        instance = new OnnxTerrainGenerator();
+                    } catch (IOException e) {
+                        LOGGER.warning("Failed to create OnnxTerrainGenerator instance: " + e.getMessage());
+                        return null;
+                    }
+                }
+            }
+        }
+        return instance;
+    }
+
     public OnnxTerrainGenerator() throws IOException {
         this(DEFAULT_MODEL_PATH);
     }
@@ -405,6 +427,11 @@ public class OnnxTerrainGenerator implements AutoCloseable {
      */
     public OnnxTerrainGenerator(String modelPath) throws IOException {
         this.modelPath = modelPath;
+        
+        // Set the singleton instance
+        if (instance == null) {
+            instance = this;
+        }
         
         // Try to load progressive models first
         try {
