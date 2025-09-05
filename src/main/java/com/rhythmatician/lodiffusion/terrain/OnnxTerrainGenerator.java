@@ -180,16 +180,69 @@ public class OnnxTerrainGenerator implements TerrainGenerator {
      * Check if progressive models are available by checking the main generator.
      * @return true if the main ONNX terrain generator has progressive models available
      */
+    // Static probe cache holder for progressive model bridge
+    private static class ProgressiveProbeCache {
+        private static volatile boolean cachedProgressiveAvailable = false;
+        private static volatile long lastProgressiveProbeMs = 0L;
+    }
+
     private static boolean areProgressiveModelsAvailable() {
+        HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] areProgressiveModelsAvailable() called - cached={}, lastProbe={}ms ago", 
+            ProgressiveProbeCache.cachedProgressiveAvailable, 
+            System.currentTimeMillis() - ProgressiveProbeCache.lastProgressiveProbeMs);
+            
+        if (ProgressiveProbeCache.cachedProgressiveAvailable) {
+            HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Using cached result: true");
+            return true;
+        }
+        long now = System.currentTimeMillis();
+        if (now - ProgressiveProbeCache.lastProgressiveProbeMs < 2000) { // throttle probes (2s)
+            HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Throttling probe ({}ms since last)", 
+                now - ProgressiveProbeCache.lastProgressiveProbeMs);
+            return false; // still probing / not yet confirmed
+        }
+        ProgressiveProbeCache.lastProgressiveProbeMs = now;
         try {
-            // Check if main OnnxTerrainGenerator has progressive models available
-            com.rhythmatician.lodiffusion.OnnxTerrainGenerator mainGenerator = 
-                com.rhythmatician.lodiffusion.OnnxTerrainGenerator.getInstance();
-            boolean available = mainGenerator.isAvailable();
-            HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Progressive models available: {}", available);
-            return available;
-        } catch (Exception e) {
-            HelloTerrainMod.LOGGER.error("[Terrain OnnxTerrainGenerator] Error checking progressive models: {}", e.getMessage());
+            HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Bridge probe: acquiring main generator instance...");
+            com.rhythmatician.lodiffusion.OnnxTerrainGenerator main = com.rhythmatician.lodiffusion.OnnxTerrainGenerator.getInstance();
+            if (main == null) {
+                HelloTerrainMod.LOGGER.warn("[Terrain OnnxTerrainGenerator] Bridge probe: main generator is null (not constructed yet)");
+                return false;
+            }
+
+            // First, trust its public availability flag.
+            boolean publicAvailable = main.isAvailable();
+            HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Bridge probe: main.isAvailable() => {}", publicAvailable);
+
+            // Deep inspection via reflection (safe): check the four progressive model fields are non-null.
+            boolean progressiveFieldsNonNull = false;
+            try {
+                java.lang.reflect.Field f4 = main.getClass().getDeclaredField("modelLod4to3");
+                java.lang.reflect.Field f3 = main.getClass().getDeclaredField("modelLod3to2");
+                java.lang.reflect.Field f2 = main.getClass().getDeclaredField("modelLod2to1");
+                java.lang.reflect.Field f1 = main.getClass().getDeclaredField("modelLod1to0");
+                f4.setAccessible(true); f3.setAccessible(true); f2.setAccessible(true); f1.setAccessible(true);
+                Object m4 = f4.get(main);
+                Object m3 = f3.get(main);
+                Object m2 = f2.get(main);
+                Object m1 = f1.get(main);
+                progressiveFieldsNonNull = (m4 != null && m3 != null && m2 != null && m1 != null);
+                HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Bridge probe: progressive field presence: L4to3={} L3to2={} L2to1={} L1to0={}",
+                        m4 != null, m3 != null, m2 != null, m1 != null);
+            } catch (NoSuchFieldException rf) {
+                HelloTerrainMod.LOGGER.warn("[Terrain OnnxTerrainGenerator] Bridge probe: reflection failed (field missing) {}", rf.getMessage());
+            } catch (Throwable t) {
+                HelloTerrainMod.LOGGER.error("[Terrain OnnxTerrainGenerator] Bridge probe: reflection error {}", t.getMessage());
+            }
+
+            boolean decided = publicAvailable || progressiveFieldsNonNull;
+            HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Bridge probe: decided progressiveAvailable={} (publicAvailable={}, fieldsNonNull={})",
+                    decided, publicAvailable, progressiveFieldsNonNull);
+
+            if (decided) ProgressiveProbeCache.cachedProgressiveAvailable = true;
+            return decided;
+        } catch (Throwable t) {
+            HelloTerrainMod.LOGGER.error("[Terrain OnnxTerrainGenerator] Bridge probe: unexpected error {}", t.getMessage());
             return false;
         }
     }
