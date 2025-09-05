@@ -700,9 +700,28 @@ public class OnnxTerrainGenerator implements AutoCloseable {
             parentVoxel1, biomePatch, heightmapPatch, riverPatch);
         TerrainGenerationResult result0 = generateLodStage(modelLod1to0, input1to0, "LOD1→0");
         
-        // Convert final result to block IDs
+        // Convert final result to block IDs (only final stage needs block prediction extraction)
         int[][][] blockPredictions = extractBlockPredictions(result0.blockLogits);
         int[][][] finalTerrain = applyAirMask(blockPredictions, result0.airMask);
+        
+        // Debug: Log sample values to understand what's being generated
+        int solidCount = 0, airCount = 0;
+        for (int x = 0; x < 16; x++) {
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    if (finalTerrain[x][y][z] > 0) {
+                        solidCount++;
+                    } else {
+                        airCount++;
+                    }
+                }
+            }
+        }
+        LOGGER.info("📊 Final terrain composition: " + solidCount + " solid blocks, " + airCount + " air blocks");
+        
+        // Debug: Sample some air mask and block logit values
+        LOGGER.info("🔍 Air mask sample [0,0,0]: " + result0.airMask[0][0][0][0] + 
+                   ", block logits [1][0,0,0]: " + result0.blockLogits[1][0][0][0]);
         
         LOGGER.info("🎉 Progressive LOD terrain generation completed successfully for chunk (" + chunkX + ", " + chunkZ + ")");
         return finalTerrain;
@@ -1111,20 +1130,145 @@ public class OnnxTerrainGenerator implements AutoCloseable {
     }
     
     /**
-     * Apply air mask to block predictions.
+     * Extract block predictions from model output with dynamic dimensions.
+     * Converts the raw block logits to the most likely block ID for each position.
+     * 
+     * @param blockLogits Raw model output [1104][X][Y][Z] where X,Y,Z can vary
+     * @return Block IDs [X][Y][Z] with the most likely block at each position
+     */
+    public static int[][][] extractBlockPredictionsDynamic(float[][][][] blockLogits) {
+        if (blockLogits.length == 0) {
+            throw new IllegalArgumentException("Block logits array is empty");
+        }
+        
+        int dimX = blockLogits[0].length;
+        int dimY = blockLogits[0][0].length;
+        int dimZ = blockLogits[0][0][0].length;
+        int numBlocks = blockLogits.length;
+        
+        int[][][] blocks = new int[dimX][dimY][dimZ];
+        
+        for (int x = 0; x < dimX; x++) {
+            for (int y = 0; y < dimY; y++) {
+                for (int z = 0; z < dimZ; z++) {
+                    int bestBlock = 0;
+                    float bestLogit = blockLogits[0][x][y][z];
+                    
+                    // Find block type with highest logit
+                    for (int b = 1; b < numBlocks; b++) {
+                        if (blockLogits[b][x][y][z] > bestLogit) {
+                            bestLogit = blockLogits[b][x][y][z];
+                            bestBlock = b;
+                        }
+                    }
+                    
+                    blocks[x][y][z] = bestBlock;
+                }
+            }
+        }
+        
+        return blocks;
+    }
+    
+    /**
+     * Apply air mask to block predictions (legacy convention).
      * Sets blocks to air (ID 0) where the air mask indicates air should be present.
      * 
      * @param blocks Block predictions [16][16][16]
-     * @param airMask Air mask [1][16][16][16] (values > 0.5 indicate solid, <= 0.5 indicate air)
+     * @param airMask Air mask [1][16][16][16] (values > 0.5 indicate solid, <= 0.5 indicate air - legacy format)
      * @return Filtered block predictions with air mask applied
      */
     public static int[][][] applyAirMask(int[][][] blocks, float[][][][] airMask) {
+        return applyAirMaskLegacy(blocks, airMask);
+    }
+    
+    /**
+     * Apply air mask to block predictions (legacy convention).
+     * Sets blocks to air (ID 0) where the air mask indicates air should be present.
+     * 
+     * @param blocks Block predictions [16][16][16]
+     * @param airMask Air mask [1][16][16][16] (values > 0.5 indicate solid, <= 0.5 indicate air - legacy format)
+     * @return Filtered block predictions with air mask applied
+     */
+    public static int[][][] applyAirMaskLegacy(int[][][] blocks, float[][][][] airMask) {
         int[][][] maskedBlocks = new int[16][16][16];
         
         for (int x = 0; x < 16; x++) {
             for (int y = 0; y < 16; y++) {
                 for (int z = 0; z < 16; z++) {
+                    // Legacy air mask format: positive = solid, zero/negative = air
                     if (airMask[0][x][y][z] > 0.5f) {
+                        // Solid area - keep the predicted block
+                        maskedBlocks[x][y][z] = blocks[x][y][z];
+                    } else {
+                        // Air area - force to air block
+                        maskedBlocks[x][y][z] = 0; // Air block ID
+                    }
+                }
+            }
+        }
+        
+        return maskedBlocks;
+    }
+    
+    /**
+     * Apply air mask to block predictions (ONNX convention).
+     * Sets blocks to air (ID 0) where the air mask indicates air should be present.
+     * 
+     * @param blocks Block predictions [16][16][16]
+     * @param airMask Air mask [1][16][16][16] (values < 0 indicate solid, >= 0 indicate air - ONNX logits)
+     * @return Filtered block predictions with air mask applied
+     */
+    public static int[][][] applyAirMaskOnnx(int[][][] blocks, float[][][][] airMask) {
+        int[][][] maskedBlocks = new int[16][16][16];
+        
+        for (int x = 0; x < 16; x++) {
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    // ONNX air mask logits: positive = solid (sigmoid > 0.5), negative = air
+                    if (airMask[0][x][y][z] > 0.0f) {
+                        // Solid area - keep the predicted block
+                        maskedBlocks[x][y][z] = blocks[x][y][z];
+                    } else {
+                        // Air area - force to air block
+                        maskedBlocks[x][y][z] = 0; // Air block ID
+                    }
+                }
+            }
+        }
+        
+        return maskedBlocks;
+    }
+    
+    /**
+     * Apply air mask to block predictions with dynamic dimensions.
+     * Sets blocks to air (ID 0) where the air mask indicates air should be present.
+     * 
+     * @param blocks Block predictions [X][Y][Z]
+     * @param airMask Air mask [1][X][Y][Z] (values < 0 indicate solid, >= 0 indicate air - ONNX logits)
+     * @return Filtered block predictions with air mask applied
+     */
+    public static int[][][] applyAirMaskDynamic(int[][][] blocks, float[][][][] airMask) {
+        if (blocks.length == 0 || airMask.length == 0) {
+            throw new IllegalArgumentException("Blocks or air mask arrays are empty");
+        }
+        
+        int dimX = blocks.length;
+        int dimY = blocks[0].length;
+        int dimZ = blocks[0][0].length;
+        
+        // Validate air mask dimensions
+        if (airMask[0].length != dimX || airMask[0][0].length != dimY || airMask[0][0][0].length != dimZ) {
+            throw new IllegalArgumentException("Air mask dimensions don't match block dimensions");
+        }
+        
+        int[][][] maskedBlocks = new int[dimX][dimY][dimZ];
+        
+        for (int x = 0; x < dimX; x++) {
+            for (int y = 0; y < dimY; y++) {
+                for (int z = 0; z < dimZ; z++) {
+                    // ONNX air mask logits: positive = solid (sigmoid > 0.5), negative = air
+                    if (airMask[0][x][y][z] > 0.0f) {
                         // Solid area - keep the predicted block
                         maskedBlocks[x][y][z] = blocks[x][y][z];
                     } else {
