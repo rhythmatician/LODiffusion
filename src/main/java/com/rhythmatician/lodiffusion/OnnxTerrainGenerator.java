@@ -147,59 +147,51 @@ public class OnnxTerrainGenerator implements AutoCloseable {
         public NDList processInput(TranslatorContext ctx, ProgressiveTerrainInput input) {
             NDManager manager = ctx.getNDManager();
             
-            // parent_voxel: [1, 1, X, X, X] - already in correct 5D format
-            int[] parentShape = {
-                input.parentVoxel.length,
-                input.parentVoxel[0].length,
-                input.parentVoxel[0][0].length,
-                input.parentVoxel[0][0][0].length,
-                input.parentVoxel[0][0][0][0].length
-            };
-            float[] parentFlat = flatten5D(input.parentVoxel);
-            // Convert int[] to long[] for DJL Shape constructor
-            long[] parentShapeLong = new long[parentShape.length];
-            for (int i = 0; i < parentShape.length; i++) {
-                parentShapeLong[i] = parentShape[i];
+            try {
+                // parent_voxel: [1, 1, X, X, X] - create directly with shape
+                long[] parentShape = {
+                    input.parentVoxel.length,
+                    input.parentVoxel[0].length,
+                    input.parentVoxel[0][0].length,
+                    input.parentVoxel[0][0][0].length,
+                    input.parentVoxel[0][0][0][0].length
+                };
+                float[] parentFlat = flatten5D(input.parentVoxel);
+                NDArray parentArray = manager.create(parentFlat, new Shape(parentShape));
+                
+                // biome_patch: [1, 256, 16, 16] - create directly with shape
+                long[] biomeShape = {
+                    input.biomePatch.length,
+                    input.biomePatch[0].length,
+                    input.biomePatch[0][0].length,
+                    input.biomePatch[0][0][0].length
+                };
+                float[] biomeFlat = flatten4D(input.biomePatch);
+                NDArray biomeArray = manager.create(biomeFlat, new Shape(biomeShape));
+                
+                // heightmap_patch: [1, 1, 16, 16, 1] - create directly with shape
+                long[] heightShape = {
+                    input.heightmapPatch.length,
+                    input.heightmapPatch[0].length,
+                    input.heightmapPatch[0][0].length,
+                    input.heightmapPatch[0][0][0].length,
+                    input.heightmapPatch[0][0][0][0].length
+                };
+                float[] heightFlat = flatten5D(input.heightmapPatch);
+                NDArray heightArray = manager.create(heightFlat, new Shape(heightShape));
+                
+                // river_patch: [1, 1, 16, 16, 1] - create directly with shape (same as height)
+                float[] riverFlat = flatten5D(input.riverPatch);
+                NDArray riverArray = manager.create(riverFlat, new Shape(heightShape));
+                
+                // Return inputs in order expected by progressive models
+                return new NDList(parentArray, biomeArray, heightArray, riverArray);
+                
+            } catch (Exception e) {
+                LOGGER.severe("Failed to process progressive terrain input: " + e.getMessage());
+                e.printStackTrace();
+                throw new RuntimeException("Progressive terrain input processing failed", e);
             }
-            NDArray parentArray = manager.create(parentFlat).reshape(new Shape(parentShapeLong));
-            
-            // biome_patch: [1, 256, 16, 16] - already in correct 4D format  
-            int[] biomeShape = {
-                input.biomePatch.length,
-                input.biomePatch[0].length,
-                input.biomePatch[0][0].length,
-                input.biomePatch[0][0][0].length
-            };
-            float[] biomeFlat = flatten4D(input.biomePatch);
-            // Convert int[] to long[] for DJL Shape constructor
-            long[] biomeShapeLong = new long[biomeShape.length];
-            for (int i = 0; i < biomeShape.length; i++) {
-                biomeShapeLong[i] = biomeShape[i];
-            }
-            NDArray biomeArray = manager.create(biomeFlat).reshape(new Shape(biomeShapeLong));
-            
-            // heightmap_patch: [1, 1, 16, 16, 1] - already in correct 5D format
-            int[] heightShape = {
-                input.heightmapPatch.length,
-                input.heightmapPatch[0].length,
-                input.heightmapPatch[0][0].length,
-                input.heightmapPatch[0][0][0].length,
-                input.heightmapPatch[0][0][0][0].length
-            };
-            float[] heightFlat = flatten5D(input.heightmapPatch);
-            // Convert int[] to long[] for DJL Shape constructor
-            long[] heightShapeLong = new long[heightShape.length];
-            for (int i = 0; i < heightShape.length; i++) {
-                heightShapeLong[i] = heightShape[i];
-            }
-            NDArray heightArray = manager.create(heightFlat).reshape(new Shape(heightShapeLong));
-            
-            // river_patch: [1, 1, 16, 16, 1] - already in correct 5D format
-            float[] riverFlat = flatten5D(input.riverPatch);
-            NDArray riverArray = manager.create(riverFlat).reshape(new Shape(heightShapeLong)); // Same shape as height
-            
-            // Return inputs in order expected by progressive models
-            return new NDList(parentArray, biomeArray, heightArray, riverArray);
         }
         
         @Override
@@ -208,9 +200,14 @@ public class OnnxTerrainGenerator implements AutoCloseable {
             NDArray airMaskLogits = list.get(0);
             NDArray blockTypeLogits = list.get(1);
             
+            // Progressive models output 5D tensors [batch, channels, depth, height, width]
             // Convert to Java arrays with correct BCHWD order for terrain generation
-            float[][][][] airMask = convertNDArrayTo4D(airMaskLogits);
-            float[][][][] blockLogits = convertNDArrayTo4D(blockTypeLogits);
+            float[][][][][] airMask5D = convertNDArrayTo5D(airMaskLogits);
+            float[][][][][] blockLogits5D = convertNDArrayTo5D(blockTypeLogits);
+            
+            // Convert 5D arrays to 4D arrays by flattening batch dimension (batch=1 always)
+            float[][][][] airMask = flatten5DTo4D(airMask5D);
+            float[][][][] blockLogits = flatten5DTo4D(blockLogits5D);
             
             return new TerrainGenerationResult(blockLogits, airMask);
         }
@@ -281,6 +278,63 @@ public class OnnxTerrainGenerator implements AutoCloseable {
                     }
                 }
             }
+            return result;
+        }
+        
+        // Helper method to convert NDArray to 5D Java array (for progressive models)
+        private float[][][][][] convertNDArrayTo5D(NDArray ndArray) {
+            long[] shape = ndArray.getShape().getShape();
+            if (shape.length != 5) {
+                throw new IllegalArgumentException("Expected 5D array, got " + shape.length + "D");
+            }
+            
+            int dim0 = (int) shape[0];
+            int dim1 = (int) shape[1]; 
+            int dim2 = (int) shape[2];
+            int dim3 = (int) shape[3];
+            int dim4 = (int) shape[4];
+            
+            float[] flat = ndArray.toFloatArray();
+            float[][][][][] result = new float[dim0][dim1][dim2][dim3][dim4];
+            
+            int idx = 0;
+            for (int i = 0; i < dim0; i++) {
+                for (int j = 0; j < dim1; j++) {
+                    for (int k = 0; k < dim2; k++) {
+                        for (int l = 0; l < dim3; l++) {
+                            for (int m = 0; m < dim4; m++) {
+                                result[i][j][k][l][m] = flat[idx++];
+                            }
+                        }
+                    }
+                }
+            }
+            return result;
+        }
+        
+        // Helper method to flatten 5D array to 4D by removing batch dimension (batch=1 always)
+        private float[][][][] flatten5DTo4D(float[][][][][] array5D) {
+            if (array5D.length != 1) {
+                throw new IllegalArgumentException("Expected batch dimension of 1, got " + array5D.length);
+            }
+            
+            int dim1 = array5D[0].length;
+            int dim2 = array5D[0][0].length;
+            int dim3 = array5D[0][0][0].length;
+            int dim4 = array5D[0][0][0][0].length;
+            
+            float[][][][] result = new float[dim1][dim2][dim3][dim4];
+            
+            for (int i = 0; i < dim1; i++) {
+                for (int j = 0; j < dim2; j++) {
+                    for (int k = 0; k < dim3; k++) {
+                        for (int l = 0; l < dim4; l++) {
+                            result[i][j][k][l] = array5D[0][i][j][k][l];
+                        }
+                    }
+                }
+            }
+            
             return result;
         }
     }
