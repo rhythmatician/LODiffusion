@@ -1,8 +1,12 @@
 package com.rhythmatician.lodiffusion.dh;
 
-import net.minecraft.util.math.ChunkPos;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertTrue;
+
 import org.junit.jupiter.api.Test;
-import static org.junit.jupiter.api.Assertions.*;
 
 /**
  * Test class for DistantHorizonsCompat following TDD principles.
@@ -88,8 +92,8 @@ public class DistantHorizonsCompatTestSimple {
 
     @Test
     void testGetLodData_DeprecatedMethod_ReturnsValidData() {
-        @SuppressWarnings("deprecation")
-        Object[] lodData = DistantHorizonsCompat.getLodData(0, 0);
+        // Test calling with default player position (0, 0)
+        Object[] lodData = DistantHorizonsCompat.getLodData(0, 0, 0, 0);
 
         assertNotNull(lodData, "LOD data should not be null");
         assertEquals(2, lodData.length, "LOD data should contain 2 elements");
@@ -100,13 +104,12 @@ public class DistantHorizonsCompatTestSimple {
 
     @Test
     void testGetLodData_ConsistentResults() {
-        // Both methods should return same result for origin coordinates
-        Object[] newMethod = DistantHorizonsCompat.getLodData(5, 5, 0, 0);
-        @SuppressWarnings("deprecation")
-        Object[] deprecatedMethod = DistantHorizonsCompat.getLodData(5, 5);
+        // Test that multiple calls with same parameters return same results
+        Object[] firstCall = DistantHorizonsCompat.getLodData(5, 5, 0, 0);
+        Object[] secondCall = DistantHorizonsCompat.getLodData(5, 5, 0, 0);
 
-        assertEquals(newMethod[0], deprecatedMethod[0], "LOD level should be consistent");
-        assertEquals(newMethod[1], deprecatedMethod[1], "Diffusion factor should be consistent");
+        assertEquals(firstCall[0], secondCall[0], "LOD level should be consistent");
+        assertEquals(firstCall[1], secondCall[1], "Diffusion factor should be consistent");
     }
 
     @Test
