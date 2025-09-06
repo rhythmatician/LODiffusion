@@ -49,8 +49,12 @@ public class ProgressiveLODInputBuilder {
 
         Map<String, NDArray> inputs = new HashMap<>();
 
+        // Parent input only for progressive models (not init model)
+        if (lodLevel > 0) {
+            inputs.put("x_parent_prev", parentPrev != null ? parentPrev : createZeroParentTensor(lodLevel));
+        }
+
         // Core inputs (always present)
-        inputs.put("x_parent_prev", parentPrev != null ? parentPrev : createZeroParentTensor(lodLevel));
         inputs.put("x_height_planes", createHeightPlanesTensor(cache));
         inputs.put("x_biome_quart", createBiomeQuartTensor(cache));
         inputs.put("x_router6", createRouter6Tensor(cache));
@@ -225,8 +229,8 @@ public class ProgressiveLODInputBuilder {
      */
     private NDArray createChunkPosTensor(NoiseTap.Cache cache) {
         float[][] chunkPos = new float[1][2];
-        chunkPos[0][0] = config.normalization().coords().normalize(cache.chunkX());
-        chunkPos[0][1] = config.normalization().coords().normalize(cache.chunkZ());
+        chunkPos[0][0] = (float) cache.chunkX();
+        chunkPos[0][1] = (float) cache.chunkZ();
         return manager.create(chunkPos);
     }
 
@@ -234,8 +238,8 @@ public class ProgressiveLODInputBuilder {
      * Create LOD level tensor: [1,1]
      */
     private NDArray createLodTensor(int lodLevel) {
-        float[][] lod = new float[1][1];
-        lod[0][0] = lodLevel / 4.0f; // Normalize LOD 0→4 to range [0.0→1.0]
+        long[][] lod = new long[1][1];
+        lod[0][0] = lodLevel;
         return manager.create(lod);
     }
 

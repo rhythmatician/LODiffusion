@@ -125,6 +125,13 @@ public record ModelConfig(
     }
     
     /**
+     * Check if an input is expected by the model.
+     */
+    public boolean hasInput(String tensorName) {
+        return inputs.containsKey(tensorName) || optionalInputs.containsKey(tensorName);
+    }
+    
+    /**
      * Check if an input is optional.
      */
     public boolean isOptionalInput(String tensorName) {
@@ -148,7 +155,11 @@ public record ModelConfig(
      */
     public int getParentResolution() {
         int[] parentShape = inputs.get("x_parent_prev");
-        if (parentShape == null || parentShape.length != 5) {
+        if (parentShape == null) {
+            // Init model has no parent input - return 0 to indicate no parent
+            return 0;
+        }
+        if (parentShape.length != 5) {
             throw new IllegalStateException("Invalid x_parent_prev shape");
         }
         // Shape is [1, 1, X, Y, Z] - assume X==Y==Z
@@ -160,14 +171,20 @@ public record ModelConfig(
      */
     public void validate() {
         // Check required inputs
-        String[] requiredInputs = {
-            "x_parent_prev", "x_height_planes", "x_biome_quart", 
-            "x_router6", "x_chunk_pos", "x_lod"
-        };
+        // Check that all inputs and outputs have proper shapes
+        for (Map.Entry<String, int[]> entry : inputs.entrySet()) {
+            String name = entry.getKey();
+            int[] shape = entry.getValue();
+            if (shape == null || shape.length == 0) {
+                throw new IllegalStateException("Invalid shape for input: " + name);
+            }
+        }
         
-        for (String required : requiredInputs) {
-            if (!inputs.containsKey(required)) {
-                throw new IllegalStateException("Missing required input: " + required);
+        for (Map.Entry<String, int[]> entry : optionalInputs.entrySet()) {
+            String name = entry.getKey();
+            int[] shape = entry.getValue();
+            if (shape == null || shape.length == 0) {
+                throw new IllegalStateException("Invalid shape for optional input: " + name);
             }
         }
         

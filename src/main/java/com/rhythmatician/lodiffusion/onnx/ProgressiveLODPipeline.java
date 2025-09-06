@@ -94,13 +94,42 @@ public class ProgressiveLODPipeline implements AutoCloseable {
             NDList inputs = toNamedNDList(inputMap, s.config());
             try (var predictor = s.model().newPredictor(new NoopTranslator())) {
                 NDList out = predictor.predict(inputs);
-                NDArray logits = out.get(0);
-                NDArray air = out.size() > 1 ? out.get(1) : null;
+                
+                // Pick outputs by shape (fallback approach)
+                // block_logits: [1, N_blocks, D, D, D] - the large channel count 
+                // air_mask: [1, 1, D, D, D] - the single channel
+                NDArray blockLogits = null;
+                NDArray airMask = null;
+                
+                for (NDArray tensor : out) {
+                    long[] shape = tensor.getShape().getShape();
+                    if (shape.length == 5 && shape[0] == 1) {
+                        long channels = shape[1];
+                        if (channels > 100) {  // block_logits has ~1104 channels
+                            blockLogits = tensor;
+                        } else if (channels == 1) {  // air_mask has 1 channel
+                            airMask = tensor;
+                        }
+                    }
+                }
+                
+                if (blockLogits == null) {
+                    throw new IllegalStateException("Could not find block_logits output tensor");
+                }
+                if (airMask == null) {
+                    throw new IllegalStateException("Could not find air_mask output tensor");
+                }
 
-                lastLogits = extractTensor5D(logits);
-                lastAir = air != null ? extractTensor5D(air) : deriveAirFromLogits(lastLogits);
+                // Debug: Print actual output shapes
+                System.out.println("=== DEBUG: ONNX OUTPUT SELECTION ===");
+                System.out.println("Model: " + s.config().modelName());
+                System.out.println("Selected block_logits shape: " + java.util.Arrays.toString(blockLogits.getShape().getShape()));
+                System.out.println("Selected air_mask shape: " + java.util.Arrays.toString(airMask.getShape().getShape()));
 
-                parent = logits; // propagate as x_parent_prev to the next stage
+                lastLogits = extractTensor5D(blockLogits);
+                lastAir = extractTensor5D(airMask);
+
+                parent = blockLogits; // propagate as x_parent_prev to the next stage
             }
 
             times[stage] = System.currentTimeMillis() - t0;
@@ -166,20 +195,25 @@ public class ProgressiveLODPipeline implements AutoCloseable {
     }
 
     private void validatePipeline() {
-        int expOut = 1;
+        int prevOut = 0; // Previous model's output resolution
         for (int i = 0; i < models.length; i++) {
             int parent = models[i].config().getParentResolution();
             int out = models[i].config().getOutputResolution();
             if (i == 0) {
-                if (parent != 1 || out != 1) {
-                    // Init model outputs 1³; parent is placeholder (zeros)
+                // Init model: parent is placeholder, output should be 1³
+                if (out != 1) {
+                    throw new IllegalStateException("Stage 0 (init) must output 1³, got: " + out);
                 }
             } else {
-                if (parent != expOut || out != expOut * 2) {
-                    throw new IllegalStateException("Stage " + i + " resolution mismatch: " + parent + "->" + out);
+                // Progressive models: parent should match previous output, output should be 2x parent
+                if (parent != prevOut) {
+                    throw new IllegalStateException("Stage " + i + " parent mismatch: expected " + prevOut + ", got " + parent);
+                }
+                if (out != parent * 2) {
+                    throw new IllegalStateException("Stage " + i + " output mismatch: expected " + (parent * 2) + ", got " + out);
                 }
             }
-            expOut = Math.max(out, expOut * 2);
+            prevOut = out; // Update for next iteration
         }
         LOGGER.info("Validated 5-model progressive LOD pipeline (1→2→4→8→16)");
     }
