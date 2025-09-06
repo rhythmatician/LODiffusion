@@ -1,5 +1,8 @@
 package com.rhythmatician.lodiffusion.dh;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.math.ChunkPos;
 
@@ -10,7 +13,8 @@ import net.minecraft.util.math.ChunkPos;
  * Provides a unified interface for LOD operations that works both with and without DH.
  */
 public class DistantHorizonsCompat {
-
+    
+    private static final Logger LOGGER = LoggerFactory.getLogger(DistantHorizonsCompat.class);
     private static final LODManagerCompat lodManagerCompat = new LODManagerCompat();
 
     /**
@@ -72,15 +76,15 @@ public class DistantHorizonsCompat {
      */
     public static void registerWorldGenerator() {
         if (isDistantHorizonsIntegrationAvailable()) {
-            System.out.println("Registering LODiffusion generator with Distant Horizons");
+            LOGGER.info("Registering LODiffusion generator with Distant Horizons");
             boolean success = LODiffusionDHWorldGenerator.attemptRegistration();
             if (success) {
-                System.out.println("Successfully registered LODiffusion with DH API");
+                LOGGER.info("Successfully registered LODiffusion with DH API");
             } else {
-                System.out.println("Failed to register with DH API - using fallback LOD calculation");
+                LOGGER.warn("Failed to register with DH API - using fallback LOD calculation");
             }
         } else {
-            System.out.println("DH not available - using standalone LOD calculation");
+            LOGGER.info("DH not available - using standalone LOD calculation");
         }
     }
 
@@ -99,16 +103,6 @@ public class DistantHorizonsCompat {
         float diffusionFactor = getLODDiffusionFactor(lod);
         
         return new Object[]{lod, diffusionFactor};
-    }
-
-    /**
-     * Legacy method for backward compatibility.
-     * @deprecated Use getLodData(int, int, int, int) with player coordinates instead
-     */
-    @Deprecated
-    public static Object[] getLodData(int chunkX, int chunkZ) {
-        // Use origin as default player position
-        return getLodData(chunkX, chunkZ, 0, 0);
     }
 }
 

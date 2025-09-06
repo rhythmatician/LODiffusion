@@ -1,8 +1,6 @@
 package com.rhythmatician.lodiffusion.terrain;
 
-import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
-import com.rhythmatician.lodiffusion.terrain.adapter.AdapterRegistry;
 import com.rhythmatician.lodiffusion.terrain.infer.ModelManager;
 import com.rhythmatician.lodiffusion.util.PerformanceMonitor;
 
@@ -77,16 +75,13 @@ public class OnnxTerrainGenerator implements TerrainGenerator {
      */
     public static boolean isReady() {
         try {
-            String adapterName = Config.adapter();
-            
-            // Check for progressive models first (preferred)
+            // Check for progressive models (current implementation)
             if (areProgressiveModelsAvailable()) {
-                return AdapterRegistry.hasAdapter(adapterName);
+                return true; // Progressive models are available
             }
             
             // Fall back to legacy single model check
-            return ModelManager.isAvailable() && 
-                   AdapterRegistry.hasAdapter(adapterName);
+            return ModelManager.isAvailable();
         } catch (Exception e) {
             return false;
         }
@@ -178,12 +173,9 @@ public class OnnxTerrainGenerator implements TerrainGenerator {
             status.append("- Progressive models available: ").append(progressiveAvailable).append("\n");
             status.append("- Legacy model available: ").append(legacyAvailable).append("\n");
             status.append("- Model available: ").append(progressiveAvailable || legacyAvailable).append("\n");
-            status.append("- Configured adapter: ").append(Config.adapter()).append("\n");
-            status.append("- Adapter available: ").append(AdapterRegistry.hasAdapter(Config.adapter())).append("\n");
-            status.append("- Available adapters: ").append(String.join(", ", AdapterRegistry.getAvailableAdapters()));
             
             if (progressiveAvailable) {
-                status.append("\n- Progressive models detected - using 4-stage LOD refinement");
+                status.append("- Using 5-stage progressive LOD pipeline (Init→LOD4→LOD3→LOD2→LOD1→LOD0)");
             }
         } catch (Exception e) {
             status.append("- Error getting status: ").append(e.getMessage());

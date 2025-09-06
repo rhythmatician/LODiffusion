@@ -1,5 +1,8 @@
 package com.rhythmatician.lodiffusion.dh;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
 import com.rhythmatician.lodiffusion.DefaultLODQuery;
 import com.rhythmatician.lodiffusion.ModDetection;
 
@@ -12,6 +15,7 @@ import net.minecraft.util.math.ChunkPos;
  * when DH is not available.
  */
 public class LODManagerCompat {
+    private static final Logger LOGGER = LoggerFactory.getLogger(LODManagerCompat.class);
     private final DefaultLODQuery fallbackQuery;
     private boolean dhIntegrationChecked = false;
     private boolean dhIntegrationAvailable = false;
@@ -134,11 +138,11 @@ public class LODManagerCompat {
             // Try to access DH API classes
             Class.forName("com.seibel.distanthorizons.api.DhApi");
             dhIntegrationAvailable = true;
-            System.out.println("Distant Horizons API integration available");
+            LOGGER.debug("Distant Horizons API integration available");
             
         } catch (ClassNotFoundException e) {
             dhIntegrationAvailable = false;
-            System.out.println("Distant Horizons detected but API not accessible: " + e.getMessage());
+            LOGGER.debug("Distant Horizons detected but API not accessible: {}", e.getMessage());
         } catch (Exception e) {
             dhIntegrationAvailable = false;
             System.err.println("Error checking DH integration: " + e.getMessage());

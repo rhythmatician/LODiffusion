@@ -120,12 +120,6 @@ public class ProgressiveLODPipeline implements AutoCloseable {
                     throw new IllegalStateException("Could not find air_mask output tensor");
                 }
 
-                // Debug: Print actual output shapes
-                System.out.println("=== DEBUG: ONNX OUTPUT SELECTION ===");
-                System.out.println("Model: " + s.config().modelName());
-                System.out.println("Selected block_logits shape: " + java.util.Arrays.toString(blockLogits.getShape().getShape()));
-                System.out.println("Selected air_mask shape: " + java.util.Arrays.toString(airMask.getShape().getShape()));
-
                 lastLogits = extractTensor5D(blockLogits);
                 lastAir = extractTensor5D(airMask);
 

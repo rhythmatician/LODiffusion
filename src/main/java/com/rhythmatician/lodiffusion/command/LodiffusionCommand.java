@@ -1,11 +1,9 @@
 package com.rhythmatician.lodiffusion.command;
 
 import com.mojang.brigadier.CommandDispatcher;
-import com.mojang.brigadier.arguments.StringArgumentType;
 import com.mojang.brigadier.context.CommandContext;
 import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.terrain.OnnxTerrainGenerator;
-import com.rhythmatician.lodiffusion.terrain.adapter.AdapterRegistry;
 import com.rhythmatician.lodiffusion.terrain.infer.ModelManager;
 import com.rhythmatician.lodiffusion.util.DebugUtils;
 import com.rhythmatician.lodiffusion.util.PerformanceMonitor;
@@ -34,17 +32,6 @@ public final class LodiffusionCommand {
             // Toggle ONNX terrain generation
             .then(CommandManager.literal("toggle")
                 .executes(context -> executeToggle(context)))
-            
-            // Change adapter
-            .then(CommandManager.literal("adapter")
-                .then(CommandManager.argument("adapter_name", StringArgumentType.string())
-                    .suggests((context, builder) -> {
-                        for (String adapter : AdapterRegistry.getAvailableAdapters()) {
-                            builder.suggest(adapter);
-                        }
-                        return builder.buildFuture();
-                    })
-                    .executes(context -> executeSetAdapter(context))))
             
             // Performance report
             .then(CommandManager.literal("performance")
@@ -100,24 +87,6 @@ public final class LodiffusionCommand {
         String message = String.format("§6LODiffusion ONNX terrain generation §%s%s§6.§r", 
             newState ? "a" : "c", newState ? "enabled" : "disabled");
         source.sendFeedback(() -> Text.literal(message), true);
-        
-        return 1;
-    }
-    
-    private static int executeSetAdapter(CommandContext<ServerCommandSource> context) {
-        ServerCommandSource source = context.getSource();
-        String adapterName = StringArgumentType.getString(context, "adapter_name");
-        
-        if (!AdapterRegistry.hasAdapter(adapterName)) {
-            String available = String.join(", ", AdapterRegistry.getAvailableAdapters());
-            source.sendFeedback(() -> Text.literal(
-                "§cUnknown adapter: " + adapterName + "\n§7Available adapters: " + available + "§r"), false);
-            return 0;
-        }
-        
-        Config.setAdapter(adapterName);
-        source.sendFeedback(() -> Text.literal(
-            "§6Changed adapter to: §f" + adapterName + "§r"), true);
         
         return 1;
     }
