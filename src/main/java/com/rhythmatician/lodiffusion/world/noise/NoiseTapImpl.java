@@ -15,13 +15,13 @@ import net.minecraft.world.gen.noise.NoiseConfig;
 import net.minecraft.world.gen.noise.NoiseRouter;
 
 /**
- * NoiseTapImpl — Minimal implementation using exact Yarn 1.21.5+ API calls.
- * 
+ * NoiseTapImpl — Minimal implementation using exact Yarn 1.21.4+ API calls.
+ *
  * This implementation fetches vanilla noise signals at their native API granularities:
  * - NoiseRouter fields via DensityFunction.sample() at block resolution
- * - Biomes via BiomeAccess.getBiomeForNoiseGen() at 4×4×4 lattice points  
+ * - Biomes via BiomeAccess.getBiomeForNoiseGen() at 4×4×4 lattice points
  * - Heightmaps via Chunk.getHeightmap() at 16×16 resolution
- * 
+ *
  * No upsampling is performed - we respect the API's native resolutions.
  */
 final class NoiseTapImpl implements NoiseTap {
@@ -60,17 +60,17 @@ final class NoiseTapImpl implements NoiseTap {
                 case EROSION -> router.erosion();
                 case DEPTH -> router.depth();
                 case RIDGES -> router.ridges();
-                
-                // Tier C - 3D Density Features  
+
+                // Tier C - 3D Density Features
                 case INITIAL_DENSITY_NO_JAG -> router.initialDensityWithoutJaggedness();
                 case FINAL_DENSITY -> router.finalDensity();
-                
+
                 // Tier B - Fluid & Environmental Features
                 case FLUID_FLOODEDNESS -> router.fluidLevelFloodednessNoise();
                 case FLUID_SPREAD -> router.fluidLevelSpreadNoise();
                 case LAVA -> router.lavaNoise();
                 case BARRIER -> router.barrierNoise();
-                
+
                 // Tier D - Vein & Ore Features
                 case VEIN_TOGGLE -> router.veinToggle();
                 case VEIN_RIDGED -> router.veinRidged();
@@ -109,7 +109,7 @@ final class NoiseTapImpl implements NoiseTap {
                 int z = bz0 + lz;
                 for (int ly = 0; ly < 16; ly++) {
                     // Sample at chunk section height - adjust if sampling multiple sections
-                    int y = minY + ly; 
+                    int y = minY + ly;
                     double v = df.sample(new DensityFunction.UnblendedNoisePos(x, y, z));
                     out[lx][lz][ly] = (float)v;
                 }

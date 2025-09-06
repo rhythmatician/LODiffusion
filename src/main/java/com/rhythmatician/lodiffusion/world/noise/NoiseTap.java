@@ -10,7 +10,7 @@ import net.minecraft.world.gen.noise.NoiseConfig;
 
 /**
  * NoiseTap — Efficient vanilla noise signal capture at native API granularities.
- * 
+ *
  * All methods cache at the API's native resolution:
  * - Biomes: 4×4×4 lattice per chunk section
  * - Router fields (DensityFunction): full 16×16×16 block grid for the chunk
@@ -24,7 +24,7 @@ public interface NoiseTap {
 
     /**
      * Capture all requested noise signals for this chunk.
-     * 
+     *
      * @param whichRouterFields NoiseRouter fields to sample at 16×16×16 resolution
      * @param whichHeightmaps Heightmap types to capture at 16×16 resolution
      * @return immutable cache view for this chunk at native API resolutions
@@ -34,18 +34,18 @@ public interface NoiseTap {
 
     /**
      * Router fields we can sample (exactly those exposed by NoiseRouter).
-     * These correspond to the 15 DensityFunction fields in Yarn 1.21.5+ NoiseRouter.
+     * These correspond to the 15 DensityFunction fields in Yarn 1.21.4+ NoiseRouter.
      */
     enum RouterField {
         // Tier A - Surface & Climate Features (fast, essential)
         TEMPERATURE, VEGETATION, CONTINENTS, EROSION, DEPTH, RIDGES,
-        
+
         // Tier B - Fluid & Environmental Features (moderate cost)
         FLUID_FLOODEDNESS, FLUID_SPREAD, LAVA, BARRIER,
-        
+
         // Tier C - 3D Density Features (expensive but valuable for caves)
         INITIAL_DENSITY_NO_JAG, FINAL_DENSITY,
-        
+
         // Tier D - Vein & Ore Features (very expensive, consider post-processing)
         VEIN_TOGGLE, VEIN_RIDGED, VEIN_GAP
     }
@@ -103,36 +103,36 @@ public interface NoiseTap {
             }
             return biomes4[qx][qz][qy];
         }
-        
+
         /**
          * Get total number of captured router fields.
          */
         public int getRouterFieldCount() {
             return router.size();
         }
-        
+
         /**
          * Get total memory footprint estimate in bytes.
          */
         public long getMemoryFootprint() {
             long bytes = 0;
-            
+
             // Router fields: float[16][16][16] = 16KB each
             bytes += router.size() * 16 * 16 * 16 * Float.BYTES;
-            
+
             // Biomes: int[4][4][4] = 256 bytes
             bytes += 4 * 4 * 4 * Integer.BYTES;
-            
+
             // Heightmaps: short[16][16] = 512 bytes each
             bytes += heightmaps16.size() * 16 * 16 * Short.BYTES;
-            
+
             return bytes;
         }
     }
 
     /**
      * Factory that binds the tap to a chunk context.
-     * 
+     *
      * @param chunk Chunk to sample from
      * @param noiseConfig NoiseConfig containing the NoiseRouter
      * @param biomeAccess BiomeAccess for biome sampling
@@ -169,7 +169,7 @@ public interface NoiseTap {
             case FULL -> EnumSet.allOf(RouterField.class);
         };
     }
-    
+
     /**
      * Convenience method to get default heightmap types for terrain generation.
      */
@@ -180,7 +180,7 @@ public interface NoiseTap {
             Heightmap.Type.MOTION_BLOCKING       // Top solid block for collision
         );
     }
-    
+
     /**
      * Performance tiers for router field selection based on our noise analysis.
      */
