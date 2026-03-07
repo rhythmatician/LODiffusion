@@ -27,9 +27,7 @@
     "minecraft": "~1.21.4",
     "java": ">=21",
     "fabric-api": "*",
-    "distanthorizons": ">=2.3.0-b-dev"
+    "voxy": ">=0.3"
   },
-  "suggests": {
-    "another-mod": "*"
-  }
+  "suggests": {}
 }

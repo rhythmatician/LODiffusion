@@ -3,6 +3,9 @@ package com.rhythmatician.lodiffusion.onnx;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.logging.Logger;
 
 import com.google.gson.Gson;
@@ -11,9 +14,14 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import com.google.gson.reflect.TypeToken;
 
 /**
- * Loads ModelConfig from a JSON file produced alongside ONNX models.
+ * Loads {@link ModelConfig} from a JSON sidecar produced alongside ONNX models.
+ *
+ * <p>Handles both the <b>lodiffusion.v1</b> format (produced by VoxelTree's
+ * {@code export_lod.py}) and the richer multi-model format used by the
+ * progressive pipeline.
  */
 public final class ConfigLoader {
 
@@ -22,25 +30,99 @@ public final class ConfigLoader {
 
     private ConfigLoader() {}
 
+    /**
+     * Load and validate a model config from the given JSON path.
+     */
     public static ModelConfig load(Path jsonPath) throws IOException {
-        // Read the JSON as a tree first to allow pre-processing (e.g., symbolic dims)
         String json = Files.readString(jsonPath);
         JsonObject root = JsonParser.parseString(json).getAsJsonObject();
 
-    // Normalize common snake_case top-level keys to Java record field names
-    renameKey(root, "model_name", "modelName");
-    renameKey(root, "optional_inputs", "optionalInputs");
-    renameKey(root, "block_palette", "blockPalette");
+        // Detect contract version
+        boolean isV1 = root.has("contract")
+                && "lodiffusion.v1".equals(root.get("contract").getAsString());
 
-    // If outputs.block_logits has a symbolic dimension (e.g., "N_blocks"),
-        // replace it with the concrete value from block_palette.size before deserialization.
+        if (isV1) {
+            return loadV1(root, jsonPath);
+        } else {
+            return loadRich(root, jsonPath);
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // lodiffusion.v1 sidecar  (VoxelTree export_lod.py)
+    // ------------------------------------------------------------------
+
+    private static ModelConfig loadV1(JsonObject root, Path jsonPath) throws IOException {
+        String version = getString(root, "version", "unknown");
+        String contract = getString(root, "contract", "lodiffusion.v1");
+
+        // inputs  – e.g. {x_parent:[1,1,8,8,8], x_biome:[1,256,16,16,1], ...}
+        Map<String, int[]> inputs = parseShapeMap(root.getAsJsonObject("inputs"));
+
+        // outputs – e.g. {block_logits:[1,1104,16,16,16], air_mask:[1,1,16,16,16]}
+        Map<String, int[]> outputs = parseShapeMap(root.getAsJsonObject("outputs"));
+
+        // assumptions – opaque key/value bag
+        Map<String, Object> assumptions = null;
+        if (root.has("assumptions")) {
+            assumptions = GSON.fromJson(root.get("assumptions"),
+                    new TypeToken<Map<String, Object>>(){}.getType());
+        }
+
+        Integer biomeVocab = getInt(root, "biome_vocab_size");
+        Integer blockVocab = getInt(root, "block_vocab_size");
+
+        // block_mapping: { "minecraft:air": 0, ... }
+        Map<String, Integer> blockMapping = null;
+        if (root.has("block_mapping")) {
+            blockMapping = GSON.fromJson(root.get("block_mapping"),
+                    new TypeToken<Map<String, Integer>>(){}.getType());
+        }
+
+        // block_id_to_name: { "0": "minecraft:air", ... }
+        Map<String, String> blockIdToName = null;
+        if (root.has("block_id_to_name")) {
+            blockIdToName = GSON.fromJson(root.get("block_id_to_name"),
+                    new TypeToken<Map<String, String>>(){}.getType());
+        }
+
+        ModelConfig config = new ModelConfig(
+            /* modelName */       getString(root, "model_name", "voxeltree-v1"),
+            /* version */         version,
+            /* inputs */          inputs,
+            /* optionalInputs */  Collections.emptyMap(),
+            /* outputs */         outputs,
+            /* normalization */   null,   // v1 has no normalization block
+            /* blockPalette */    null,   // v1 embeds blockMapping directly
+            /* contract */        contract,
+            /* assumptions */     assumptions,
+            /* biomeVocabSize */  biomeVocab,
+            /* blockVocabSize */  blockVocab,
+            /* blockMapping */    blockMapping,
+            /* blockIdToName */   blockIdToName
+        );
+        config.validate();
+        LOGGER.info("Loaded v1 model config from " + jsonPath
+                + "  blocks=" + config.effectiveBlockVocabSize()
+                + "  biomes=" + config.effectiveBiomeVocabSize());
+        return config;
+    }
+
+    // ------------------------------------------------------------------
+    // Rich / progressive pipeline sidecar
+    // ------------------------------------------------------------------
+
+    private static ModelConfig loadRich(JsonObject root, Path jsonPath) throws IOException {
+        // Normalize snake_case top-level keys
+        renameKey(root, "model_name", "modelName");
+        renameKey(root, "optional_inputs", "optionalInputs");
+        renameKey(root, "block_palette", "blockPalette");
+
+        // Resolve symbolic "N_blocks" dim in block_logits
         try {
-            JsonObject paletteObj = null;
-            if (root.has("blockPalette")) {
-                paletteObj = root.getAsJsonObject("blockPalette");
-            } else if (root.has("block_palette")) {
-                paletteObj = root.getAsJsonObject("block_palette");
-            }
+            JsonObject paletteObj = root.has("blockPalette")
+                    ? root.getAsJsonObject("blockPalette")
+                    : root.has("block_palette") ? root.getAsJsonObject("block_palette") : null;
 
             if (paletteObj != null && root.has("outputs")) {
                 int paletteSize = paletteObj.get("size").getAsInt();
@@ -59,11 +141,9 @@ public final class ConfigLoader {
                 }
             }
         } catch (Exception e) {
-            // Don't fail on preprocessing; we'll surface a clearer error during validate()
             LOGGER.fine("Config preprocessing warning for " + jsonPath + ": " + e.getMessage());
         }
 
-        // Now deserialize using snake_case mapping
         ModelConfig config = GSON.fromJson(root, ModelConfig.class);
         if (config == null) {
             throw new IOException("Failed to parse config: " + jsonPath);
@@ -73,10 +153,36 @@ public final class ConfigLoader {
         return config;
     }
 
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
+
     private static void renameKey(JsonObject obj, String from, String to) {
         if (obj.has(from) && !obj.has(to)) {
             JsonElement v = obj.remove(from);
             obj.add(to, v);
         }
+    }
+
+    private static Map<String, int[]> parseShapeMap(JsonObject obj) {
+        if (obj == null) return Collections.emptyMap();
+        Map<String, int[]> result = new HashMap<>();
+        for (String key : obj.keySet()) {
+            JsonArray arr = obj.getAsJsonArray(key);
+            int[] shape = new int[arr.size()];
+            for (int i = 0; i < arr.size(); i++) {
+                shape[i] = arr.get(i).getAsInt();
+            }
+            result.put(key, shape);
+        }
+        return result;
+    }
+
+    private static String getString(JsonObject obj, String key, String def) {
+        return obj.has(key) ? obj.get(key).getAsString() : def;
+    }
+
+    private static Integer getInt(JsonObject obj, String key) {
+        return obj.has(key) ? obj.get(key).getAsInt() : null;
     }
 }

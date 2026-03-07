@@ -55,14 +55,7 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 	
-	// Distant Horizons integration - using local JAR files
-	compileOnly files('mods/DistantHorizonsApi-4.0.0.jar')
-	modRuntimeOnly files('mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar')
-
-	// NOTE: Distant Horizons integration is runtime-only via reflection
-	// DH doesn't publish to Maven Central, so we avoid compile-time dependencies
-	// Users need to install DH separately for LOD features to work
-	// Runtime detection handles DH presence/absence gracefully
+	// (Distant Horizons dependency removed — now targeting Voxy)
 
 	// JUnit 5 for testing
 	testImplementation 'org.junit.jupiter:junit-jupiter:5.9.2'

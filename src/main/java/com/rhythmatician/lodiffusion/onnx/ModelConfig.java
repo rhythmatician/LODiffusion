@@ -1,210 +1,198 @@
 package com.rhythmatician.lodiffusion.onnx;
 
+import java.util.Collections;
 import java.util.Map;
 
 /**
- * Model configuration loaded from model_config.json for each progressive LOD model.
- * Defines input/output shapes, normalization parameters, and block palette information.
+ * Model configuration loaded from model_config.json sidecar.
+ *
+ * <p>Supports two contract versions:
+ * <ul>
+ *   <li><b>lodiffusion.v1</b> – single unified model with simple inputs
+ *       ({@code x_parent}, {@code x_biome}, {@code x_height}, {@code x_lod})</li>
+ *   <li><b>future rich contract</b> – NoiseTap-based inputs (router6, height planes, etc.)</li>
+ * </ul>
+ *
+ * <p>When the sidecar uses the {@code lodiffusion.v1} contract, the
+ * {@code normalization} and {@code optionalInputs} fields may be {@code null}.
  */
 public record ModelConfig(
+    /* ---- common fields ---- */
     String modelName,
     String version,
     Map<String, int[]> inputs,
-    Map<String, int[]> optionalInputs,
+    Map<String, int[]> optionalInputs,   // nullable for v1 contract
     Map<String, int[]> outputs,
+
+    /* ---- rich-contract fields (nullable for v1) ---- */
     NormalizationConfig normalization,
-    BlockPalette blockPalette
+    BlockPalette blockPalette,           // nullable for v1 – use blockVocabSize + blockMapping instead
+
+    /* ---- v1 contract fields ---- */
+    String contract,                      // e.g. "lodiffusion.v1"
+    Map<String, Object> assumptions,      // e.g. {y_index_fixed: 12, river_patch: "zeros", ...}
+    Integer biomeVocabSize,
+    Integer blockVocabSize,
+    Map<String, Integer> blockMapping,    // "minecraft:stone" -> 42
+    Map<String, String> blockIdToName     // "42" -> "minecraft:stone"  (keys are string-ified ints)
 ) {
-    
-    /**
-     * Normalization configuration for different feature types.
-     */
+
+    // ------------------------------------------------------------------
+    // Nested records (kept for future rich-contract compatibility)
+    // ------------------------------------------------------------------
+
     public record NormalizationConfig(
         HeightNormalization heights,
         RouterNormalization router6,
         BiomeNormalization biome,
         CoordNormalization coords
     ) {}
-    
-    /**
-     * Height normalization using world bounds (MinMax scaling).
-     */
+
     public record HeightNormalization(
-        String type,  // "minmax"
-        int bottomY,  // World bottom Y
-        int height    // World height range
+        String type,
+        int bottomY,
+        int height
     ) {
         public float normalize(int rawHeight) {
-            return (float)(rawHeight - bottomY) / height;
+            return (float) (rawHeight - bottomY) / height;
         }
-        
         public int denormalize(float normalized) {
             return Math.round(normalized * height + bottomY);
         }
     }
-    
-    /**
-     * Router field normalization using per-channel statistics (Z-score).
-     */
+
     public record RouterNormalization(
-        String type,    // "zscore"
-        float[] mean,   // Per-channel mean [6 channels]
-        float[] std     // Per-channel std [6 channels]
+        String type,
+        float[] mean,
+        float[] std
     ) {
         public float normalize(float rawValue, int channel) {
-            if (channel < 0 || channel >= mean.length) {
+            if (channel < 0 || channel >= mean.length)
                 throw new IllegalArgumentException("Invalid channel: " + channel);
-            }
             return (rawValue - mean[channel]) / std[channel];
         }
-        
-        public float denormalize(float normalized, int channel) {
-            if (channel < 0 || channel >= mean.length) {
-                throw new IllegalArgumentException("Invalid channel: " + channel);
-            }
-            return normalized * std[channel] + mean[channel];
-        }
     }
-    
-    /**
-     * Biome feature normalization (mixed types).
-     */
-    public record BiomeNormalization(
-        String type  // "mixed" - temp continuous, flags binary
-    ) {}
-    
-    /**
-     * Coordinate normalization using tanh scaling.
-     */
+
+    public record BiomeNormalization(String type) {}
+
     public record CoordNormalization(
-        String type,     // "tanh"
-        float scale      // Scale factor for tanh(coord/scale)
+        String type,
+        float scale
     ) {
         public float normalize(int rawCoord) {
             return (float) Math.tanh(rawCoord / scale);
         }
-        
-        public int denormalize(float normalized) {
-            // Approximate inverse: scale * atanh(normalized)
-            double atanh = 0.5 * Math.log((1 + normalized) / (1 - normalized));
-            return Math.round((float)(scale * atanh));
-        }
     }
-    
-    /**
-     * Block palette information for the model.
-     */
+
     public record BlockPalette(
-        int size,               // Number of block types (N_blocks)
-        String mapping          // Reference to block mapping file
+        int size,
+        String mapping
     ) {}
-    
-    /**
-     * Get input shape for a specific tensor name.
-     */
+
+    // ------------------------------------------------------------------
+    // Convenience helpers
+    // ------------------------------------------------------------------
+
+    /** True when the sidecar declares itself as lodiffusion.v1 (simple 4-input contract). */
+    public boolean isV1Contract() {
+        return "lodiffusion.v1".equals(contract);
+    }
+
+    /** Number of block types the model was trained on. */
+    public int effectiveBlockVocabSize() {
+        if (blockVocabSize != null) return blockVocabSize;
+        if (blockPalette != null) return blockPalette.size();
+        int[] bl = outputs != null ? outputs.get("block_logits") : null;
+        if (bl != null && bl.length >= 2) return bl[1];
+        return 0;
+    }
+
+    /** Number of biome types the model supports. */
+    public int effectiveBiomeVocabSize() {
+        if (biomeVocabSize != null) return biomeVocabSize;
+        return 256; // safe default
+    }
+
     public int[] getInputShape(String tensorName) {
-        int[] shape = inputs.get(tensorName);
-        if (shape == null) {
+        int[] shape = inputs != null ? inputs.get(tensorName) : null;
+        if (shape == null && optionalInputs != null)
             shape = optionalInputs.get(tensorName);
-        }
-        if (shape == null) {
+        if (shape == null)
             throw new IllegalArgumentException("Unknown input tensor: " + tensorName);
-        }
         return shape.clone();
     }
-    
-    /**
-     * Get output shape for a specific tensor name.
-     */
+
     public int[] getOutputShape(String tensorName) {
-        int[] shape = outputs.get(tensorName);
-        if (shape == null) {
+        int[] shape = outputs != null ? outputs.get(tensorName) : null;
+        if (shape == null)
             throw new IllegalArgumentException("Unknown output tensor: " + tensorName);
-        }
         return shape.clone();
     }
-    
-    /**
-     * Check if an input is expected by the model.
-     */
+
     public boolean hasInput(String tensorName) {
-        return inputs.containsKey(tensorName) || optionalInputs.containsKey(tensorName);
+        if (inputs != null && inputs.containsKey(tensorName)) return true;
+        return optionalInputs != null && optionalInputs.containsKey(tensorName);
     }
-    
-    /**
-     * Check if an input is optional.
-     */
+
     public boolean isOptionalInput(String tensorName) {
-        return optionalInputs.containsKey(tensorName);
+        return optionalInputs != null && optionalInputs.containsKey(tensorName);
     }
-    
-    /**
-     * Get the output resolution (assumes cubic output).
-     */
+
     public int getOutputResolution() {
-        int[] blockLogitsShape = outputs.get("block_logits");
-        if (blockLogitsShape == null || blockLogitsShape.length != 5) {
+        int[] blockLogitsShape = outputs != null ? outputs.get("block_logits") : null;
+        if (blockLogitsShape == null || blockLogitsShape.length != 5)
             throw new IllegalStateException("Invalid block_logits shape");
-        }
-        // Shape is [1, N_blocks, X, Y, Z] - assume X==Y==Z
         return blockLogitsShape[2];
     }
-    
+
     /**
-     * Get the parent input resolution (assumes cubic input).
+     * Parent resolution for the unified v1 contract, read from {@code x_parent}.
+     * Returns 0 when no parent input is declared (init-only model).
      */
     public int getParentResolution() {
-        int[] parentShape = inputs.get("x_parent_prev");
-        if (parentShape == null) {
-            // Init model has no parent input - return 0 to indicate no parent
-            return 0;
-        }
-        if (parentShape.length != 5) {
-            throw new IllegalStateException("Invalid x_parent_prev shape");
-        }
-        // Shape is [1, 1, X, Y, Z] - assume X==Y==Z
+        int[] parentShape = inputs != null ? inputs.get("x_parent") : null;
+        if (parentShape == null && inputs != null)
+            parentShape = inputs.get("x_parent_prev");
+        if (parentShape == null) return 0;
+        if (parentShape.length != 5)
+            throw new IllegalStateException("Invalid parent shape");
         return parentShape[2];
     }
-    
-    /**
-     * Validate configuration consistency.
-     */
+
+    /** Safe accessor – never returns null. */
+    public Map<String, int[]> safeOptionalInputs() {
+        return optionalInputs != null ? optionalInputs : Collections.emptyMap();
+    }
+
+    // ------------------------------------------------------------------
+    // Validation
+    // ------------------------------------------------------------------
+
+    /** Validate internal consistency.  Lenient for v1 sidecars. */
     public void validate() {
-        // Check required inputs
-        // Check that all inputs and outputs have proper shapes
-        for (Map.Entry<String, int[]> entry : inputs.entrySet()) {
-            String name = entry.getKey();
-            int[] shape = entry.getValue();
-            if (shape == null || shape.length == 0) {
-                throw new IllegalStateException("Invalid shape for input: " + name);
+        if (inputs == null || inputs.isEmpty())
+            throw new IllegalStateException("ModelConfig has no inputs");
+
+        if (outputs == null)
+            throw new IllegalStateException("ModelConfig has no outputs");
+        for (String req : new String[]{"block_logits", "air_mask"}) {
+            if (!outputs.containsKey(req))
+                throw new IllegalStateException("Missing required output: " + req);
+        }
+
+        // Only enforce router6 channel check when normalization is present
+        if (normalization != null && normalization.router6() != null) {
+            if (normalization.router6().mean().length != 6
+                    || normalization.router6().std().length != 6) {
+                throw new IllegalStateException("Router normalization must have 6 channels");
             }
         }
-        
-        for (Map.Entry<String, int[]> entry : optionalInputs.entrySet()) {
-            String name = entry.getKey();
-            int[] shape = entry.getValue();
-            if (shape == null || shape.length == 0) {
-                throw new IllegalStateException("Invalid shape for optional input: " + name);
-            }
-        }
-        
-        // Check required outputs
-        String[] requiredOutputs = {"block_logits", "air_mask"};
-        for (String required : requiredOutputs) {
-            if (!outputs.containsKey(required)) {
-                throw new IllegalStateException("Missing required output: " + required);
-            }
-        }
-        
-        // Validate router normalization has 6 channels
-        if (normalization.router6.mean.length != 6 || normalization.router6.std.length != 6) {
-            throw new IllegalStateException("Router normalization must have 6 channels");
-        }
-        
-        // Validate block palette size matches output
-        int[] blockLogitsShape = outputs.get("block_logits");
-        if (blockLogitsShape[1] != blockPalette.size) {
-            throw new IllegalStateException("Block palette size mismatch with output shape");
-        }
+
+        // Block vocab size vs output shape (whichever source we have)
+        int vocabSize = effectiveBlockVocabSize();
+        int[] bl = outputs.get("block_logits");
+        if (vocabSize > 0 && bl != null && bl.length >= 2 && bl[1] != vocabSize)
+            throw new IllegalStateException("Block vocab size (" + vocabSize
+                    + ") mismatches block_logits dim 1 (" + bl[1] + ")");
     }
 }

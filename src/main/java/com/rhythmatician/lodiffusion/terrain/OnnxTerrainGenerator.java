@@ -1,274 +1,287 @@
 package com.rhythmatician.lodiffusion.terrain;
 
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+
+import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
-import com.rhythmatician.lodiffusion.terrain.infer.ModelManager;
+import com.rhythmatician.lodiffusion.onnx.BlockVocabulary;
+import com.rhythmatician.lodiffusion.onnx.UnifiedModelRunner;
+import com.rhythmatician.lodiffusion.onnx.UnifiedModelRunner.InferenceResult;
 import com.rhythmatician.lodiffusion.util.PerformanceMonitor;
 
+import net.minecraft.block.BlockState;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.chunk.Chunk;
 
 /**
- * TerrainGenerator implementation that uses ONNX models for terrain generation.
- * Delegates to the appropriate adapter based on configuration.
+ * TerrainGenerator implementation backed by a single unified VoxelTree ONNX model.
+ *
+ * <p>Loads the model from the configured path plus its sidecar
+ * {@code model_config.json}, then delegates to {@link UnifiedModelRunner} for
+ * inference and {@link BlockVocabulary} for index → BlockState translation.
  */
 public class OnnxTerrainGenerator implements TerrainGenerator {
-    
-    // Reference to the progressive terrain generator for delegation
-    private static com.rhythmatician.lodiffusion.OnnxTerrainGenerator progressiveGenerator;
-    
+
+    private static final Object LOCK = new Object();
+    private static volatile UnifiedModelRunner runner;
+    private static volatile boolean loadAttempted = false;
+    private static volatile String lastError = null;
+
+    // ------------------------------------------------------------------ //
+    //  TerrainGenerator
+    // ------------------------------------------------------------------ //
+
     @Override
-    @SuppressWarnings("try") // Suppress warnings for unused timer variables (they're auto-closed for timing)
+    @SuppressWarnings("try")
     public void generateChunk(ChunkPos pos, Chunk chunk, long seed) {
         try (var totalTimer = PerformanceMonitor.startTiming(PerformanceMonitor.TOTAL_GENERATION_TIME)) {
             PerformanceMonitor.incrementCounter(PerformanceMonitor.CHUNKS_GENERATED);
-            
-            // Check if progressive models are available - if so, use progressive generation
-            if (areProgressiveModelsAvailable()) {
-                HelloTerrainMod.LOGGER.debug("[OnnxTerrainGenerator] Using progressive ONNX generation for chunk ({}, {})", pos.x, pos.z);
-                generateChunkProgressive(pos, chunk, seed);
-                return;
-            }
-            
-            // No fallback - ONNX generation or bust
-            throw new IllegalStateException("Progressive models not available - ONNX generation required, no fallbacks allowed. Chunk: (" + pos.x + ", " + pos.z + ")");
-            
+
+            UnifiedModelRunner model = ensureLoaded();
+
+            HelloTerrainMod.LOGGER.debug("[OnnxTerrainGenerator] Generating chunk ({}, {}) with unified model", pos.x, pos.z);
+
+            // 1. Extract inputs from chunk
+            int[][] heightmap = extractHeightmapFromChunk(chunk);
+            int[][] biomeIds  = extractBiomeIdsFromChunk(chunk);
+            int baseY = calculateBaseY(heightmap);
+
+            // 2. Build tensors for the v1 contract
+            float[][][] parentOccupancy = buildParentOccupancy(chunk, baseY);
+            float[][][] biomeOneHot     = buildBiomeOneHot(biomeIds, model.config().effectiveBiomeVocabSize());
+            float[][]   normalizedHeight = buildNormalizedHeightmap(heightmap);
+
+            // 3. Run inference (LOD level 1 = finest detail)
+            InferenceResult result = model.generate(parentOccupancy, biomeOneHot, normalizedHeight, 1);
+
+            // 4. Argmax + air mask → final block indices [16][16][16]
+            int[][][] blockIndices = decodeOutput(result, model.config().effectiveBlockVocabSize());
+
+            // 5. Place blocks using vocabulary → BlockState lookup
+            applyTerrainToChunk(chunk, blockIndices, baseY, model.vocabulary());
+
+            PerformanceMonitor.incrementCounter(PerformanceMonitor.ONNX_INFERENCES);
+            HelloTerrainMod.LOGGER.debug("[OnnxTerrainGenerator] Chunk ({}, {}) completed in {}ms",
+                    pos.x, pos.z, result.elapsedMs());
+
         } catch (Exception e) {
-            HelloTerrainMod.LOGGER.error("[OnnxTerrainGenerator] Error generating terrain for chunk ({}, {}): {}", 
-                pos.x, pos.z, e.getMessage(), e);
+            HelloTerrainMod.LOGGER.error("[OnnxTerrainGenerator] Error generating chunk ({}, {}): {}",
+                    pos.x, pos.z, e.getMessage(), e);
             PerformanceMonitor.incrementCounter(PerformanceMonitor.MODEL_ERRORS);
-            // Don't catch and swallow - let it fail hard
-            throw new RuntimeException("ONNX terrain generation failed for chunk (" + pos.x + ", " + pos.z + ") - no fallbacks allowed", e);
+            throw new RuntimeException("ONNX terrain generation failed for chunk ("
+                    + pos.x + ", " + pos.z + ")", e);
         }
     }
-    
-    /**
-     * Progressive terrain generation using the main OnnxTerrainGenerator.
-     */
-    private void generateChunkProgressive(ChunkPos pos, Chunk chunk, long seed) throws Exception {
-        // Initialize progressive generator if needed
-        if (progressiveGenerator == null) {
-            progressiveGenerator = new com.rhythmatician.lodiffusion.OnnxTerrainGenerator();
-        }
-        
-        // Extract heightmap and biomes from chunk
-        int[][] heightmap = extractHeightmapFromChunk(chunk);
-        int[][] biomeIds = extractBiomeIdsFromChunk(chunk);
-        
-        // Use progressive terrain generator with the new 4-stage refinement
-        HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] 🚀 Starting progressive terrain generation for chunk ({}, {})", pos.x, pos.z);
-        int[][][] generatedTerrain = progressiveGenerator.generateProgressiveTerrain(
-            biomeIds, heightmap, pos.x, pos.z
-        );
-        
-        // Apply generated terrain back to chunk
-        applyTerrainToChunk(chunk, generatedTerrain, calculateBaseY(heightmap));
-        
-        PerformanceMonitor.incrementCounter(PerformanceMonitor.ONNX_INFERENCES);
-        HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] ✅ Successfully completed progressive terrain generation for chunk ({}, {})", pos.x, pos.z);
-    }
-    
-    
-    /**
-     * Check if ONNX terrain generation is ready to use.
-     * @return true if model and adapter are available, false otherwise
-     */
+
+    // ------------------------------------------------------------------ //
+    //  Static readiness API  (used by mixin + command)
+    // ------------------------------------------------------------------ //
+
+    /** True when the unified model is loaded and ready for inference. */
     public static boolean isReady() {
-        try {
-            // Check for progressive models (current implementation)
-            if (areProgressiveModelsAvailable()) {
-                return true; // Progressive models are available
-            }
-            
-            // Fall back to legacy single model check
-            return ModelManager.isAvailable();
-        } catch (Exception e) {
-            return false;
-        }
-    }
-    
-    /**
-     * Check if progressive models are available by checking the main generator.
-     * @return true if the main ONNX terrain generator has progressive models available
-     */
-    // Static probe cache holder for progressive model bridge
-    private static class ProgressiveProbeCache {
-        private static volatile boolean cachedProgressiveAvailable = false;
-        private static volatile long lastProgressiveProbeMs = 0L;
+        if (runner != null) return true;
+        // Don't trigger load – just check file existence
+        Path modelDir = Config.modelPath().getParent();
+        if (modelDir == null) return false;
+        return Files.isRegularFile(Config.modelPath())
+            && Files.isRegularFile(modelDir.resolve("model_config.json"));
     }
 
-    private static boolean areProgressiveModelsAvailable() {
-        HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] areProgressiveModelsAvailable() called - cached={}, lastProbe={}ms ago", 
-            ProgressiveProbeCache.cachedProgressiveAvailable, 
-            System.currentTimeMillis() - ProgressiveProbeCache.lastProgressiveProbeMs);
-            
-        if (ProgressiveProbeCache.cachedProgressiveAvailable) {
-            HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Using cached result: true");
-            return true;
-        }
-        long now = System.currentTimeMillis();
-        if (now - ProgressiveProbeCache.lastProgressiveProbeMs < 2000) { // throttle probes (2s)
-            HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Throttling probe ({}ms since last)", 
-                now - ProgressiveProbeCache.lastProgressiveProbeMs);
-            return false; // still probing / not yet confirmed
-        }
-        ProgressiveProbeCache.lastProgressiveProbeMs = now;
-        try {
-            HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Bridge probe: acquiring main generator instance...");
-            com.rhythmatician.lodiffusion.OnnxTerrainGenerator main = com.rhythmatician.lodiffusion.OnnxTerrainGenerator.getInstance();
-            if (main == null) {
-                HelloTerrainMod.LOGGER.warn("[Terrain OnnxTerrainGenerator] Bridge probe: main generator is null (not constructed yet)");
-                return false;
-            }
-
-            // First, trust its public availability flag.
-            boolean publicAvailable = main.isAvailable();
-            HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Bridge probe: main.isAvailable() => {}", publicAvailable);
-
-            // Deep inspection via reflection (safe): check the four progressive model fields are non-null.
-            boolean progressiveFieldsNonNull = false;
-            try {
-                java.lang.reflect.Field f4 = main.getClass().getDeclaredField("modelLod4to3");
-                java.lang.reflect.Field f3 = main.getClass().getDeclaredField("modelLod3to2");
-                java.lang.reflect.Field f2 = main.getClass().getDeclaredField("modelLod2to1");
-                java.lang.reflect.Field f1 = main.getClass().getDeclaredField("modelLod1to0");
-                f4.setAccessible(true); f3.setAccessible(true); f2.setAccessible(true); f1.setAccessible(true);
-                Object m4 = f4.get(main);
-                Object m3 = f3.get(main);
-                Object m2 = f2.get(main);
-                Object m1 = f1.get(main);
-                progressiveFieldsNonNull = (m4 != null && m3 != null && m2 != null && m1 != null);
-                HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Bridge probe: progressive field presence: L4to3={} L3to2={} L2to1={} L1to0={}",
-                        m4 != null, m3 != null, m2 != null, m1 != null);
-            } catch (NoSuchFieldException rf) {
-                HelloTerrainMod.LOGGER.warn("[Terrain OnnxTerrainGenerator] Bridge probe: reflection failed (field missing) {}", rf.getMessage());
-            } catch (Throwable t) {
-                HelloTerrainMod.LOGGER.error("[Terrain OnnxTerrainGenerator] Bridge probe: reflection error {}", t.getMessage());
-            }
-
-            boolean decided = publicAvailable || progressiveFieldsNonNull;
-            HelloTerrainMod.LOGGER.info("[Terrain OnnxTerrainGenerator] Bridge probe: decided progressiveAvailable={} (publicAvailable={}, fieldsNonNull={})",
-                    decided, publicAvailable, progressiveFieldsNonNull);
-
-            if (decided) ProgressiveProbeCache.cachedProgressiveAvailable = true;
-            return decided;
-        } catch (Throwable t) {
-            HelloTerrainMod.LOGGER.error("[Terrain OnnxTerrainGenerator] Bridge probe: unexpected error {}", t.getMessage());
-            return false;
-        }
-    }
-    
-    /**
-     * Get diagnostic information about ONNX terrain generation status.
-     * @return Status message for debugging
-     */
+    /** Diagnostic string for the /lodiffusion status command. */
     public static String getStatusInfo() {
-        StringBuilder status = new StringBuilder();
-        status.append("ONNX Terrain Status:\n");
-        
-        try {
-            boolean progressiveAvailable = areProgressiveModelsAvailable();
-            boolean legacyAvailable = ModelManager.isAvailable();
-            
-            status.append("- Progressive models available: ").append(progressiveAvailable).append("\n");
-            status.append("- Legacy model available: ").append(legacyAvailable).append("\n");
-            status.append("- Model available: ").append(progressiveAvailable || legacyAvailable).append("\n");
-            
-            if (progressiveAvailable) {
-                status.append("- Using 5-stage progressive LOD pipeline (Init→LOD4→LOD3→LOD2→LOD1→LOD0)");
-            }
-        } catch (Exception e) {
-            status.append("- Error getting status: ").append(e.getMessage());
+        StringBuilder sb = new StringBuilder("ONNX Terrain Status:\n");
+        sb.append("- Model loaded: ").append(runner != null).append('\n');
+        sb.append("- Model path:   ").append(Config.modelPath()).append('\n');
+        if (runner != null) {
+            sb.append("- Contract:     ").append(runner.config().contract()).append('\n');
+            sb.append("- Block vocab:  ").append(runner.vocabulary().size()).append('\n');
+            sb.append("- Biome vocab:  ").append(runner.config().effectiveBiomeVocabSize()).append('\n');
         }
-        
-        return status.toString();
+        if (lastError != null) {
+            sb.append("- Last error:   ").append(lastError).append('\n');
+        }
+        return sb.toString();
     }
-    
-    /**
-     * Extract heightmap from a chunk for ONNX processing.
-     */
-    private int[][] extractHeightmapFromChunk(Chunk chunk) {
-        int[][] heightmap = new int[16][16];
-        
+
+    /** Force-reload the model (called by /lodiffusion reload). */
+    public static void reload() {
+        synchronized (LOCK) {
+            if (runner != null) {
+                runner.close();
+                runner = null;
+            }
+            loadAttempted = false;
+            lastError = null;
+        }
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Model loading
+    // ------------------------------------------------------------------ //
+
+    private static UnifiedModelRunner ensureLoaded() {
+        UnifiedModelRunner r = runner;
+        if (r != null) return r;
+        synchronized (LOCK) {
+            if (runner != null) return runner;
+            if (loadAttempted) {
+                throw new IllegalStateException("Model load already failed: " + lastError);
+            }
+            loadAttempted = true;
+            try {
+                Path onnxPath = Config.modelPath();
+                Path configPath = onnxPath.getParent().resolve("model_config.json");
+                runner = UnifiedModelRunner.load(onnxPath, configPath);
+                HelloTerrainMod.LOGGER.info("[OnnxTerrainGenerator] Unified model loaded from {}", onnxPath);
+                return runner;
+            } catch (IOException e) {
+                lastError = e.getMessage();
+                throw new IllegalStateException("Failed to load unified ONNX model", e);
+            }
+        }
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Input building
+    // ------------------------------------------------------------------ //
+
+    /** Build 8×8×8 binary occupancy from the chunk around baseY. */
+    private float[][][] buildParentOccupancy(Chunk chunk, int baseY) {
+        float[][][] occ = new float[8][8][8];
+        ChunkPos cp = chunk.getPos();
+        int ox = cp.getStartX();
+        int oz = cp.getStartZ();
+        for (int x = 0; x < 8; x++) {
+            for (int y = 0; y < 8; y++) {
+                for (int z = 0; z < 8; z++) {
+                    // Sample every-other block to cover a 16-wide area at half res
+                    BlockPos bp = new BlockPos(ox + x * 2, baseY + y * 2, oz + z * 2);
+                    occ[x][y][z] = chunk.getBlockState(bp).isAir() ? 0f : 1f;
+                }
+            }
+        }
+        return occ;
+    }
+
+    /** Build one-hot biome tensor [biomeVocabSize][16][16]. */
+    private float[][][] buildBiomeOneHot(int[][] biomeIds, int biomeVocabSize) {
+        float[][][] oneHot = new float[biomeVocabSize][16][16];
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
-                // Find the highest non-air block
-                int highestY = 320; // World top Y in 1.21
-                for (int y = 320; y >= -64; y--) { // World height range in 1.21
-                    BlockPos pos = new BlockPos(x, y, z);
-                    if (!chunk.getBlockState(pos).isAir()) {
-                        highestY = y;
+                int id = Math.max(0, Math.min(biomeVocabSize - 1, biomeIds[x][z]));
+                oneHot[id][x][z] = 1f;
+            }
+        }
+        return oneHot;
+    }
+
+    /** Build normalised [16][16] heightmap in [0, 1]. */
+    private float[][] buildNormalizedHeightmap(int[][] heightmap) {
+        float[][] norm = new float[16][16];
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                // MC world range: -64..319  →  normalise to [0, 1]
+                norm[x][z] = (heightmap[x][z] + 64f) / 384f;
+            }
+        }
+        return norm;
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Output decoding
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Argmax over block logits then apply air mask.
+     *
+     * @return block indices [16][16][16] (0 = air)
+     */
+    private int[][][] decodeOutput(InferenceResult result, int vocabSize) {
+        float[][][][][] logits = result.blockLogits();  // [1][N][16][16][16]
+        float[][][][][] mask   = result.airMask();      // [1][1][16][16][16]
+        int[][][] out = new int[16][16][16];
+
+        for (int x = 0; x < 16; x++) {
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    // Air mask: positive logit → solid
+                    if (mask[0][0][x][y][z] <= 0f) {
+                        out[x][y][z] = 0; // air
+                        continue;
+                    }
+                    // Argmax over vocab dimension
+                    int best = 0;
+                    float bestVal = logits[0][0][x][y][z];
+                    for (int b = 1; b < vocabSize; b++) {
+                        float v = logits[0][b][x][y][z];
+                        if (v > bestVal) { bestVal = v; best = b; }
+                    }
+                    out[x][y][z] = best;
+                }
+            }
+        }
+        return out;
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Chunk I/O helpers
+    // ------------------------------------------------------------------ //
+
+    private int[][] extractHeightmapFromChunk(Chunk chunk) {
+        int[][] hm = new int[16][16];
+        ChunkPos cp = chunk.getPos();
+        int ox = cp.getStartX();
+        int oz = cp.getStartZ();
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                for (int y = 319; y >= -64; y--) {
+                    if (!chunk.getBlockState(new BlockPos(ox + x, y, oz + z)).isAir()) {
+                        hm[x][z] = y;
                         break;
                     }
                 }
-                heightmap[x][z] = highestY;
             }
         }
-        
-        return heightmap;
+        return hm;
     }
-    
-    /**
-     * Extract biome IDs from a chunk for ONNX processing.
-     */
+
     private int[][] extractBiomeIdsFromChunk(Chunk chunk) {
-        int[][] biomeIds = new int[16][16];
-        
+        int[][] ids = new int[16][16];
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
-                // Sample biome at surface level (y=64 as default)
-                var biome = chunk.getBiomeForNoiseGen(x, 64, z);
-                // Convert biome to simple ID (this could be improved with proper biome registry)
-                biomeIds[x][z] = biome.hashCode() % 10; // Simple mapping for now
+                // MC biome palette is 4×4 resolution; getBiomeForNoiseGen takes
+                // biome coordinates (block >> 2), y section, z biome coord.
+                var biome = chunk.getBiomeForNoiseGen(x >> 2, 16, z >> 2);
+                ids[x][z] = Math.abs(biome.hashCode()) % 256;
             }
         }
-        
-        return biomeIds;
+        return ids;
     }
-    
-    /**
-     * Calculate base Y coordinate for terrain generation.
-     */
+
     private int calculateBaseY(int[][] heightmap) {
-        int sum = 0;
-        for (int x = 0; x < 16; x++) {
-            for (int z = 0; z < 16; z++) {
+        long sum = 0;
+        for (int x = 0; x < 16; x++)
+            for (int z = 0; z < 16; z++)
                 sum += heightmap[x][z];
-            }
-        }
-        return sum / 256; // Average height
+        return (int) (sum / 256);
     }
-    
-    /**
-     * Apply generated terrain back to the chunk.
-     */
-    private void applyTerrainToChunk(Chunk chunk, int[][][] terrain, int baseY) {
-        // Apply the 16x16x16 terrain to the chunk starting at baseY
+
+    /** Write decoded block indices into the chunk using BlockVocabulary. */
+    private void applyTerrainToChunk(Chunk chunk, int[][][] blocks, int baseY, BlockVocabulary vocab) {
+        ChunkPos cp = chunk.getPos();
+        int ox = cp.getStartX();
+        int oz = cp.getStartZ();
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
                 for (int y = 0; y < 16; y++) {
                     int worldY = baseY + y;
-                    if (worldY >= -64 && worldY < 320) { // World height limits in 1.21
-                        int blockType = terrain[x][z][y];
-                        
-                        // Convert block type ID to actual block state
-                        // This is a simplified mapping - could be improved
-                        net.minecraft.block.BlockState blockState;
-                        if (blockType == 0) {
-                            blockState = net.minecraft.block.Blocks.AIR.getDefaultState();
-                        } else if (blockType == 1) {
-                            blockState = net.minecraft.block.Blocks.STONE.getDefaultState();
-                        } else if (blockType == 2) {
-                            blockState = net.minecraft.block.Blocks.DIRT.getDefaultState();
-                        } else if (blockType == 3) {
-                            blockState = net.minecraft.block.Blocks.GRASS_BLOCK.getDefaultState();
-                        } else {
-                            blockState = net.minecraft.block.Blocks.STONE.getDefaultState(); // Default
-                        }
-                        
-                        BlockPos pos = new BlockPos(x, worldY, z);
-                        chunk.setBlockState(pos, blockState, false);
-                    }
+                    if (worldY < -64 || worldY >= 320) continue;
+                    int idx = blocks[x][y][z];
+                    BlockState state = vocab.getState(idx);
+                    chunk.setBlockState(new BlockPos(ox + x, worldY, oz + z), state, false);
                 }
             }
         }

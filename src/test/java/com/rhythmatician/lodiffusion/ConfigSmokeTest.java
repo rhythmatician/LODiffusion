@@ -22,7 +22,7 @@ public class ConfigSmokeTest {
     public void testDefaultConfig() {
         // Test that defaults are loaded correctly
         assertTrue(Config.useOnnxTerrain(), "ONNX terrain should be enabled by default");
-        assertEquals("heightmap8x8", Config.adapter(), "Default adapter should be heightmap8x8");
+        assertEquals("unified_v1", Config.adapter(), "Default adapter should be unified_v1");
         assertEquals(2, Config.inferenceThreads(), "Default inference threads should be 2");
         assertEquals(0.5, Config.threshold(), 0.001, "Default threshold should be 0.5");
                 assertTrue(Config.logTimings(), "Log timings should be true by default");
@@ -32,7 +32,7 @@ public class ConfigSmokeTest {
     public void testModelPath() {
         Path modelPath = Config.modelPath();
         assertNotNull(modelPath, "Model path should not be null");
-        assertTrue(modelPath.toString().contains("terrain.onnx"), "Model path should reference terrain.onnx");
+        assertTrue(modelPath.toString().contains("model.onnx"), "Model path should reference model.onnx");
     }
     
     @Test

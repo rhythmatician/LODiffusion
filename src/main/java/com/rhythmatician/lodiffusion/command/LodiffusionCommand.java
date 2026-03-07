@@ -4,7 +4,6 @@ import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.context.CommandContext;
 import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.terrain.OnnxTerrainGenerator;
-import com.rhythmatician.lodiffusion.terrain.infer.ModelManager;
 import com.rhythmatician.lodiffusion.util.DebugUtils;
 import com.rhythmatician.lodiffusion.util.PerformanceMonitor;
 
@@ -58,7 +57,7 @@ public final class LodiffusionCommand {
         status.append("§6=== LODiffusion Status ===§r\n");
         status.append("§7ONNX Terrain: §").append(Config.useOnnxTerrain() ? "aEnabled" : "cDisabled").append("§r\n");
         status.append("§7Current Adapter: §f").append(Config.adapter()).append("§r\n");
-        status.append("§7Model Available: §").append(ModelManager.isAvailable() ? "aYes" : "cNo").append("§r\n");
+        status.append("§7Model Available: §").append(OnnxTerrainGenerator.isReady() ? "aYes" : "cNo").append("§r\n");
         status.append("§7System Ready: §").append(OnnxTerrainGenerator.isReady() ? "aYes" : "cNo").append("§r\n");
         
         long chunksGenerated = PerformanceMonitor.getCounter(PerformanceMonitor.CHUNKS_GENERATED);
@@ -151,14 +150,13 @@ public final class LodiffusionCommand {
         ServerCommandSource source = context.getSource();
         
         try {
-            ModelManager.close();
-            source.sendFeedback(() -> Text.literal("§6Closed existing model.§r"), false);
+            OnnxTerrainGenerator.reload();
+            source.sendFeedback(() -> Text.literal("§6Model unloaded.§r"), false);
             
-            // Try to reload
-            if (ModelManager.isAvailable()) {
-                source.sendFeedback(() -> Text.literal("§aModel reloaded successfully.§r"), true);
+            if (OnnxTerrainGenerator.isReady()) {
+                source.sendFeedback(() -> Text.literal("§aModel file found, will reload on next chunk.§r"), true);
             } else {
-                source.sendFeedback(() -> Text.literal("§cFailed to reload model.§r"), true);
+                source.sendFeedback(() -> Text.literal("§cModel file not found at configured path.§r"), true);
             }
             
         } catch (Exception e) {

@@ -1,6 +1,5 @@
 package com.rhythmatician.lodiffusion;
 
-import com.rhythmatician.lodiffusion.dh.DistantHorizonsCompat;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.math.ChunkPos;
 
@@ -245,8 +244,10 @@ public class DiffusionChunkGenerator {
   public void buildSurfaceWithLODManager(ServerPlayerEntity player, ChunkPos chunkPos, 
                                         int[][] heightmap, String[] biomes, 
                                         float[][] temperatureData) {
-    // Get LOD from Distant Horizons or fallback calculation
-    int lod = DistantHorizonsCompat.getChunkLOD(player, chunkPos);
+    // Get LOD using distance from player
+    int playerChunkX = player.getChunkPos().x;
+    int playerChunkZ = player.getChunkPos().z;
+    int lod = lodQuery.getLOD(chunkPos.x, chunkPos.z, playerChunkX, playerChunkZ);
     
     // Convert heightmap to float array for multi-channel processing
     float[][] heightChannel = convertToFloatArray(heightmap);
@@ -293,7 +294,7 @@ public class DiffusionChunkGenerator {
   public void buildSurfaceWithLODManager(int chunkX, int chunkZ, int playerChunkX, int playerChunkZ,
                                         int[][] heightmap, String[] biomes) {
     // Get LOD using coordinate-based calculation
-    int lod = DistantHorizonsCompat.getChunkLOD(chunkX, chunkZ, playerChunkX, playerChunkZ);
+    int lod = lodQuery.getLOD(chunkX, chunkZ, playerChunkX, playerChunkZ);
     
     // Convert heightmap to float array for multi-channel processing
     float[][] heightChannel = convertToFloatArray(heightmap);
@@ -399,7 +400,7 @@ public class DiffusionChunkGenerator {
    * @return true if Distant Horizons is available, false if using fallback
    */
   public boolean isAdvancedLODAvailable() {
-    return ModDetection.isDistantHorizonsAvailable();
+    return ModDetection.isVoxyAvailable();
   }
 
   /**

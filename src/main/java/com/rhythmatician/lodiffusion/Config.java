@@ -73,11 +73,11 @@ public final class Config {
   }
 
   public static Path modelPath() {
-    return Paths.get(getString("modelPath", "config/lodiffusion/terrain.onnx"));
+    return Paths.get(getString("modelPath", "config/lodiffusion/model.onnx"));
   }
 
   public static String adapter() {
-    return getString("adapter", "heightmap8x8");
+    return getString("adapter", "unified_v1");
   }
 
   public static int inferenceThreads() {
