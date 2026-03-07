@@ -40,6 +40,8 @@ public final class VoxyCompat {
     private static Method createEmptyMethod;        // VoxelizedSection.createEmpty()
     private static Method getMapperMethod;          // WorldEngine.getMapper()
     private static Method mipSectionMethod;         // WorldConversionFactory.mipSection(VoxelizedSection, Mapper)
+    private static Method ofEngineMethod;           // WorldIdentifier.ofEngine(World)
+    private static Method ofEngineNullableMethod;   // WorldIdentifier.ofEngineNullable(World)
 
     private VoxyCompat() {}
 
@@ -70,6 +72,13 @@ public final class VoxyCompat {
                         "me.cortex.voxy.common.voxelization.WorldConversionFactory");
                 mipSectionMethod = convFactoryClass.getMethod("mipSection",
                         voxelizedSectionClass, mapperClass);
+
+                // WorldIdentifier — for obtaining WorldEngine from a World
+                Class<?> worldIdClass = Class.forName("me.cortex.voxy.commonImpl.WorldIdentifier");
+                ofEngineMethod = worldIdClass.getMethod("ofEngine",
+                        net.minecraft.world.World.class);
+                ofEngineNullableMethod = worldIdClass.getMethod("ofEngineNullable",
+                        net.minecraft.world.World.class);
 
                 available = true;
                 LOGGER.info("Voxy detected — reflection bindings resolved");
@@ -122,6 +131,40 @@ public final class VoxyCompat {
             insertUpdateMethod.invoke(null, worldEngine, section);
         } catch (Exception e) {
             throw new RuntimeException("Failed to insert section into Voxy world", e);
+        }
+    }
+
+    /**
+     * Get the Voxy WorldEngine for a given Minecraft World.
+     *
+     * <p>Uses {@code WorldIdentifier.ofEngineNullable(World)} which returns null
+     * if Voxy hasn't created the engine for this world yet.
+     *
+     * @param world the Minecraft World instance
+     * @return the WorldEngine, or null if not yet available
+     */
+    public static Object getWorldEngine(net.minecraft.world.World world) {
+        ensureAvailable();
+        try {
+            return ofEngineNullableMethod.invoke(null, world);
+        } catch (Exception e) {
+            LOGGER.warning("Failed to get WorldEngine: " + e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Get the Voxy WorldEngine for a given Minecraft World, creating it if needed.
+     *
+     * @param world the Minecraft World instance
+     * @return the WorldEngine (never null if Voxy is available)
+     */
+    public static Object getOrCreateWorldEngine(net.minecraft.world.World world) {
+        ensureAvailable();
+        try {
+            return ofEngineMethod.invoke(null, world);
+        } catch (Exception e) {
+            throw new RuntimeException("Failed to get/create WorldEngine", e);
         }
     }
 

@@ -1,7 +1,9 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 import java.lang.reflect.Method;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.rhythmatician.lodiffusion.onnx.BlockVocabulary;
 
@@ -17,7 +19,7 @@ import net.minecraft.block.BlockState;
  */
 public final class VoxyBlockMapper {
 
-    private static final Logger LOGGER = Logger.getLogger(VoxyBlockMapper.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(VoxyBlockMapper.class);
 
     private final int[] modelIndexToVoxyId;   // [vocabSize]  model output idx → Voxy blockId
     private final int defaultBiomeVoxyId;     // Voxy biome ID for "minecraft:plains"
@@ -40,16 +42,30 @@ public final class VoxyBlockMapper {
 
             int[] mapping = new int[vocab.size()];
             int resolved = 0;
+            int zeroMapped = 0; // Track how many resolve to 0 (air)
 
             for (int i = 0; i < vocab.size(); i++) {
                 BlockState state = vocab.getState(i);
                 int voxyId = (int) getIdMethod.invoke(voxyMapper, state);
                 mapping[i] = voxyId;
                 if (voxyId >= 0) resolved++;
+                if (voxyId == 0) zeroMapped++;
+
+                // Log first 20 entries and any that map to 0 (air)
+                if (i < 20 || (voxyId == 0 && i < 100)) {
+                    LOGGER.info("[VoxyBlockMapper] idx={} name='{}' → voxyId={}",
+                            i, vocab.getName(i), voxyId);
+                }
             }
 
-            LOGGER.info("VoxyBlockMapper: " + resolved + "/" + vocab.size()
-                    + " model indices mapped to Voxy IDs");
+            LOGGER.info("[VoxyBlockMapper] {} / {} model indices mapped to Voxy IDs " +
+                    "({} mapped to 0=air)", resolved, vocab.size(), zeroMapped);
+
+            // Check a few key blocks
+            for (int i = 0; i < Math.min(vocab.size(), 10); i++) {
+                LOGGER.info("[VoxyBlockMapper] Summary idx={}: '{}' → voxyId={}",
+                        i, vocab.getName(i), mapping[i]);
+            }
 
             // Default biome — we'll register plains for now
             int defaultBiome = 0; // Will be set per-column at injection time

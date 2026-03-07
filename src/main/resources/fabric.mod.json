@@ -17,6 +17,9 @@
   "entrypoints": {
     "main": [
       "com.rhythmatician.lodiffusion.HelloTerrainMod"
+    ],
+    "client": [
+      "com.rhythmatician.lodiffusion.LodiffusionClient"
     ]
   },
   "mixins": [
