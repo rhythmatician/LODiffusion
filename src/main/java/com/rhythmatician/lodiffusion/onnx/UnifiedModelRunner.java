@@ -165,10 +165,97 @@ public final class UnifiedModelRunner implements AutoCloseable {
         }
     }
 
+    /**
+     * Run inference for the v2 anchor-channel LOD contract.
+     *
+     * <p>Requires a model loaded from a {@code lodiffusion.v2} sidecar config.
+     *
+     * @param parentOccupancy [8][8][8] binary occupancy of the parent chunk
+     * @param heightPlanes    [5][256] row-major height-plane features (surface, ocean_floor,
+     *                        slope_x, slope_z, curvature) — from
+     *                        {@link com.rhythmatician.lodiffusion.voxy.AnchorSampler}
+     * @param router6         [6][256] row-major CORE router values normalised to [0,1]
+     * @param biomeIdx        [16][16] integer biome index per column
+     * @param yIndex          y-slab index in [0, 23]
+     * @param lodLevel        LOD token (1–4)
+     */
+    public InferenceResult generateV2(float[][][] parentOccupancy,
+                                      float[][] heightPlanes,
+                                      float[][] router6,
+                                      int[][] biomeIdx,
+                                      int yIndex,
+                                      int lodLevel) throws TranslateException {
+        long t0 = System.currentTimeMillis();
+
+        try (NDManager sub = manager.newSubManager()) {
+            // x_parent [1,1,8,8,8]
+            NDArray xParent = sub.create(flatten3D(parentOccupancy, 8, 8, 8),
+                    new Shape(1, 1, 8, 8, 8));
+            xParent.setName("x_parent");
+
+            // x_height_planes [1,5,16,16]
+            NDArray xHeightPlanes = sub.create(flatten2DChannels(heightPlanes, 5, 256),
+                    new Shape(1, 5, 16, 16));
+            xHeightPlanes.setName("x_height_planes");
+
+            // x_router6 [1,6,16,16]
+            NDArray xRouter6 = sub.create(flatten2DChannels(router6, 6, 256),
+                    new Shape(1, 6, 16, 16));
+            xRouter6.setName("x_router6");
+
+            // x_biome [1,16,16] int64
+            long[] biomeFlat = new long[256];
+            for (int x = 0; x < 16; x++)
+                for (int z = 0; z < 16; z++)
+                    biomeFlat[x * 16 + z] = biomeIdx[x][z];
+            NDArray xBiome = sub.create(biomeFlat, new Shape(1, 16, 16));
+            xBiome.setName("x_biome");
+
+            // x_y_index [1] int64
+            NDArray xYIndex = sub.create(new long[]{yIndex}, new Shape(1));
+            xYIndex.setName("x_y_index");
+
+            // x_lod [1] int64
+            NDArray xLod = sub.create(new long[]{lodLevel}, new Shape(1));
+            xLod.setName("x_lod");
+
+            NDList inputs = new NDList(xParent, xHeightPlanes, xRouter6, xBiome, xYIndex, xLod);
+
+            NDList outputs;
+            try (var predictor = model.newPredictor(new NoopTranslator())) {
+                outputs = predictor.predict(inputs);
+            }
+
+            NDArray blockLogitsArr = null;
+            NDArray airMaskArr = null;
+            for (NDArray t : outputs) {
+                long[] shape = t.getShape().getShape();
+                if (shape.length == 5 && shape[0] == 1) {
+                    if (shape[1] > 100) blockLogitsArr = t;
+                    else if (shape[1] == 1) airMaskArr = t;
+                }
+            }
+            if (blockLogitsArr == null)
+                throw new IllegalStateException("block_logits not found in v2 output");
+            if (airMaskArr == null)
+                throw new IllegalStateException("air_mask not found in v2 output");
+
+            float[][][][][] blockLogits = extract5D(blockLogitsArr);
+            float[][][][][] airMask    = extract5D(airMaskArr);
+
+            long elapsed = System.currentTimeMillis() - t0;
+            return new InferenceResult(blockLogits, airMask, elapsed);
+        }
+    }
+
+    /** Whether the loaded model uses the v2 anchor-channel contract. */
+    public boolean isV2() {
+        return !config.isV1Contract();
+    }
+
     // ------------------------------------------------------------------
     // Accessors
     // ------------------------------------------------------------------
-
     public ModelConfig config() { return config; }
     public BlockVocabulary vocabulary() { return vocabulary; }
     public boolean isAvailable() { return model != null; }
@@ -203,6 +290,17 @@ public final class UnifiedModelRunner implements AutoCloseable {
         for (int i = 0; i < d0; i++)
             for (int j = 0; j < d1; j++)
                 flat[idx++] = arr[i][j];
+        return flat;
+    }
+
+    /**
+     * Flatten a [channels][spatialSize] array to a single float[].
+     * Used to feed x_height_planes and x_router6 tensors to the ONNX session.
+     */
+    private static float[] flatten2DChannels(float[][] arr, int channels, int spatial) {
+        float[] flat = new float[channels * spatial];
+        for (int c = 0; c < channels; c++)
+            System.arraycopy(arr[c], 0, flat, c * spatial, spatial);
         return flat;
     }
 

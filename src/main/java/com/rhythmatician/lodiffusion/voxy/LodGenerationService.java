@@ -2,8 +2,10 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -16,36 +18,40 @@ import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
 
 /**
- * Background service that proactively generates LOD sections around the player
- * and pushes them into Voxy for distant rendering.
+ * Background service that generates terrain around the player and pushes it
+ * into Voxy for distant rendering.
  *
- * <h3>Architecture</h3>
+ * <h3>Architecture — Progressive LOD Passes</h3>
+ * <p>The ONNX model is a <em>refinement machine</em>.  Generation runs in
+ * <b>4 progressive passes</b>, one per LOD level, each covering a different
+ * radius around the player:
+ *
  * <ol>
- *   <li>On world join, the service starts a worker thread.</li>
- *   <li>Player position is updated each tick from the client thread.</li>
- *   <li>The worker generates sections in priority order:
- *       coarsest LODs (LOD 4) first for distant areas,
- *       then progressively finer LODs for closer areas.</li>
- *   <li>Each section is pushed to Voxy via {@link VoxySectionWriter}.</li>
+ *   <li><b>LOD 4</b> (radius 16) — coarsest pass, covers the horizon fast.
+ *       Uses a heightmap-based initial parent.  Result is pushed to Voxy
+ *       immediately so terrain appears quickly.</li>
+ *   <li><b>LOD 3</b> (radius 12) — takes the coarsened LOD 4 output as
+ *       parent, refines it.  Overwrites the LOD 4 sections in Voxy.</li>
+ *   <li><b>LOD 2</b> (radius 8) — refines LOD 3 output.</li>
+ *   <li><b>LOD 1</b> (radius 4) — finest pass, closest to the player.
+ *       Final quality terrain.</li>
  * </ol>
  *
- * <p>The ONNX model's {@code x_lod} input (1–4) controls the prediction
- * granularity.  Higher LOD tokens produce coarser but faster predictions
- * that give Voxy something to render at distance before fine detail arrives.
+ * <p>Each pass coarsens its 16³ air-mask output to 8³ and caches it so
+ * the next pass can use it as the parent occupancy input.  Voxy's
+ * {@code insertUpdate} handles the internal mip pyramid automatically.
  */
 public final class LodGenerationService {
 
+    /** Model LOD token range. */
     private static final int COARSEST_LOD = 4;
-    private static final int FINEST_LOD = 1;
+    private static final int FINEST_LOD   = 1;
 
-    /** Radius in sections for each LOD level (sections = 16-block units). */
-    private static final int[] LOD_RADIUS = {
-        0,   // unused (index 0)
-        4,   // LOD 1: 4 sections = 64 blocks
-        8,   // LOD 2: 8 sections = 128 blocks
-        16,  // LOD 3: 16 sections = 256 blocks
-        32   // LOD 4: 32 sections = 512 blocks
-    };
+    /**
+     * Radius (in sections) for each LOD pass.  Index = LOD level.
+     * LOD 4 covers the most area (coarsest, cheapest), LOD 1 the least.
+     */
+    private static final int[] PASS_RADIUS = {0, 4, 8, 12, 16};
 
     /** How many sections of Y range to generate (from y=-64 upward). */
     private static final int Y_SECTIONS = 16;  // y sections -4..11 → blocks -64..191
@@ -60,8 +66,11 @@ public final class LodGenerationService {
     private volatile int playerSectionX;
     private volatile int playerSectionZ;
 
-    /** Tracks which sections we've already generated to avoid duplicates. */
+    /** Tracks which (section, lod) combos we've already generated. */
     private final Set<Long> generatedSections = new HashSet<>();
+
+    /** Coarsened parent cache: posKey → float[8][8][8] from previous LOD pass. */
+    private final Map<Long, float[][][]> parentCache = new HashMap<>();
 
     // ------------------------------------------------------------------ //
     //  Lifecycle
@@ -81,6 +90,7 @@ public final class LodGenerationService {
         stopRequested.set(false);
         positionReady.set(false);
         generatedSections.clear();
+        parentCache.clear();
 
         workerThread = new Thread(() -> runWorker(world), "LODiffusion-Gen");
         workerThread.setDaemon(true);
@@ -105,6 +115,7 @@ public final class LodGenerationService {
         }
         running.set(false);
         generatedSections.clear();
+        parentCache.clear();
         HelloTerrainMod.LOGGER.info("[LodGen] Service stopped");
     }
 
@@ -165,7 +176,7 @@ public final class LodGenerationService {
                     playerSectionX, playerSectionZ);
 
             // Main generation loop: coarsest LODs first, then refine
-            generateProgressiveLods(model, writer, blockMapper);
+            generateProgressiveLods(world, model, writer, blockMapper);
 
         } catch (Exception e) {
             if (!stopRequested.get()) {
@@ -178,153 +189,290 @@ public final class LodGenerationService {
     }
 
     /**
-     * Generate LOD sections progressively: LOD 4 (coarsest) first, then
-     * LOD 3, 2, 1.  Within each LOD level, generates in a spiral outward
-     * from the player.
+     * Generate terrain in progressive LOD passes, coarsest-to-finest.
+     *
+     * <p>Each pass covers a decreasing radius: LOD 4 sweeps the horizon
+     * quickly, while LOD 1 only refines the area closest to the player.
+     * Each section's result is pushed to Voxy immediately, so coarse
+     * terrain appears fast and gets refined progressively.
      */
-    private void generateProgressiveLods(UnifiedModelRunner model,
+    private void generateProgressiveLods(World world,
+                                          UnifiedModelRunner model,
                                           VoxySectionWriter writer,
                                           VoxyBlockMapper blockMapper) {
+        int centerX = playerSectionX;
+        int centerZ = playerSectionZ;
+
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen] Starting progressive generation — " +
+                "{} passes (LOD {}→{}) around ({}, {})",
+                COARSEST_LOD - FINEST_LOD + 1,
+                COARSEST_LOD, FINEST_LOD, centerX, centerZ);
+
         for (int lod = COARSEST_LOD; lod >= FINEST_LOD; lod--) {
             if (stopRequested.get()) return;
 
-            int radius = LOD_RADIUS[lod];
-            int centerX = playerSectionX;
-            int centerZ = playerSectionZ;
+            int radius = PASS_RADIUS[lod];
+            List<int[]> columns = buildSpiralSections(centerX, centerZ, radius);
+            int passCount = 0;
+            diagnosticCount = 0;  // reset per pass
 
-            HelloTerrainMod.LOGGER.info("[LodGen] Starting LOD {} pass — radius={} sections around ({}, {})",
-                    lod, radius, centerX, centerZ);
+            HelloTerrainMod.LOGGER.info(
+                    "[LodGen] LOD {} pass — radius={}, ~{} columns × {} Y = ~{} sections",
+                    lod, radius, columns.size(), Y_SECTIONS,
+                    columns.size() * Y_SECTIONS);
 
-            // Build section list sorted by distance from player (closest first within each ring)
-            List<int[]> sections = buildSpiralSections(centerX, centerZ, radius);
-            int generated = 0;
-
-            for (int[] sec : sections) {
+            for (int[] col : columns) {
                 if (stopRequested.get()) return;
+                int sx = col[0], sz = col[1];
 
-                int sx = sec[0];
-                int sz = sec[1];
-
-                // Generate for each Y slice
                 for (int sy = Y_BASE_SECTION; sy < Y_BASE_SECTION + Y_SECTIONS; sy++) {
-                    long key = sectionKey(sx, sy, sz, lod);
-                    if (generatedSections.contains(key)) continue;
+                    long lodKey = sectionKey(sx, sy, sz, lod);
+                    if (generatedSections.contains(lodKey)) continue;
 
                     try {
-                        generateAndPushSection(model, writer, blockMapper, sx, sy, sz, lod);
-                        generatedSections.add(key);
-                        generated++;
+                        inferAndPushSection(model, writer, blockMapper,
+                                sx, sy, sz, lod);
+                        generatedSections.add(lodKey);
+                        passCount++;
 
-                        if (generated % 50 == 0) {
-                            HelloTerrainMod.LOGGER.info("[LodGen] LOD {} progress: {} sections generated",
-                                    lod, generated);
+                        if (passCount % 200 == 0) {
+                            HelloTerrainMod.LOGGER.info(
+                                    "[LodGen] LOD {} progress: {} sections",
+                                    lod, passCount);
                         }
                     } catch (Exception e) {
-                        HelloTerrainMod.LOGGER.warn("[LodGen] Failed section ({},{},{}) LOD {}: {}",
+                        HelloTerrainMod.LOGGER.warn(
+                                "[LodGen] Failed ({},{},{}) LOD {}: {}",
                                 sx, sy, sz, lod, e.getMessage());
                     }
 
-                    // Small pause to avoid overwhelming the system
-                    try {
-                        Thread.sleep(10);
-                    } catch (InterruptedException e) {
-                        return;
-                    }
+                    try { Thread.sleep(5); }
+                    catch (InterruptedException e) { return; }
                 }
             }
 
-            HelloTerrainMod.LOGGER.info("[LodGen] LOD {} pass complete — {} sections generated", lod, generated);
+            HelloTerrainMod.LOGGER.info(
+                    "[LodGen] LOD {} pass complete — {} sections",
+                    lod, passCount);
+
+            // Free cached parents outside the next pass's radius
+            if (lod > FINEST_LOD) {
+                pruneParentCache(centerX, centerZ, PASS_RADIUS[lod - 1]);
+            } else {
+                parentCache.clear();
+            }
         }
 
         HelloTerrainMod.LOGGER.info("[LodGen] All LOD passes complete");
     }
 
-    /** Counter for detailed diagnostics (first N sections). */
+    /** Counter for detailed diagnostics (reset per LOD pass). */
     private int diagnosticCount = 0;
 
     /**
-     * Generate a single 16³ section via ONNX and push to Voxy.
+     * Run a single inference pass for one section at a given LOD,
+     * then push the result to Voxy immediately.
+     *
+     * <p>For the coarsest LOD (4), uses a heightmap-based initial parent.
+     * For finer LODs, uses the cached coarsened output from the previous
+     * LOD pass as the parent.
      */
-    private void generateAndPushSection(UnifiedModelRunner model,
-                                         VoxySectionWriter writer,
-                                         VoxyBlockMapper blockMapper,
-                                         int sectionX, int sectionY, int sectionZ,
-                                         int lodLevel) throws Exception {
-        // Build inputs — position-dependent so each section gets unique conditioning
-        float[][] rawHeightmap = buildHeightmap(sectionX, sectionZ);
-        float[][] normalizedHeightmap = minMaxNormalize(rawHeightmap);
-        float avgHeight = averageHeight(rawHeightmap);
-        float[][][] parentOccupancy = buildParentOccupancy(sectionY, avgHeight);
-        float[][][] biomeOneHot = buildDummyBiomeOneHot(model.config().effectiveBiomeVocabSize());
+    private void inferAndPushSection(UnifiedModelRunner model,
+                                      VoxySectionWriter writer,
+                                      VoxyBlockMapper blockMapper,
+                                      int sectionX, int sectionY,
+                                      int sectionZ, int lod)
+            throws Exception {
 
-        // Run inference
-        InferenceResult result = model.generate(parentOccupancy, biomeOneHot, normalizedHeightmap, lodLevel);
+        int yIndex = Math.max(0, Math.min(23, sectionY - Y_BASE_SECTION));
+        long posKey = sectionPosKey(sectionX, sectionY, sectionZ);
 
-        boolean detailed = diagnosticCount < 5;
+        // ---- conditioning inputs ----
+        float[][] rawHm    = buildHeightmap(sectionX, sectionZ);
+        int[][]   biomeIdx = new int[16][16];
+        for (int[] row : biomeIdx) java.util.Arrays.fill(row, 1);
 
-        // Diagnostic: log model output statistics for first few sections
-        if (detailed) {
-            float[][][][][] mask = result.airMask();
-            float[][][][][] logits = result.blockLogits();
-            int vocabSize = model.config().effectiveBlockVocabSize();
+        // Parent: cached from previous LOD pass, or heightmap-based seed
+        float[][][] parent = (lod == COARSEST_LOD)
+                ? buildInitialParent(sectionY, rawHm)
+                : parentCache.getOrDefault(
+                      posKey, buildInitialParent(sectionY, rawHm));
 
-            // Air mask stats
-            int maskPositive = 0;
-            float maskMin = Float.MAX_VALUE, maskMax = -Float.MAX_VALUE;
-            for (int d0 = 0; d0 < 16; d0++)
-                for (int d1 = 0; d1 < 16; d1++)
-                    for (int d2 = 0; d2 < 16; d2++) {
-                        float v = mask[0][0][d0][d1][d2];
-                        if (v > 0) maskPositive++;
-                        if (v < maskMin) maskMin = v;
-                        if (v > maskMax) maskMax = v;
-                    }
+        // ---- infer ----
+        InferenceResult result;
+        if (model.isV2()) {
+            float[][] hp5 = AnchorSampler.computeHeightPlanes(rawHm);
+            float[][] r6  = AnchorSampler.approximateRouter6(biomeIdx, rawHm);
+            result = model.generateV2(
+                    parent, hp5, r6, biomeIdx, yIndex, lod);
+        } else {
+            float[][] normHm     = minMaxNormalize(rawHm);
+            float[][][] biomeHot = buildDummyBiomeOneHot(
+                    model.config().effectiveBiomeVocabSize());
+            result = model.generate(parent, biomeHot, normHm, lod);
+        }
 
-            // Block logit stats: check range across vocab & space
-            float logitMin = Float.MAX_VALUE, logitMax = -Float.MAX_VALUE;
-            for (int b = 0; b < Math.min(vocabSize, logits[0].length); b++)
-                for (int d0 = 0; d0 < 16; d0++)
-                    for (int d1 = 0; d1 < 16; d1++)
-                        for (int d2 = 0; d2 < 16; d2++) {
-                            float v = logits[0][b][d0][d1][d2];
-                            if (v < logitMin) logitMin = v;
-                            if (v > logitMax) logitMax = v;
-                        }
+        // Cache coarsened output for the next (finer) LOD pass
+        if (lod > FINEST_LOD) {
+            parentCache.put(posKey, coarsenToParent(result.airMask()));
+        } else {
+            parentCache.remove(posKey);  // free memory
+        }
 
-            // Top predicted block index at center voxel (8,8,8)
-            int centerBest = 0;
-            float centerBestVal = logits[0][0][8][8][8];
-            for (int b = 1; b < Math.min(vocabSize, logits[0].length); b++) {
-                float v = logits[0][b][8][8][8];
-                if (v > centerBestVal) { centerBestVal = v; centerBest = b; }
-            }
-
-            // Check what VoxyBlockMapper returns for that index
-            int voxyId = blockMapper.getVoxyBlockId(centerBest);
-            String blockName = centerBest < model.vocabulary().size()
-                    ? model.vocabulary().getName(centerBest) : "???";
-
-            HelloTerrainMod.LOGGER.info(
-                    "[LodGen] DIAG section ({},{},{}) LOD {}: " +
-                    "air_mask positive={}/4096 range=[{},{}] | " +
-                    "logit range=[{},{}] | " +
-                    "center prediction: idx={} name='{}' voxyId={} | " +
-                    "inference {}ms",
-                    sectionX, sectionY, sectionZ, lodLevel,
-                    maskPositive, maskMin, maskMax,
-                    logitMin, logitMax,
-                    centerBest, blockName, voxyId,
-                    result.elapsedMs());
+        // Diagnostics (first few sections of each LOD pass)
+        if (diagnosticCount < 5) {
+            logDiagnostics(result, model, blockMapper,
+                    sectionX, sectionY, sectionZ,
+                    result.elapsedMs(), lod);
             diagnosticCount++;
         }
 
-        // Push to Voxy
+        // Push to Voxy immediately — terrain appears progressively
         int biomeVoxyId = blockMapper.defaultBiomeVoxyId();
         writer.writeSection(result, model.config().effectiveBlockVocabSize(),
                 sectionX, sectionY, sectionZ, biomeVoxyId);
+    }
 
-        HelloTerrainMod.LOGGER.debug("[LodGen] Generated section ({},{},{}) LOD {} in {}ms",
-                sectionX, sectionY, sectionZ, lodLevel, result.elapsedMs());
+    // ------------------------------------------------------------------ //
+    //  Coarsen & diagnostics
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Coarsen a 16³ air-mask to an 8³ binary parent occupancy grid.
+     *
+     * <p>Uses max-pooling over 2×2×2 blocks: if <em>any</em> voxel in the
+     * block has air_mask &gt; 0 (model predicts solid), the parent cell is
+     * set to 1.0.  This approximates the Voxy mipper's opacity-biased
+     * selection for binary occupancy data.
+     *
+     * @param airMask model output [1][1][16][16][16]; positive = solid
+     * @return [8][8][8] binary parent (0.0 = air, 1.0 = solid)
+     */
+    static float[][][] coarsenToParent(float[][][][][] airMask) {
+        float[][][] parent = new float[8][8][8];
+        for (int px = 0; px < 8; px++) {
+            for (int py = 0; py < 8; py++) {
+                for (int pz = 0; pz < 8; pz++) {
+                    float maxVal = -Float.MAX_VALUE;
+                    for (int dx = 0; dx < 2; dx++)
+                        for (int dy = 0; dy < 2; dy++)
+                            for (int dz = 0; dz < 2; dz++) {
+                                float v = airMask[0][0]
+                                        [px * 2 + dx][py * 2 + dy][pz * 2 + dz];
+                                if (v > maxVal) maxVal = v;
+                            }
+                    parent[px][py][pz] = maxVal > 0f ? 1.0f : 0.0f;
+                }
+            }
+        }
+        return parent;
+    }
+
+    /**
+     * Build a heightmap-based initial parent for the coarsest LOD pass.
+     *
+     * <p>Each cell in the 8³ grid is set to 1.0 (solid) if its center Y
+     * coordinate is below the heightmap value at that column, 0.0 (air)
+     * otherwise.  This gives the model a reasonable starting structure
+     * instead of an empty (all-air) grid.
+     */
+    private float[][][] buildInitialParent(int sectionY, float[][] heightmap) {
+        float[][][] parent = new float[8][8][8];
+        float baseY = sectionY * 16f;
+        for (int px = 0; px < 8; px++) {
+            for (int pz = 0; pz < 8; pz++) {
+                float h = heightmap[px * 2][pz * 2];
+                for (int py = 0; py < 8; py++) {
+                    float cellY = baseY + py * 2f + 1f;
+                    parent[px][py][pz] = cellY < h ? 1.0f : 0.0f;
+                }
+            }
+        }
+        return parent;
+    }
+
+    /**
+     * Position-only key for the parent cache (no LOD component).
+     */
+    private long sectionPosKey(int x, int y, int z) {
+        return sectionKey(x, y, z, 0);
+    }
+
+    /**
+     * Remove cached parents outside the given radius from center.
+     */
+    private void pruneParentCache(int centerX, int centerZ, int keepRadius) {
+        parentCache.entrySet().removeIf(e -> {
+            long key = e.getKey();
+            int x = (short) ((key >> 32) & 0xFFFF);
+            int z = (short) (key & 0xFFFF);
+            return Math.abs(x - centerX) > keepRadius
+                || Math.abs(z - centerZ) > keepRadius;
+        });
+        HelloTerrainMod.LOGGER.debug(
+                "[LodGen] Parent cache pruned to {} entries (keepRadius={})",
+                parentCache.size(), keepRadius);
+    }
+
+    /**
+     * Log detailed model-output diagnostics for a section.
+     */
+    private void logDiagnostics(InferenceResult result,
+                                 UnifiedModelRunner model,
+                                 VoxyBlockMapper blockMapper,
+                                 int sectionX, int sectionY, int sectionZ,
+                                 long elapsedMs, int lod) {
+        float[][][][][] mask   = result.airMask();
+        float[][][][][] logits = result.blockLogits();
+        int vocabSize = model.config().effectiveBlockVocabSize();
+
+        // Air mask stats
+        int maskPositive = 0;
+        float maskMin = Float.MAX_VALUE, maskMax = -Float.MAX_VALUE;
+        for (int d0 = 0; d0 < 16; d0++)
+            for (int d1 = 0; d1 < 16; d1++)
+                for (int d2 = 0; d2 < 16; d2++) {
+                    float v = mask[0][0][d0][d1][d2];
+                    if (v > 0) maskPositive++;
+                    if (v < maskMin) maskMin = v;
+                    if (v > maskMax) maskMax = v;
+                }
+
+        // Block logit stats
+        float logitMin = Float.MAX_VALUE, logitMax = -Float.MAX_VALUE;
+        for (int b = 0; b < Math.min(vocabSize, logits[0].length); b++)
+            for (int d0 = 0; d0 < 16; d0++)
+                for (int d1 = 0; d1 < 16; d1++)
+                    for (int d2 = 0; d2 < 16; d2++) {
+                        float v = logits[0][b][d0][d1][d2];
+                        if (v < logitMin) logitMin = v;
+                        if (v > logitMax) logitMax = v;
+                    }
+
+        // Top predicted block at center voxel (8,8,8)
+        int centerBest = 0;
+        float centerBestVal = logits[0][0][8][8][8];
+        for (int b = 1; b < Math.min(vocabSize, logits[0].length); b++) {
+            float v = logits[0][b][8][8][8];
+            if (v > centerBestVal) { centerBestVal = v; centerBest = b; }
+        }
+
+        int voxyId = blockMapper.getVoxyBlockId(centerBest);
+        String blockName = centerBest < model.vocabulary().size()
+                ? model.vocabulary().getName(centerBest) : "???";
+
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen] DIAG LOD {} ({},{},{}): " +
+                "air_mask solid={}/4096 range=[{},{}] | " +
+                "logit range=[{},{}] | " +
+                "center: idx={} '{}' voxyId={} | " +
+                "{}ms",
+                lod, sectionX, sectionY, sectionZ,
+                maskPositive, maskMin, maskMax,
+                logitMin, logitMax,
+                centerBest, blockName, voxyId,
+                elapsedMs);
     }
 
     // ------------------------------------------------------------------ //
@@ -387,54 +535,7 @@ public final class LodGenerationService {
         return norm;
     }
 
-    /**
-     * Compute the average raw height across a heightmap.
-     */
-    private float averageHeight(float[][] raw) {
-        float sum = 0;
-        for (int x = 0; x < 16; x++)
-            for (int z = 0; z < 16; z++)
-                sum += raw[x][z];
-        return sum / 256f;
-    }
 
-    /**
-     * Build parent occupancy [8][8][8] based on how this section's Y
-     * range relates to the average terrain height.
-     *
-     * <p>Each cell in the 8³ grid represents a 2×2×2 block cube.
-     * Cells below the estimated surface are solid (1.0), cells above
-     * are air (0.0), with a smooth transition near the surface.
-     *
-     * @param sectionY   Voxy section Y coordinate
-     * @param avgHeight  average terrain height from the heightmap (block Y)
-     */
-    private float[][][] buildParentOccupancy(int sectionY, float avgHeight) {
-        float[][][] occ = new float[8][8][8];
-        float sectionBaseY = sectionY * 16f;
-
-        for (int cx = 0; cx < 8; cx++) {
-            for (int cy = 0; cy < 8; cy++) {
-                for (int cz = 0; cz < 8; cz++) {
-                    // World Y at the center of this 2-block-tall cell
-                    float cellY = sectionBaseY + cy * 2f + 1f;
-
-                    if (cellY < avgHeight - 8f) {
-                        // Well below surface — fully solid
-                        occ[cx][cy][cz] = 1.0f;
-                    } else if (cellY > avgHeight + 4f) {
-                        // Well above surface — air
-                        occ[cx][cy][cz] = 0.0f;
-                    } else {
-                        // Transition zone: linear falloff
-                        occ[cx][cy][cz] = Math.max(0f,
-                                1.0f - (cellY - (avgHeight - 8f)) / 12f);
-                    }
-                }
-            }
-        }
-        return occ;
-    }
 
     /**
      * Build dummy biome one-hot: plains (biome index 1).

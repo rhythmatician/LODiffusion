@@ -4,6 +4,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.rhythmatician.lodiffusion.command.LodiffusionCommand;
+import com.rhythmatician.lodiffusion.command.NoiseDumperCommand;
 import com.rhythmatician.lodiffusion.terrain.OnnxTerrainGenerator;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 
@@ -22,8 +23,9 @@ public class HelloTerrainMod implements ModInitializer {
 		try {
 			CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
 				LodiffusionCommand.register(dispatcher);
+				NoiseDumperCommand.register(dispatcher);
 			});
-			LOGGER.info("[LODiffusion] Registered /lodiffusion command");
+			LOGGER.info("[LODiffusion] Registered /lodiffusion and /dumpnoise commands");
 		} catch (Exception e) {
 			LOGGER.error("[LODiffusion] Failed to register command: {}", e.getMessage(), e);
 		}

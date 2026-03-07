@@ -117,6 +117,10 @@ public final class ConfigLoader {
         renameKey(root, "model_name", "modelName");
         renameKey(root, "optional_inputs", "optionalInputs");
         renameKey(root, "block_palette", "blockPalette");
+        renameKey(root, "biome_vocab_size", "biomeVocabSize");
+        renameKey(root, "block_vocab_size", "blockVocabSize");
+        renameKey(root, "block_mapping", "blockMapping");
+        renameKey(root, "block_id_to_name", "blockIdToName");
 
         // Resolve symbolic "N_blocks" dim in block_logits
         try {
