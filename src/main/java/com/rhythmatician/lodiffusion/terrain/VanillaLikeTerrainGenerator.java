@@ -80,7 +80,7 @@ public final class VanillaLikeTerrainGenerator implements TerrainGenerator {
                     var belowPos = new net.minecraft.util.math.BlockPos(x, y - 1, z);
                     var currentPos = new net.minecraft.util.math.BlockPos(x, y, z);
                     var stateBelow = chunk.getBlockState(belowPos);
-                    chunk.setBlockState(currentPos, stateBelow, false);
+                    chunk.setBlockState(currentPos, stateBelow);
                 }
             }
         } else if (heightDiff < 0) {
@@ -89,7 +89,7 @@ public final class VanillaLikeTerrainGenerator implements TerrainGenerator {
                 int y = currentHeight - 1 - i;
                 if (y >= chunk.getBottomSectionCoord() << 4) {
                     var currentPos = new net.minecraft.util.math.BlockPos(x, y, z);
-                    chunk.setBlockState(currentPos, net.minecraft.block.Blocks.AIR.getDefaultState(), false);
+                    chunk.setBlockState(currentPos, net.minecraft.block.Blocks.AIR.getDefaultState());
                 }
             }
         }

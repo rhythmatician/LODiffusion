@@ -281,7 +281,7 @@ public class OnnxTerrainGenerator implements TerrainGenerator {
                     if (worldY < -64 || worldY >= 320) continue;
                     int idx = blocks[x][y][z];
                     BlockState state = vocab.getState(idx);
-                    chunk.setBlockState(new BlockPos(ox + x, worldY, oz + z), state, false);
+                    chunk.setBlockState(new BlockPos(ox + x, worldY, oz + z), state);
                 }
             }
         }

@@ -7,6 +7,8 @@ import com.rhythmatician.lodiffusion.terrain.OnnxTerrainGenerator;
 import com.rhythmatician.lodiffusion.util.DebugUtils;
 import com.rhythmatician.lodiffusion.util.PerformanceMonitor;
 
+import net.minecraft.command.permission.Permission;
+import net.minecraft.command.permission.PermissionLevel;
 import net.minecraft.server.command.CommandManager;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.text.Text;
@@ -22,7 +24,7 @@ public final class LodiffusionCommand {
      */
     public static void register(CommandDispatcher<ServerCommandSource> dispatcher) {
         dispatcher.register(CommandManager.literal("lodiffusion")
-            .requires(source -> source.hasPermissionLevel(2)) // Requires OP permissions
+            .requires(source -> source.getPermissions().hasPermission(new Permission.Level(PermissionLevel.GAMEMASTERS))) // Requires OP permissions
             
             // Status subcommand
             .then(CommandManager.literal("status")

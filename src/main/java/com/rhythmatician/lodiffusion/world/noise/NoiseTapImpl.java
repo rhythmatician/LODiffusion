@@ -62,7 +62,7 @@ final class NoiseTapImpl implements NoiseTap {
                 case RIDGES -> router.ridges();
 
                 // Tier C - 3D Density Features
-                case INITIAL_DENSITY_NO_JAG -> router.initialDensityWithoutJaggedness();
+                case INITIAL_DENSITY_NO_JAG -> router.finalDensity(); // initialDensityWithoutJaggedness removed in 1.21.11
                 case FINAL_DENSITY -> router.finalDensity();
 
                 // Tier B - Fluid & Environmental Features
