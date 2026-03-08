@@ -52,7 +52,7 @@ public final class VoxyBlockMapper {
                 if (voxyId == 0) zeroMapped++;
 
                 // Log first 20 entries and any that map to 0 (air)
-                if (i < 20 || (voxyId == 0 && i < 100)) {
+                if (i < 20 || voxyId == 0 && i < 100) {
                     LOGGER.info("[VoxyBlockMapper] idx={} name='{}' → voxyId={}",
                             i, vocab.getName(i), voxyId);
                 }

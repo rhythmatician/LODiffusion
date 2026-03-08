@@ -134,7 +134,10 @@ public final class VoxySectionWriter {
                         float bestVal = logits[0][0][y][z][x];
                         for (int b = 1; b < vocabSize; b++) {
                             float v = logits[0][b][y][z][x];
-                            if (v > bestVal) { bestVal = v; bestIdx = b; }
+                            if (v > bestVal) {
+                                bestVal = v;
+                                bestIdx = b;
+                            }
                         }
 
                         int voxyBlockId = blockMapper.getVoxyBlockId(bestIdx);

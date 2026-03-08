@@ -126,7 +126,7 @@ public final class NoiseDumperCommand {
         source.sendFeedback(
                 () -> Text.literal(String.format(
                         "[NoiseDumper] Dumping %d×%d chunks centred (%d,%d) → %s",
-                        (2 * radius + 1), (2 * radius + 1), centerCx, centerCz, outDir.toAbsolutePath())),
+                        2 * radius + 1, 2 * radius + 1, centerCx, centerCz, outDir.toAbsolutePath())),
                 false);
 
         // Worker thread — chunk loading can be slow

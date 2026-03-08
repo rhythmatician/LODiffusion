@@ -246,7 +246,7 @@ class ChunkGeneratorStubTest {
         }
 
         // This assertion will eventually drive sophisticated diffusion logic
-        assertTrue(hasComplexPattern || true, // TODO: Enable when DiffusionModel.run() is implemented
+        assertTrue(true, // TODO: Enable when DiffusionModel.run() is implemented
             "DiffusionModel should create complex terrain patterns");
     }
 }

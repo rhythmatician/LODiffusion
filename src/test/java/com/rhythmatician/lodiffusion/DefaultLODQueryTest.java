@@ -77,7 +77,8 @@ class DefaultLODQueryTest {
         
         // All should have same LOD due to absolute distance calculation
         assertEquals(lod1, lod2, "Negative coordinates should give same LOD as positive");
-        assertEquals(lod1, lod3, "Mixed coordinates should give same LOD");        assertEquals(lod1, lod4, "All combinations should give same LOD");
+        assertEquals(lod1, lod3, "Mixed coordinates should give same LOD");
+        assertEquals(lod1, lod4, "All combinations should give same LOD");
         assertEquals(1, lod1, "Distance 5 should be LOD 1");
     }
 

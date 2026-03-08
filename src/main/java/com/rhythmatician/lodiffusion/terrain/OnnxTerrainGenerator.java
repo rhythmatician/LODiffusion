@@ -218,7 +218,10 @@ public class OnnxTerrainGenerator implements TerrainGenerator {
                     float bestVal = logits[0][0][y][z][x];
                     for (int b = 1; b < vocabSize; b++) {
                         float v = logits[0][b][y][z][x];
-                        if (v > bestVal) { bestVal = v; best = b; }
+                        if (v > bestVal) {
+                            bestVal = v;
+                            best = b;
+                        }
                     }
                     out[x][y][z] = best;
                 }

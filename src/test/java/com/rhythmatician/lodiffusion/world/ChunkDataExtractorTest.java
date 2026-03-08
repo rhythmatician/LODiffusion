@@ -28,7 +28,8 @@ public class ChunkDataExtractorTest {
     void setUp() throws IOException {
         // Create a temporary world structure for testing
         testWorldPath = tempDir.resolve("test-world");
-        testRegionPath = testWorldPath.resolve("region");        Files.createDirectories(testRegionPath);
+        testRegionPath = testWorldPath.resolve("region");
+        Files.createDirectories(testRegionPath);
     }
 
     @Test
@@ -55,7 +56,8 @@ public class ChunkDataExtractorTest {
         // Create multiple mock region files
         Files.createFile(testRegionPath.resolve("r.0.0.mca"));
         Files.createFile(testRegionPath.resolve("r.1.0.mca"));
-        Files.createFile(testRegionPath.resolve("r.0.1.mca"));        Files.createFile(testRegionPath.resolve("not_a_region.txt")); // Should be ignored
+        Files.createFile(testRegionPath.resolve("r.0.1.mca"));
+        Files.createFile(testRegionPath.resolve("not_a_region.txt")); // Should be ignored
 
         // Test with real world data
         File[] regionFiles = TestWorldFixtures.getTestDataRegionFiles();
@@ -206,7 +208,8 @@ public class ChunkDataExtractorTest {
         // This test verifies the behavior when no world data is available
         // Since we can't guarantee the state of example-world, we test the logic indirectly
         String summary = TestWorldFixtures.getWorldDataSummary();
-        assertNotNull(summary, "Summary should never be null");        assertTrue(summary.length() > 0, "Summary should not be empty");
+        assertNotNull(summary, "Summary should never be null");
+        assertTrue(summary.length() > 0, "Summary should not be empty");
     }
 
     @Test

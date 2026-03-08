@@ -83,13 +83,15 @@ public final class Config {
   public static int inferenceThreads() {
     int raw = getInt("inferenceThreads", 2);
     int max = Runtime.getRuntime().availableProcessors();
-    if (raw < 1) raw = 1; if (raw > max) raw = max;
+    if (raw < 1) raw = 1;
+    if (raw > max) raw = max;
     return raw;
   }
 
   public static double threshold() {
     double t = getDouble("threshold", 0.5);
-    if (t < 0.0) t = 0.0; if (t > 1.0) t = 1.0;
+    if (t < 0.0) t = 0.0;
+    if (t > 1.0) t = 1.0;
     return t;
   }
 

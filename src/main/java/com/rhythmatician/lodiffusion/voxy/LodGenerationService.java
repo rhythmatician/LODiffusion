@@ -340,7 +340,7 @@ public final class LodGenerationService {
                 // Count sections we skipped (above/below surface)
                 int fullRange = Y_SECTIONS;
                 int generatedRange = maxSectionY - minSectionY + 1;
-                skippedAirSections += (fullRange - generatedRange);
+                skippedAirSections += fullRange - generatedRange;
             }
 
             HelloTerrainMod.LOGGER.info(
@@ -507,7 +507,7 @@ public final class LodGenerationService {
         } else if (diagnosticCount < 10) {
             // After first 3, only log extreme Y levels to see above-ground behavior
             // Log Y near surface (sectionY 3-4) and well above (sectionY 8+)
-            shouldDiag = (sectionY == 4 || sectionY == 8 || sectionY == 11);
+            shouldDiag = sectionY == 4 || sectionY == 8 || sectionY == 11;
         }
 
         if (shouldDiag) {
@@ -655,7 +655,10 @@ public final class LodGenerationService {
         float centerBestVal = logits[0][0][8][8][8];
         for (int b = 1; b < Math.min(vocabSize, logits[0].length); b++) {
             float v = logits[0][b][8][8][8];
-            if (v > centerBestVal) { centerBestVal = v; centerBest = b; }
+            if (v > centerBestVal) {
+                centerBestVal = v;
+                centerBest = b;
+            }
         }
 
         int voxyId = blockMapper.getVoxyBlockId(centerBest);
@@ -833,7 +836,11 @@ public final class LodGenerationService {
         for (int i = 0; i < 300; i++) {   // 30 seconds max
             if (stopRequested.get()) return;
             if (positionReady.get()) return;
-            try { Thread.sleep(100); } catch (InterruptedException e) { return; }
+            try {
+                Thread.sleep(100);
+            } catch (InterruptedException e) {
+                return;
+            }
         }
         HelloTerrainMod.LOGGER.warn("[LodGen] Timed out waiting for player position — using (0, 0)");
     }
