@@ -12,13 +12,29 @@ public class TestWorldFixtures {
 
     /**
      * Path to the test data directory containing example world files.
+     * Resolves to the VoxelTree training data which contains real Minecraft
+     * region files for integration testing.
      */
-    public static final Path TEST_DATA_PATH = Paths.get("test-data");
+    public static final Path TEST_DATA_PATH = resolveTestDataPath();
 
     /**
      * Path to the example world directory (This is ignored by git)
      */
     public static final Path EXAMPLE_WORLD_PATH = Paths.get("example-world");
+
+    /**
+     * Resolve the test data path, preferring VoxelTree training data.
+     * Falls back to local test-data/ if VoxelTree is not available.
+     */
+    private static Path resolveTestDataPath() {
+        // Primary: VoxelTree training data in the parent workspace
+        Path voxelTreeData = Paths.get("..", "VoxelTree", "data", "test_world");
+        if (voxelTreeData.toFile().exists()) {
+            return voxelTreeData;
+        }
+        // Fallback: local test-data directory
+        return Paths.get("test-data");
+    }
 
     /**
      * Get a test region file from the test-data directory.

@@ -41,7 +41,8 @@ public class LodiffusionClient implements ClientModInitializer {
             client.execute(() -> {
                 if (client.world != null) {
                     HelloTerrainMod.LOGGER.info("[LODiffusion] World joined — starting LOD generation service");
-                    LOD_SERVICE.start(client.world);
+                    // Pass integrated server for noise access (null on dedicated server)
+                    LOD_SERVICE.start(client.world, client.getServer());
                 }
             });
         });

@@ -112,6 +112,18 @@ test {
 	finalizedBy jacocoTestReport
 }
 
+// Auto-deploy built JAR to run/mods/ after remapJar
+tasks.register('deployToRunMods', Copy) {
+	group = 'fabric'
+	description = 'Copy remapped mod JAR to run/mods/ for testing'
+	dependsOn remapJar
+	from(remapJar.archiveFile)
+	into(file('run/mods'))
+}
+
+// Wire deployToRunMods into the build lifecycle
+build.dependsOn deployToRunMods
+
 jacoco {
 	toolVersion = "0.8.11"
 }

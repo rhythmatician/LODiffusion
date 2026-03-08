@@ -9,6 +9,8 @@ import java.io.RandomAccessFile;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import fixtures.TestWorldFixtures;
+
 /**
  * Low-level test to examine raw NBT structure in region files
  * to understand the chunk format we're dealing with.
@@ -19,8 +21,8 @@ public class RawNBTStructureTest {
 
     @Test
     public void testRawRegionFileStructure() throws Exception {
-        File regionFilePath = new File("test-data/region/r.0.0.mca");
-        assertTrue(regionFilePath.exists(), "Region file should exist");
+        File regionFilePath = TestWorldFixtures.getTestRegionFile("r.0.0.mca");
+        assertTrue(regionFilePath.exists(), "Region file should exist at " + regionFilePath.getAbsolutePath());
           LOGGER.info("File exists: {}", regionFilePath.exists());
         LOGGER.info("File size: {} bytes", regionFilePath.length());
         

@@ -9,14 +9,16 @@ import java.io.File;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import fixtures.TestWorldFixtures;
+
 public class SimpleRegionFileTest {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(SimpleRegionFileTest.class);
 
     @Test
     public void testDirectRegionFileOpen() throws Exception {
-        File regionFilePath = new File("test-data/region/r.0.0.mca");
-        assertTrue(regionFilePath.exists(), "Region file should exist");
+        File regionFilePath = TestWorldFixtures.getTestRegionFile("r.0.0.mca");
+        assertTrue(regionFilePath.exists(), "Region file should exist at " + regionFilePath.getAbsolutePath());
 
         LOGGER.info("File exists: {}", regionFilePath.exists());
         LOGGER.info("File size: {} bytes", regionFilePath.length());

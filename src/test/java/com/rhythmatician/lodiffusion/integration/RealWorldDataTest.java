@@ -8,6 +8,7 @@ import java.io.File;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 
+import fixtures.TestWorldFixtures;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
@@ -21,7 +22,7 @@ import com.rhythmatician.lodiffusion.DiffusionModel;
  */
 public class RealWorldDataTest {
 
-    private static final String TEST_DATA_PATH = "test-data";
+    private static final String TEST_DATA_PATH = TestWorldFixtures.TEST_DATA_PATH.toString();
     private DiffusionChunkGenerator generator;
     private DiffusionModel model;    @BeforeEach
     void setUp() {
@@ -33,7 +34,7 @@ public class RealWorldDataTest {
     void testWorldDataExists() {
         // Verify the test world data is available for testing
         Path testDataPath = Paths.get(TEST_DATA_PATH);
-        assertTrue(testDataPath.toFile().exists(), "Test DATA should exist for integration testing");
+        assertTrue(testDataPath.toFile().exists(), "Test data should exist at " + testDataPath.toAbsolutePath());
 
         Path regionPath = testDataPath.resolve("region");
         assertTrue(regionPath.toFile().exists(), "Region folder should exist");
@@ -49,9 +50,11 @@ public class RealWorldDataTest {
     void testRegionFileNaming() {
         // Test that region files follow expected naming convention
         Path regionPath = Paths.get(TEST_DATA_PATH, "region");
+        assertTrue(regionPath.toFile().exists(), "Region folder should exist at " + regionPath.toAbsolutePath());
         File[] regionFiles = regionPath.toFile().listFiles((dir, name) -> name.endsWith(".mca"));
 
-        assertNotNull(regionFiles);
+        assertNotNull(regionFiles, "Region files should be listable");
+        assertTrue(regionFiles.length > 0, "Should have at least one .mca file");
 
         boolean foundOriginRegion = false;
         for (File regionFile : regionFiles) {

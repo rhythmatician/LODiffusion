@@ -77,6 +77,36 @@ public final class AnchorSampler {
         return new AnchorInputs(heightPlanes, router6, biomeIdx);
     }
 
+    /**
+     * Sample v2 anchor inputs using the server-side noise pipeline.
+     *
+     * <p>This produces <em>real</em> heightmap, router6, and biome data
+     * for any (sectionX, sectionZ) coordinate — no loaded chunk required.
+     * This is the primary path; the chunk-based {@link #sample(Chunk, NoiseConfig)}
+     * should only be used when {@link WorldNoiseAccess} is not available.
+     *
+     * @param noiseAccess server-side noise access (must not be null)
+     * @param sectionX    chunk / section X coordinate
+     * @param sectionZ    chunk / section Z coordinate
+     * @return an {@link AnchorInputs} record with real world-gen data
+     */
+    public static AnchorInputs sampleFromNoise(WorldNoiseAccess noiseAccess,
+                                                int sectionX, int sectionZ) {
+        // 1. Real heightmap from ChunkGenerator.getHeight()
+        float[][] hmap = noiseAccess.sampleHeightmap(sectionX, sectionZ);
+
+        // 2. Real biomes from BiomeSource
+        int[][] biomeIdx = noiseAccess.sampleBiomes(sectionX, sectionZ, hmap);
+
+        // 3. Height-planes are derived from the heightmap (pure math — same either way)
+        float[][] heightPlanes = computeHeightPlanes(hmap);
+
+        // 4. Real router6 from NoiseRouter density functions
+        float[][] router6 = noiseAccess.sampleRouter6(sectionX, sectionZ, hmap);
+
+        return new AnchorInputs(heightPlanes, router6, biomeIdx);
+    }
+
     // ------------------------------------------------------------------
     // Biome sampling
     // ------------------------------------------------------------------

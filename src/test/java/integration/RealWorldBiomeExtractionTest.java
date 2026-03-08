@@ -8,12 +8,14 @@ import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.*;
 
+import fixtures.TestWorldFixtures;
+
 public class RealWorldBiomeExtractionTest {
 
     @Test
     public void testRegionFileAccess() throws IOException {
-        File regionFilePath = new File("test-data/region/r.-1.0.mca");
-        assertTrue(regionFilePath.exists(), "Region file should exist");
+        File regionFilePath = TestWorldFixtures.getTestRegionFile("r.-1.0.mca");
+        assertTrue(regionFilePath.exists(), "Region file should exist at " + regionFilePath.getAbsolutePath());
         assertTrue(regionFilePath.canRead(), "Region file should be readable");
         assertTrue(regionFilePath.length() > 0, "Region file should not be empty");
         
@@ -26,8 +28,8 @@ public class RealWorldBiomeExtractionTest {
 
     @Test
     public void testExtractBiomesFromRealChunk() throws IOException {
-        File regionFilePath = new File("test-data/region/r.-1.0.mca");
-        assertTrue(regionFilePath.exists(), "Region file should exist");
+        File regionFilePath = TestWorldFixtures.getTestRegionFile("r.-1.0.mca");
+        assertTrue(regionFilePath.exists(), "Region file should exist at " + regionFilePath.getAbsolutePath());
 
         // Find a valid chunk in the region instead of hardcoding coordinates
         int[] validChunk = ChunkDataExtractor.findValidChunk(regionFilePath);

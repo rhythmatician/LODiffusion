@@ -1,5 +1,8 @@
 package com.rhythmatician.lodiffusion.voxy;
 
+import java.util.HashSet;
+import java.util.Set;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -28,6 +31,13 @@ public final class VoxySectionWriter {
 
     /** Counter for diagnostic logging — log detail for first N sections. */
     private int sectionsWritten = 0;
+
+    /**
+     * Tracks section positions we have written this session.
+     * Used to distinguish our LODiffusion data (safe to overwrite during
+     * progressive refinement) from Voxy-native data (must not overwrite).
+     */
+    private final Set<Long> writtenSections = new HashSet<>();
 
     private final Object worldEngine;
     private final Object voxyMapper;
@@ -62,6 +72,21 @@ public final class VoxySectionWriter {
                              int sectionX, int sectionY, int sectionZ,
                              int biomeVoxyId) {
 
+        // ---- Overwrite protection ----
+        // Only protect Voxy-native data (from real chunk loading).
+        // Our own LODiffusion writes are safe to overwrite — that's how
+        // progressive refinement works (LOD 4 → 3 → 2 → 1).
+        long posKey = sectionPosKey(sectionX, sectionY, sectionZ);
+        if (VoxyCompat.sectionExists(worldEngine, sectionX, sectionY, sectionZ)
+                && !writtenSections.contains(posKey)) {
+            if (sectionsWritten < 10) {
+                LOGGER.info("[VoxySectionWriter] Skipping ({},{},{}) — Voxy has native data",
+                        sectionX, sectionY, sectionZ);
+            }
+            sectionsWritten++;
+            return;
+        }
+
         float[][][][][] logits = result.blockLogits();  // [1][N][16][16][16]
         float[][][][][] mask   = result.airMask();      // [1][1][16][16][16]
 
@@ -92,21 +117,23 @@ public final class VoxySectionWriter {
 
         // 2. Fill L0 (16³) — data[0..4095]
         //    Model output dimensions: [batch][channel][d0][d1][d2]
-        //    We treat d0=x, d1=y, d2=z and pack into YZX order for Voxy
+        //    Model axis convention: d0=Y, d1=Z, d2=X (matches Voxy/training)
+        //    Voxy l0Index packs as YZX: (y<<8)|(z<<4)|x
         for (int x = 0; x < 16; x++) {
             for (int y = 0; y < 16; y++) {
                 for (int z = 0; z < 16; z++) {
                     long voxel;
 
-                    if (mask[0][0][x][y][z] <= 0f) {
+                    // Access model output at [batch=0][chan][d0=Y][d1=Z][d2=X]
+                    if (mask[0][0][y][z][x] <= 0f) {
                         // Air — use air with default light
                         voxel = VoxyCompat.composeVoxel(0, biomeVoxyId, DEFAULT_LIGHT);
                     } else {
                         // Solid — argmax over block logits
                         int bestIdx = 0;
-                        float bestVal = logits[0][0][x][y][z];
+                        float bestVal = logits[0][0][y][z][x];
                         for (int b = 1; b < vocabSize; b++) {
-                            float v = logits[0][b][x][y][z];
+                            float v = logits[0][b][y][z][x];
                             if (v > bestVal) { bestVal = v; bestIdx = b; }
                         }
 
@@ -149,6 +176,9 @@ public final class VoxySectionWriter {
         LOGGER.debug("[VoxySectionWriter] Inserting section ({},{},{}) into Voxy world", sectionX, sectionY, sectionZ);
         VoxyCompat.insertUpdate(worldEngine, section);
 
+        // Track that we wrote this section (for progressive overwrite)
+        writtenSections.add(posKey);
+
         if (detailed || sectionsWritten % 100 == 0) {
             LOGGER.info("[VoxySectionWriter] Wrote section ({},{},{}) — {} solid voxels [total written: {}]",
                     sectionX, sectionY, sectionZ, nonAirCount, sectionsWritten + 1);
@@ -176,5 +206,12 @@ public final class VoxySectionWriter {
         int sectionZ = chunkZ;
 
         writeSection(result, vocabSize, sectionX, sectionY, sectionZ, biomeVoxyId);
+    }
+
+    /** Compact key for a section position (no LOD component). */
+    private static long sectionPosKey(int x, int y, int z) {
+        return ((long) (x & 0xFFFF) << 32)
+             | ((long) (y & 0xFFFF) << 16)
+             | (z & 0xFFFFL);
     }
 }

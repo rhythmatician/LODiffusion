@@ -36,9 +36,9 @@ public class ChunkDataExtractorTest {
         // Create mock region file
         Files.createFile(testRegionPath.resolve("r.0.0.mca"));
 
-        // Test with real test-data (which is tracked in git)
+        // Test with real test-data from VoxelTree training data
         assertTrue(TestWorldFixtures.isTestDataAvailable(),
-            "Should detect available world data when test-data exists");
+            "Test data should be available at " + TestWorldFixtures.TEST_DATA_PATH.toAbsolutePath());
     }
 
     @Test

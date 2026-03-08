@@ -42,6 +42,8 @@ public final class VoxyCompat {
     private static Method mipSectionMethod;         // WorldConversionFactory.mipSection(VoxelizedSection, Mapper)
     private static Method ofEngineMethod;           // WorldIdentifier.ofEngine(World)
     private static Method ofEngineNullableMethod;   // WorldIdentifier.ofEngineNullable(World)
+    private static Method acquireIfExistsMethod;    // WorldEngine.acquireIfExists(int, int, int, int)
+    private static Method worldSectionReleaseMethod; // WorldSection.release()
 
     private VoxyCompat() {}
 
@@ -79,6 +81,13 @@ public final class VoxyCompat {
                         net.minecraft.world.World.class);
                 ofEngineNullableMethod = worldIdClass.getMethod("ofEngineNullable",
                         net.minecraft.world.World.class);
+
+                // Section existence check — for overwrite protection
+                acquireIfExistsMethod = worldEngineClass.getMethod("acquireIfExists",
+                        int.class, int.class, int.class, int.class);
+                Class<?> worldSectionClass = Class.forName(
+                        "me.cortex.voxy.common.world.WorldSection");
+                worldSectionReleaseMethod = worldSectionClass.getMethod("release");
 
                 available = true;
                 LOGGER.info("Voxy detected — reflection bindings resolved");
@@ -131,6 +140,34 @@ public final class VoxyCompat {
             insertUpdateMethod.invoke(null, worldEngine, section);
         } catch (Exception e) {
             throw new RuntimeException("Failed to insert section into Voxy world", e);
+        }
+    }
+
+    /**
+     * Check whether Voxy already has data for a section at the given level-0
+     * coordinates.  Used to avoid overwriting real terrain with generated LODs.
+     *
+     * @param worldEngine the Voxy WorldEngine
+     * @param sectionX    section X (blockX / 16)
+     * @param sectionY    section Y (blockY / 16)
+     * @param sectionZ    section Z (blockZ / 16)
+     * @return true if Voxy already holds data for this section
+     */
+    public static boolean sectionExists(Object worldEngine,
+                                         int sectionX, int sectionY, int sectionZ) {
+        ensureAvailable();
+        try {
+            // acquireIfExists(lvl=0, x, y, z) returns null if no data
+            Object section = acquireIfExistsMethod.invoke(
+                    worldEngine, 0, sectionX, sectionY, sectionZ);
+            if (section != null) {
+                worldSectionReleaseMethod.invoke(section);  // release the ref
+                return true;
+            }
+            return false;
+        } catch (Exception e) {
+            LOGGER.warning("sectionExists check failed: " + e.getMessage());
+            return false;  // fail open — allow generation
         }
     }
 

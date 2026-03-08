@@ -207,16 +207,17 @@ public class OnnxTerrainGenerator implements TerrainGenerator {
         for (int x = 0; x < 16; x++) {
             for (int y = 0; y < 16; y++) {
                 for (int z = 0; z < 16; z++) {
+                    // Model axis convention: d0=Y, d1=Z, d2=X
                     // Air mask: positive logit → solid
-                    if (mask[0][0][x][y][z] <= 0f) {
+                    if (mask[0][0][y][z][x] <= 0f) {
                         out[x][y][z] = 0; // air
                         continue;
                     }
                     // Argmax over vocab dimension
                     int best = 0;
-                    float bestVal = logits[0][0][x][y][z];
+                    float bestVal = logits[0][0][y][z][x];
                     for (int b = 1; b < vocabSize; b++) {
-                        float v = logits[0][b][x][y][z];
+                        float v = logits[0][b][y][z][x];
                         if (v > bestVal) { bestVal = v; best = b; }
                     }
                     out[x][y][z] = best;

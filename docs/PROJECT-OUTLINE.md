@@ -1,4 +1,4 @@
-## 🔭 **LODiffusion — Minecraft Mod (Fabric 1.21.4)**
+## 🔭 **LODiffusion — Minecraft Mod (Fabric 1.21.11)**
 
 ### 🎯 **Mission**
 
@@ -129,33 +129,44 @@ Render plausible terrain for far chunks via a progressive LOD pipeline driven by
 
 | Module                    | Purpose                                                                 | Status                      |
 | ------------------------- | ----------------------------------------------------------------------- | --------------------------- |
-| `NoiseTap`                | Capture vanilla signals at source granularity (16×16, 4×4×4, etc.)      | 🆕 WIP                      |
-| `FeatureCache`            | Per-chunk cache (LRU + sidecar), immutable payloads                     | 🆕 WIP                      |
-| `TensorPacker`            | Convert `FeatureCache` to ONNX inputs (exact shapes), no resize         | 🆕 WIP                      |
-| `ModelOrchestrator`       | Load/run 5 models in sequence, manage `x_parent_prev`                   | 🆕 WIP                      |
-| `TerrainPipeline`         | LOD policy: when to run which model; final write to chunk + **carve()** | 🆕 WIP                      |
-| `DistantHorizonsCompat`   | DH LOD queries + safe guards                                            | ✅                           |
-| `DiffusionChunkGenerator` | Integration point (hooks and chunk writes)                              | ✅ (to be refit to pipeline) |
-| `Diagnostics`             | Timers, counters, overlays                                              | 🆕 Planned                  |
+| `NoiseTap` / `NoiseDumperCommand` | Capture vanilla signals: router6, heightmaps, biomes (`/dumpnoise`)  | ✅ Implemented              |
+| `AnchorSampler`           | Sample height planes + router6 for model input                          | ✅ Implemented              |
+| `LodGenerationService`    | 4-pass LOD generation (LOD4→LOD1), spiral ordering, parent cache        | ✅ Implemented              |
+| `VoxyBlockMapper`         | Map model vocab indices → Voxy block IDs via `model_config.json`        | ✅ Implemented              |
+| `VoxySectionWriter`       | Argmax → air mask → pack voxels → push to Voxy via reflection            | ✅ Implemented              |
+| `VoxyCompat`              | Pure-reflection bridge to Voxy API (no compile-time dependency)          | ✅ Implemented              |
+| `BlockVocabulary`         | Load block→ID mapping from `model_config.json`                          | ✅ Implemented              |
+| `DistantHorizonsCompat`   | DH LOD queries + safe guards                                            | ✅ Implemented              |
+| `LodiffusionCommand`      | In-game control: `/lodiffusion status\|toggle\|performance\|reload`       | ✅ Implemented              |
+| `Diagnostics`             | Per-section timers, performance counters, debug overlay                  | ✅ Basic                    |
 
 ---
 
 ## 🔗 **Interface with VoxelTree (Exact Contract)**
 
-**VoxelTree delivers (per model):**
+**VoxelTree delivers:**
 
-1. `model.onnx` (static shapes)
+1. `model.onnx` (static shapes, opset ≥ 17)
 2. `model_config.json`
 
-   * Input names & shapes (as listed above)
-   * Normalization (heights min-max, router/aquifer z-score, flags, coord scale)
-   * Block palette / `N_blocks`
+   * Input names & shapes (v2 anchor-conditioned contract):
+     - `x_parent` **[1,1,8,8,8]** float32 — binary occupancy (Mipper-derived)
+     - `x_height_planes` **[1,5,16,16]** float32 — surface, ocean_floor, slope_x, slope_z, curvature
+     - `x_router6` **[1,6,16,16]** float32 — temperature, vegetation, continents, erosion, depth, ridges
+     - `x_biome` **[1,16,16]** int64 — vanilla biome index per (x,z)
+     - `x_y_index` **[1]** int64 — vertical slab index
+     - `x_lod` **[1]** int64 — coarseness token
+   * Outputs: `block_logits` **[1,1102,16,16,16]**, `air_mask` **[1,1,16,16,16]**
+   * `block_mapping`: Voxy-native canonical vocabulary (1102 entries from `config/voxy_vocab.json`)
+   * `block_id_to_name`: reverse mapping for debugging
+   * Normalization specs per input
 3. `test_vectors.npz` (golden: inputs → outputs)
 
 **LODiffusion guarantees:**
 
-* Feed **exact cached inputs** (no upsampling) + stage-correct `x_parent_prev`
-* Apply the same normalization fields from `model_config.json`
+* `VoxyBlockMapper` reads `block_mapping` from `model_config.json` and maps model indices → Voxy block IDs at startup
+* `AnchorSampler` provides height planes + router6 matching the model contract
+* `VoxySectionWriter` pushes argmax results into Voxy via reflection (VoxyCompat)
 * Validate against `test_vectors.npz` during startup (smoke parity)
 * Respect static shapes (fail fast on mismatch)
 

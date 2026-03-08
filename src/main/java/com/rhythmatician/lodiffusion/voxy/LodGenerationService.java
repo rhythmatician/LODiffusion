@@ -14,8 +14,11 @@ import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import com.rhythmatician.lodiffusion.onnx.UnifiedModelRunner;
 import com.rhythmatician.lodiffusion.onnx.UnifiedModelRunner.InferenceResult;
 
+import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
+import net.minecraft.world.chunk.Chunk;
+import net.minecraft.world.chunk.ChunkStatus;
 
 /**
  * Background service that generates terrain around the player and pushes it
@@ -57,6 +60,13 @@ public final class LodGenerationService {
     private static final int Y_SECTIONS = 16;  // y sections -4..11 → blocks -64..191
     private static final int Y_BASE_SECTION = -4;  // start at y=-64
 
+    /**
+     * Extra margin (in sections) above and below the surface to generate.
+     * Ensures caves near the surface, tree canopies, and hilly terrain are
+     * captured.  Sections outside surface ± margin are skipped entirely.
+     */
+    private static final int SURFACE_MARGIN = 2;  // 2 sections = 32 blocks
+
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private final AtomicBoolean positionReady = new AtomicBoolean(false);
@@ -72,6 +82,18 @@ public final class LodGenerationService {
     /** Coarsened parent cache: posKey → float[8][8][8] from previous LOD pass. */
     private final Map<Long, float[][][]> parentCache = new HashMap<>();
 
+    /** Stats: how many sections used real vs synthetic conditioning data. */
+    private int realDataSections = 0;
+    private int syntheticDataSections = 0;
+    private int noiseAccessSections = 0;
+    private int skippedAirSections = 0;
+
+    /** Server-side noise access — null if unavailable (dedicated server). */
+    private volatile WorldNoiseAccess noiseAccess;
+
+    /** Server reference for noise access (integrated server in singleplayer). */
+    private volatile MinecraftServer server;
+
     // ------------------------------------------------------------------ //
     //  Lifecycle
     // ------------------------------------------------------------------ //
@@ -79,9 +101,11 @@ public final class LodGenerationService {
     /**
      * Start the LOD generation service for a given world.
      *
-     * @param world the Minecraft world (client-side)
+     * @param world  the Minecraft world (client-side)
+     * @param server the Minecraft server (integrated server for singleplayer;
+     *               null for dedicated-server clients)
      */
-    public void start(World world) {
+    public void start(World world, MinecraftServer server) {
         if (running.getAndSet(true)) {
             HelloTerrainMod.LOGGER.warn("[LodGen] Service already running");
             return;
@@ -91,6 +115,12 @@ public final class LodGenerationService {
         positionReady.set(false);
         generatedSections.clear();
         parentCache.clear();
+        realDataSections = 0;
+        syntheticDataSections = 0;
+        noiseAccessSections = 0;
+        skippedAirSections = 0;
+        noiseAccess = null;
+        this.server = server;
 
         workerThread = new Thread(() -> runWorker(world), "LODiffusion-Gen");
         workerThread.setDaemon(true);
@@ -168,6 +198,17 @@ public final class LodGenerationService {
             HelloTerrainMod.LOGGER.info("[LodGen] Ready — waiting for player position " +
                     "(vocab={}, biomeVoxyId={})", model.vocabulary().size(), blockMapper.defaultBiomeVoxyId());
 
+            // Try to bind to the integrated server's noise pipeline for real
+            // heightmap / biome / router data at any coordinate.
+            noiseAccess = WorldNoiseAccess.tryCreate(server, world);
+            if (noiseAccess != null) {
+                HelloTerrainMod.LOGGER.info("[LodGen] Using REAL noise access — " +
+                        "no synthetic fallback needed");
+            } else {
+                HelloTerrainMod.LOGGER.warn("[LodGen] Noise access unavailable — " +
+                        "will fall back to synthetic heightmap + biome for distant sections");
+            }
+
             // Wait for the client tick to supply the real player position
             waitForPlayerPosition();
             if (stopRequested.get()) return;
@@ -205,41 +246,77 @@ public final class LodGenerationService {
 
         HelloTerrainMod.LOGGER.info(
                 "[LodGen] Starting progressive generation — " +
-                "{} passes (LOD {}→{}) around ({}, {})",
+                "{} passes (LOD {}→{}) around ({}, {})  contract={}",
                 COARSEST_LOD - FINEST_LOD + 1,
-                COARSEST_LOD, FINEST_LOD, centerX, centerZ);
+                COARSEST_LOD, FINEST_LOD, centerX, centerZ,
+                model.isV2() ? "v2" : "v1");
 
         for (int lod = COARSEST_LOD; lod >= FINEST_LOD; lod--) {
             if (stopRequested.get()) return;
 
             int radius = PASS_RADIUS[lod];
-            List<int[]> columns = buildSpiralSections(centerX, centerZ, radius);
+
+            // For coarse passes (LOD 4, 3): generate distant sections first
+            // so the horizon fills in immediately.  Each pass covers a full
+            // disc — finer passes overwrite our coarser data progressively.
+            // Voxy-native data (from real chunk loading) is never overwritten.
+            boolean distantFirst = (lod >= 3);
+            List<int[]> columns = buildSpiralSections(
+                    centerX, centerZ, radius, distantFirst);
             int passCount = 0;
             diagnosticCount = 0;  // reset per pass
 
             HelloTerrainMod.LOGGER.info(
-                    "[LodGen] LOD {} pass — radius={}, ~{} columns × {} Y = ~{} sections",
-                    lod, radius, columns.size(), Y_SECTIONS,
+                    "[LodGen] LOD {} pass — radius={}, ~{} columns, " +
+                    "distant-first={}, × {} Y = ~{} sections",
+                    lod, radius, columns.size(),
+                    distantFirst, Y_SECTIONS,
                     columns.size() * Y_SECTIONS);
 
             for (int[] col : columns) {
                 if (stopRequested.get()) return;
                 int sx = col[0], sz = col[1];
 
-                for (int sy = Y_BASE_SECTION; sy < Y_BASE_SECTION + Y_SECTIONS; sy++) {
+                // ---- Sample conditioning data ONCE per column ----
+                ColumnContext ctx = buildColumnContext(world, sx, sz);
+
+                // ---- Compute Y range from surface heightmap ----
+                // Only generate sections that intersect the surface ± margin.
+                // Sections entirely above the surface would produce garbage
+                // (random blocks in the sky), and sections far underground
+                // are just solid stone — both are wasted inference time.
+                float minH = Float.MAX_VALUE, maxH = -Float.MAX_VALUE;
+                for (int lx = 0; lx < 16; lx++) {
+                    for (int lz = 0; lz < 16; lz++) {
+                        float h = ctx.rawHm[lx][lz];
+                        if (h < minH) minH = h;
+                        if (h > maxH) maxH = h;
+                    }
+                }
+
+                // Convert block Y to section Y, then add margin
+                int minSectionY = ((int) Math.floor(minH)) / 16 - SURFACE_MARGIN;
+                int maxSectionY = ((int) Math.ceil(maxH))  / 16 + SURFACE_MARGIN;
+
+                // Clamp to the valid Y range
+                minSectionY = Math.max(minSectionY, Y_BASE_SECTION);
+                maxSectionY = Math.min(maxSectionY, Y_BASE_SECTION + Y_SECTIONS - 1);
+
+                for (int sy = minSectionY; sy <= maxSectionY; sy++) {
                     long lodKey = sectionKey(sx, sy, sz, lod);
                     if (generatedSections.contains(lodKey)) continue;
 
                     try {
-                        inferAndPushSection(model, writer, blockMapper,
-                                sx, sy, sz, lod);
+                        inferAndPushSection(world, model, writer, blockMapper,
+                                ctx, sx, sy, sz, lod);
                         generatedSections.add(lodKey);
                         passCount++;
 
                         if (passCount % 200 == 0) {
                             HelloTerrainMod.LOGGER.info(
-                                    "[LodGen] LOD {} progress: {} sections",
-                                    lod, passCount);
+                                    "[LodGen] LOD {} progress: {} sections " +
+                                    "(skipped {} air)",
+                                    lod, passCount, skippedAirSections);
                         }
                     } catch (Exception e) {
                         HelloTerrainMod.LOGGER.warn(
@@ -250,11 +327,18 @@ public final class LodGenerationService {
                     try { Thread.sleep(5); }
                     catch (InterruptedException e) { return; }
                 }
+
+                // Count sections we skipped (above/below surface)
+                int fullRange = Y_SECTIONS;
+                int generatedRange = maxSectionY - minSectionY + 1;
+                skippedAirSections += (fullRange - generatedRange);
             }
 
             HelloTerrainMod.LOGGER.info(
-                    "[LodGen] LOD {} pass complete — {} sections",
-                    lod, passCount);
+                    "[LodGen] LOD {} pass complete — {} sections generated, {} skipped " +
+                    "(noise={}, real={}, synthetic={})",
+                    lod, passCount, skippedAirSections,
+                    noiseAccessSections, realDataSections, syntheticDataSections);
 
             // Free cached parents outside the next pass's radius
             if (lod > FINEST_LOD) {
@@ -270,6 +354,85 @@ public final class LodGenerationService {
     /** Counter for detailed diagnostics (reset per LOD pass). */
     private int diagnosticCount = 0;
 
+    // ------------------------------------------------------------------ //
+    //  Per-column conditioning context
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Pre-sampled conditioning data for a single 16×16 column (chunk).
+     * Sampled once per column and reused for all Y sections in that column.
+     */
+    private record ColumnContext(
+        float[][] rawHm,       // [16][16] surface heightmap in block Y
+        int[][]   biomeIdx,    // [16][16] biome indices
+        float[][] hp5,         // [5][256] height-planes (row-major)
+        float[][] r6           // [6][256] router6 values (row-major)
+    ) {}
+
+    /**
+     * Build the conditioning context for a column, using the best available
+     * data source.
+     *
+     * <p>Priority:
+     * <ol>
+     *   <li>{@link WorldNoiseAccess} — real heightmap + router6 + biome
+     *       at any coordinate (no chunk needed)</li>
+     *   <li>Loaded chunk — real heightmap + biome, approximate router6</li>
+     *   <li>Synthetic — sine-wave heightmap + constant biome (last resort)</li>
+     * </ol>
+     */
+    private ColumnContext buildColumnContext(World world, int sectionX, int sectionZ) {
+        float[][] rawHm;
+        int[][]   biomeIdx;
+        float[][] hp5;
+        float[][] r6;
+
+        if (noiseAccess != null) {
+            // *** PRIMARY PATH: Real noise data at any coordinate ***
+            AnchorSampler.AnchorInputs anchor =
+                    AnchorSampler.sampleFromNoise(noiseAccess, sectionX, sectionZ);
+            rawHm    = noiseAccess.sampleHeightmap(sectionX, sectionZ);
+            biomeIdx = anchor.biomeIdx();
+            hp5      = anchor.heightPlanes5();
+            r6       = anchor.router6();
+            noiseAccessSections++;
+            if (diagnosticCount < 3) {
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen] Using NOISE ACCESS data for column ({},{}) — " +
+                        "real heightmap + router6 + biome",
+                        sectionX, sectionZ);
+            }
+        } else {
+            Chunk chunk = tryGetLoadedChunk(world, sectionX, sectionZ);
+            if (chunk != null) {
+                rawHm    = AnchorSampler.sampleHeightmap(chunk);
+                biomeIdx = AnchorSampler.sampleBiomes(chunk);
+                realDataSections++;
+                if (diagnosticCount < 3) {
+                    HelloTerrainMod.LOGGER.info(
+                            "[LodGen] Using REAL chunk data for column ({},{})",
+                            sectionX, sectionZ);
+                }
+            } else {
+                // Last resort — synthetic (should rarely happen with noise access)
+                rawHm    = buildHeightmap(sectionX, sectionZ);
+                biomeIdx = new int[16][16];
+                for (int[] row : biomeIdx) java.util.Arrays.fill(row, 1);
+                syntheticDataSections++;
+                if (diagnosticCount < 3) {
+                    HelloTerrainMod.LOGGER.info(
+                            "[LodGen] Using SYNTHETIC data for column ({},{}) — " +
+                            "chunk not loaded, no noise access",
+                            sectionX, sectionZ);
+                }
+            }
+            hp5 = AnchorSampler.computeHeightPlanes(rawHm);
+            r6  = AnchorSampler.approximateRouter6(biomeIdx, rawHm);
+        }
+
+        return new ColumnContext(rawHm, biomeIdx, hp5, r6);
+    }
+
     /**
      * Run a single inference pass for one section at a given LOD,
      * then push the result to Voxy immediately.
@@ -277,10 +440,14 @@ public final class LodGenerationService {
      * <p>For the coarsest LOD (4), uses a heightmap-based initial parent.
      * For finer LODs, uses the cached coarsened output from the previous
      * LOD pass as the parent.
+     *
+     * @param ctx pre-sampled column conditioning (heightmap, biome, router6)
      */
-    private void inferAndPushSection(UnifiedModelRunner model,
+    private void inferAndPushSection(World world,
+                                      UnifiedModelRunner model,
                                       VoxySectionWriter writer,
                                       VoxyBlockMapper blockMapper,
+                                      ColumnContext ctx,
                                       int sectionX, int sectionY,
                                       int sectionZ, int lod)
             throws Exception {
@@ -288,10 +455,11 @@ public final class LodGenerationService {
         int yIndex = Math.max(0, Math.min(23, sectionY - Y_BASE_SECTION));
         long posKey = sectionPosKey(sectionX, sectionY, sectionZ);
 
-        // ---- conditioning inputs ----
-        float[][] rawHm    = buildHeightmap(sectionX, sectionZ);
-        int[][]   biomeIdx = new int[16][16];
-        for (int[] row : biomeIdx) java.util.Arrays.fill(row, 1);
+        // Conditioning already sampled per-column in ColumnContext
+        float[][] rawHm    = ctx.rawHm();
+        int[][]   biomeIdx = ctx.biomeIdx();
+        float[][] hp5      = ctx.hp5();
+        float[][] r6       = ctx.r6();
 
         // Parent: cached from previous LOD pass, or heightmap-based seed
         float[][][] parent = (lod == COARSEST_LOD)
@@ -302,15 +470,17 @@ public final class LodGenerationService {
         // ---- infer ----
         InferenceResult result;
         if (model.isV2()) {
-            float[][] hp5 = AnchorSampler.computeHeightPlanes(rawHm);
-            float[][] r6  = AnchorSampler.approximateRouter6(biomeIdx, rawHm);
+            // hp5 and r6 already computed above (from noise access or chunk+approximation)
             result = model.generateV2(
                     parent, hp5, r6, biomeIdx, yIndex, lod);
         } else {
             float[][] normHm     = minMaxNormalize(rawHm);
-            float[][][] biomeHot = buildDummyBiomeOneHot(
+            // For V1, build biome one-hot from available data
+            float[][][] biomeHot = buildBiomeOneHot(biomeIdx,
                     model.config().effectiveBiomeVocabSize());
-            result = model.generate(parent, biomeHot, normHm, lod);
+            // Transpose heightmap from [X][Z] to [Z][X] to match training convention
+            float[][] normHmT = transposeSpatial(normHm);
+            result = model.generate(parent, biomeHot, normHmT, lod);
         }
 
         // Cache coarsened output for the next (finer) LOD pass
@@ -320,11 +490,29 @@ public final class LodGenerationService {
             parentCache.remove(posKey);  // free memory
         }
 
-        // Diagnostics (first few sections of each LOD pass)
-        if (diagnosticCount < 5) {
+        // Diagnostics: sample different Y levels to compare underground vs sky
+        boolean shouldDiag = false;
+        if (diagnosticCount < 3) {
+            // Always log first 3 sections (from first column)
+            shouldDiag = true;
+        } else if (diagnosticCount < 10) {
+            // After first 3, only log extreme Y levels to see above-ground behavior
+            // Log Y near surface (sectionY 3-4) and well above (sectionY 8+)
+            shouldDiag = (sectionY == 4 || sectionY == 8 || sectionY == 11);
+        }
+
+        if (shouldDiag) {
+            // Count solid cells in parent tensor
+            int parentSolid = 0;
+            for (int i = 0; i < 8; i++)
+                for (int j = 0; j < 8; j++)
+                    for (int k = 0; k < 8; k++)
+                        if (parent[i][j][k] > 0.5f) parentSolid++;
+
             logDiagnostics(result, model, blockMapper,
                     sectionX, sectionY, sectionZ,
-                    result.elapsedMs(), lod);
+                    result.elapsedMs(), lod,
+                    yIndex, parentSolid);
             diagnosticCount++;
         }
 
@@ -378,14 +566,16 @@ public final class LodGenerationService {
      * instead of an empty (all-air) grid.
      */
     private float[][][] buildInitialParent(int sectionY, float[][] heightmap) {
+        // Parent layout: [d0=Y][d1=Z][d2=X] matching model axis convention.
+        // heightmap is [X][Z] (Minecraft convention).
         float[][][] parent = new float[8][8][8];
         float baseY = sectionY * 16f;
-        for (int px = 0; px < 8; px++) {
-            for (int pz = 0; pz < 8; pz++) {
-                float h = heightmap[px * 2][pz * 2];
-                for (int py = 0; py < 8; py++) {
-                    float cellY = baseY + py * 2f + 1f;
-                    parent[px][py][pz] = cellY < h ? 1.0f : 0.0f;
+        for (int mcX = 0; mcX < 8; mcX++) {
+            for (int mcZ = 0; mcZ < 8; mcZ++) {
+                float h = heightmap[mcX * 2][mcZ * 2];
+                for (int mcY = 0; mcY < 8; mcY++) {
+                    float cellY = baseY + mcY * 2f + 1f;
+                    parent[mcY][mcZ][mcX] = cellY < h ? 1.0f : 0.0f;
                 }
             }
         }
@@ -422,7 +612,8 @@ public final class LodGenerationService {
                                  UnifiedModelRunner model,
                                  VoxyBlockMapper blockMapper,
                                  int sectionX, int sectionY, int sectionZ,
-                                 long elapsedMs, int lod) {
+                                 long elapsedMs, int lod,
+                                 int yIndex, int parentSolid) {
         float[][][][][] mask   = result.airMask();
         float[][][][][] logits = result.blockLogits();
         int vocabSize = model.config().effectiveBlockVocabSize();
@@ -464,11 +655,13 @@ public final class LodGenerationService {
 
         HelloTerrainMod.LOGGER.info(
                 "[LodGen] DIAG LOD {} ({},{},{}): " +
+                "yIdx={} parent={}/512 solid | " +
                 "air_mask solid={}/4096 range=[{},{}] | " +
                 "logit range=[{},{}] | " +
                 "center: idx={} '{}' voxyId={} | " +
                 "{}ms",
                 lod, sectionX, sectionY, sectionZ,
+                yIndex, parentSolid,
                 maskPositive, maskMin, maskMax,
                 logitMin, logitMax,
                 centerBest, blockName, voxyId,
@@ -535,17 +728,34 @@ public final class LodGenerationService {
         return norm;
     }
 
-
+    /**
+     * Transpose a 16×16 spatial array from [X][Z] (Minecraft) to [Z][X]
+     * (training convention).  The ONNX model was trained with heightmaps
+     * and biome grids in (Z, X) order, but Minecraft-side data uses (X, Z).
+     */
+    private static float[][] transposeSpatial(float[][] a) {
+        int rows = a.length;
+        int cols = a[0].length;
+        float[][] t = new float[cols][rows];
+        for (int i = 0; i < rows; i++)
+            for (int j = 0; j < cols; j++)
+                t[j][i] = a[i][j];
+        return t;
+    }
 
     /**
-     * Build dummy biome one-hot: plains (biome index 1).
+     * Build biome one-hot from real biome indices.
+     * Each column gets a 1.0 at its biome index in the vocabulary dimension.
      */
-    private float[][][] buildDummyBiomeOneHot(int biomeVocabSize) {
+    private float[][][] buildBiomeOneHot(int[][] biomeIdx, int biomeVocabSize) {
+        // biomeIdx is [X][Z] (MC convention).
+        // Model expects [V][Z][X] (training convention).
         float[][][] oneHot = new float[biomeVocabSize][16][16];
-        int plainsIdx = Math.min(1, biomeVocabSize - 1);
         for (int x = 0; x < 16; x++)
-            for (int z = 0; z < 16; z++)
-                oneHot[plainsIdx][x][z] = 1.0f;
+            for (int z = 0; z < 16; z++) {
+                int b = biomeIdx[x][z] % biomeVocabSize;
+                oneHot[b][z][x] = 1.0f;
+            }
         return oneHot;
     }
 
@@ -554,25 +764,53 @@ public final class LodGenerationService {
     // ------------------------------------------------------------------ //
 
     /**
-     * Build a list of (x, z) section coordinates in a spiral pattern
-     * from the center outward, limited to the given radius.
+     * Build a list of (x, z) section coordinates ordered by distance
+     * from the center, limited to the given radius.
+     *
+     * <p>Every pass covers a <em>full disc</em> — finer LOD passes
+     * naturally overwrite our earlier coarser data.  Voxy-native sections
+     * (from real chunk loading) are protected in {@link VoxySectionWriter}.
+     *
+     * @param distantFirst if true, sort furthest-from-center first so
+     *                     distant horizon terrain appears immediately.
      */
-    private List<int[]> buildSpiralSections(int centerX, int centerZ, int radius) {
+    private List<int[]> buildSpiralSections(int centerX, int centerZ,
+                                             int radius, boolean distantFirst) {
         List<int[]> sections = new ArrayList<>();
         for (int dx = -radius; dx <= radius; dx++) {
             for (int dz = -radius; dz <= radius; dz++) {
                 sections.add(new int[]{centerX + dx, centerZ + dz});
             }
         }
-        // Sort by distance from center (Manhattan distance for simplicity)
-        sections.sort(Comparator.comparingInt(s ->
-                Math.abs(s[0] - centerX) + Math.abs(s[1] - centerZ)));
+        // Sort by Manhattan distance — ascending (center-first) or
+        // descending (horizon-first) depending on the pass.
+        Comparator<int[]> cmp = Comparator.comparingInt(s ->
+                Math.abs(s[0] - centerX) + Math.abs(s[1] - centerZ));
+        sections.sort(distantFirst ? cmp.reversed() : cmp);
         return sections;
     }
 
     // ------------------------------------------------------------------ //
     //  Helpers
     // ------------------------------------------------------------------ //
+
+    /**
+     * Try to get a loaded chunk from the world without blocking or
+     * triggering generation.  Returns null if the chunk is not currently
+     * loaded in the client (or server) chunk manager.
+     *
+     * <p>This is called from the worker thread; access is read-only so
+     * it is safe on both client and server chunk managers.
+     */
+    private Chunk tryGetLoadedChunk(World world, int chunkX, int chunkZ) {
+        try {
+            return world.getChunkManager().getChunk(
+                    chunkX, chunkZ, ChunkStatus.FULL, false);
+        } catch (Exception e) {
+            // Chunk manager threw — treat as not loaded
+            return null;
+        }
+    }
 
     private long sectionKey(int x, int y, int z, int lod) {
         return ((long) lod << 48) | ((long) (x & 0xFFFF) << 32)
