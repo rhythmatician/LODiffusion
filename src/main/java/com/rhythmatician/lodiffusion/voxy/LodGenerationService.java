@@ -419,7 +419,8 @@ public final class LodGenerationService {
                 realDataSections++;
                 if (diagnosticCount < 3) {
                     HelloTerrainMod.LOGGER.info(
-                            "[LodGen] Using REAL chunk data for column ({},{})",
+                            "[LodGen] Using REAL chunk data for column ({},{})"
+                            + " — WARNING: router6 is APPROXIMATE (no noise access)",
                             sectionX, sectionZ);
                 }
             } else {
@@ -431,12 +432,15 @@ public final class LodGenerationService {
                 if (diagnosticCount < 3) {
                     HelloTerrainMod.LOGGER.info(
                             "[LodGen] Using SYNTHETIC data for column ({},{}) — " +
-                            "chunk not loaded, no noise access",
+                            "chunk not loaded, no noise access.  " +
+                            "Router6 is APPROXIMATE — quality WILL be degraded.",
                             sectionX, sectionZ);
                 }
             }
             hp5 = AnchorSampler.computeHeightPlanes(rawHm);
-            r6  = AnchorSampler.approximateRouter6(biomeIdx, rawHm);
+            @SuppressWarnings("deprecation")
+            float[][] approxR6 = AnchorSampler.approximateRouter6(biomeIdx, rawHm);
+            r6 = approxR6;
         }
 
         return new ColumnContext(rawHm, biomeIdx, hp5, r6);

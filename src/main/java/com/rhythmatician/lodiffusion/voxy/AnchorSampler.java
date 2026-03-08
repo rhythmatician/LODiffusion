@@ -63,12 +63,19 @@ public final class AnchorSampler {
     /**
      * Sample v2 anchor inputs for the 16×16 section at the given chunk coordinates.
      *
+     * <p><strong>DEPRECATED:</strong> This method uses {@link #approximateRouter6}
+     * which produces a distribution mismatch vs real noise-router values.
+     * Prefer {@link #sampleFromNoise} which uses real DensityFunction data.
+     *
      * @param chunk       the Minecraft chunk (or null if not loaded — falls back to zeros)
-     * @param noiseConfig server-side noise config for real router lookup; may be null
-     * @return an {@link AnchorInputs} record ready to pass to
-     *         {@link com.rhythmatician.lodiffusion.onnx.UnifiedModelRunner#generateV2}
+     * @param noiseConfig server-side noise config (currently unused — for future real-noise path)
+     * @return an {@link AnchorInputs} record with APPROXIMATE router6 data
+     * @deprecated Use {@link #sampleFromNoise(WorldNoiseAccess, int, int)} instead
      */
+    @Deprecated
     public static AnchorInputs sample(Chunk chunk, NoiseConfig noiseConfig) {
+        LOGGER.warning("AnchorSampler.sample() uses approximateRouter6 — "
+                + "quality will be degraded.  Use sampleFromNoise() for real data.");
         int[][] biomeIdx  = sampleBiomes(chunk);
         float[][] hmap    = sampleHeightmap(chunk);
         float[][] heightPlanes = computeHeightPlanes(hmap);
@@ -236,11 +243,15 @@ public final class AnchorSampler {
      * Approximate the 6-channel CORE router values from biome indices and
      * the surface heightmap.
      *
-     * <p>This mirrors the Python {@code approximate_router6_from_biome()}
-     * fallback used when real NoiseTap data is unavailable.
+     * <p><strong>DEPRECATED:</strong> This produces a fundamentally different
+     * distribution than real noise-router values and should not be used for
+     * training or high-quality inference.  Use {@link WorldNoiseAccess#sampleRouter6}
+     * instead.
      *
      * @return float[6][256] in row-major order (channel, lx*16+lz)
+     * @deprecated Distribution mismatch with real DensityFunction values
      */
+    @Deprecated
     static float[][] approximateRouter6(int[][] biomeIdx, float[][] hm) {
         float[][] r6 = new float[6][256];
 
