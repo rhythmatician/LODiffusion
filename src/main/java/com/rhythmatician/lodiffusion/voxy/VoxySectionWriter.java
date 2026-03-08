@@ -208,6 +208,24 @@ public final class VoxySectionWriter {
         writeSection(result, vocabSize, sectionX, sectionY, sectionZ, biomeVoxyId);
     }
 
+    /**
+     * Clear ownership claims for an entire column of sections.
+     *
+     * <p>Called when real vanilla chunks have been loaded at this position.
+     * This ensures that even if the chunk later unloads, we won't overwrite
+     * Voxy's native data on a subsequent LOD pass.
+     *
+     * @param sectionX chunk-section X
+     * @param sectionZ chunk-section Z
+     * @param baseY    lowest section Y (e.g., -4)
+     * @param numY     number of Y sections (e.g., 16)
+     */
+    public void forgetColumn(int sectionX, int sectionZ, int baseY, int numY) {
+        for (int sy = baseY; sy < baseY + numY; sy++) {
+            writtenSections.remove(sectionPosKey(sectionX, sy, sectionZ));
+        }
+    }
+
     /** Compact key for a section position (no LOD component). */
     private static long sectionPosKey(int x, int y, int z) {
         return ((long) (x & 0xFFFF) << 32)

@@ -256,11 +256,11 @@ public final class LodGenerationService {
 
             int radius = PASS_RADIUS[lod];
 
-            // For coarse passes (LOD 4, 3): generate distant sections first
-            // so the horizon fills in immediately.  Each pass covers a full
-            // disc — finer passes overwrite our coarser data progressively.
-            // Voxy-native data (from real chunk loading) is never overwritten.
-            boolean distantFirst = (lod >= 3);
+            // Always generate center-first: the player sees terrain near
+            // them first and it gets progressively refined.  Finer LOD passes
+            // overwrite our coarser data.  Voxy-native data (from real chunk
+            // loading) is never overwritten.
+            boolean distantFirst = false;
             List<int[]> columns = buildSpiralSections(
                     centerX, centerZ, radius, distantFirst);
             int passCount = 0;
@@ -276,6 +276,15 @@ public final class LodGenerationService {
             for (int[] col : columns) {
                 if (stopRequested.get()) return;
                 int sx = col[0], sz = col[1];
+
+                // ---- Skip columns where vanilla has loaded real chunks ----
+                // Real chunk data is always better than our model output.
+                // Also clear our ownership claims so that if the chunk later
+                // unloads, VoxySectionWriter won't overwrite the native data.
+                if (tryGetLoadedChunk(world, sx, sz) != null) {
+                    writer.forgetColumn(sx, sz, Y_BASE_SECTION, Y_SECTIONS);
+                    continue;
+                }
 
                 // ---- Sample conditioning data ONCE per column ----
                 ColumnContext ctx = buildColumnContext(world, sx, sz);
