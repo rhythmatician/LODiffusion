@@ -11,12 +11,10 @@ import net.minecraft.world.World;
 import net.minecraft.world.biome.Biome;
 import net.minecraft.world.biome.source.BiomeSource;
 import net.minecraft.world.gen.chunk.ChunkGenerator;
-import net.minecraft.world.gen.chunk.NoiseChunkGenerator;
 import net.minecraft.world.gen.densityfunction.DensityFunction;
 import net.minecraft.world.gen.noise.NoiseConfig;
 import net.minecraft.world.gen.noise.NoiseRouter;
 
-import java.lang.reflect.Field;
 
 /**
  * Provides server-side access to Minecraft's noise generators for sampling
@@ -98,9 +96,28 @@ public final class WorldNoiseAccess {
                 return null;
             }
 
+            return tryCreate(serverWorld);
+
+        } catch (Exception e) {
+            HelloTerrainMod.LOGGER.warn(
+                    "[WorldNoiseAccess] Failed to initialize: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Try to create a {@code WorldNoiseAccess} directly from a {@link ServerWorld}.
+     *
+     * <p>This overload is useful from server-side code (e.g., commands) that
+     * already has a {@code ServerWorld} reference.
+     *
+     * @param serverWorld the server-side world
+     * @return a new instance, or {@code null} if {@code NoiseConfig} is unavailable
+     */
+    public static WorldNoiseAccess tryCreate(ServerWorld serverWorld) {
+        try {
             ChunkGenerator gen = serverWorld.getChunkManager().getChunkGenerator();
 
-            // Try to get NoiseConfig — reflection-based since there's no public getter
             NoiseConfig nc = tryGetNoiseConfig(serverWorld);
             if (nc == null) {
                 HelloTerrainMod.LOGGER.warn(
@@ -135,6 +152,22 @@ public final class WorldNoiseAccess {
      * @return float[16][16] of surface Y values in block coordinates
      */
     public float[][] sampleHeightmap(int sectionX, int sectionZ) {
+        return sampleHeightmap(sectionX, sectionZ, Heightmap.Type.WORLD_SURFACE_WG);
+    }
+
+    /**
+     * Sample a heightmap of the given type for a 16×16 section column.
+     *
+     * <p>Uses {@link ChunkGenerator#getHeight(int, int, Heightmap.Type,
+     * net.minecraft.world.HeightLimitView, NoiseConfig)} — pure computation,
+     * no loaded chunk needed.
+     *
+     * @param sectionX section X coordinate (chunk X)
+     * @param sectionZ section Z coordinate (chunk Z)
+     * @param type     the heightmap type (e.g. WORLD_SURFACE_WG, OCEAN_FLOOR_WG)
+     * @return float[16][16] of Y values in block coordinates
+     */
+    public float[][] sampleHeightmap(int sectionX, int sectionZ, Heightmap.Type type) {
         float[][] hm = new float[16][16];
         int baseX = sectionX * 16;
         int baseZ = sectionZ * 16;
@@ -143,8 +176,7 @@ public final class WorldNoiseAccess {
             for (int lz = 0; lz < 16; lz++) {
                 hm[lx][lz] = generator.getHeight(
                         baseX + lx, baseZ + lz,
-                        Heightmap.Type.WORLD_SURFACE_WG,
-                        serverWorld, noiseConfig);
+                        type, serverWorld, noiseConfig);
             }
         }
         return hm;
@@ -253,42 +285,24 @@ public final class WorldNoiseAccess {
     // ------------------------------------------------------------------
 
     /**
-     * Try to extract a {@link NoiseConfig} from the world's chunk generator
-     * via reflection.
+     * Get the {@link NoiseConfig} from the world's chunk manager.
      *
-     * <p>Mirrors {@code NoiseDumperCommand.tryGetNoiseConfig()}.
+     * <p>In MC 1.21+ (Yarn), {@code ServerChunkManager.getNoiseConfig()} is a
+     * public accessor — no reflection needed. The {@code NoiseConfig} is stored
+     * on {@code ServerChunkLoadingManager} and created during world loading for
+     * every {@code ChunkGenerator} type (with a fallback for non-noise generators).
+     *
+     * <p>This is the authoritative implementation — used by both
+     * {@code WorldNoiseAccess} and {@code NoiseDumperCommand}.
      */
     private static NoiseConfig tryGetNoiseConfig(ServerWorld world) {
         try {
-            ChunkGenerator gen = world.getChunkManager().getChunkGenerator();
-            if (!(gen instanceof NoiseChunkGenerator)) {
-                HelloTerrainMod.LOGGER.info(
-                        "[WorldNoiseAccess] ChunkGenerator is not NoiseChunkGenerator (type: {})",
-                        gen.getClass().getSimpleName());
-                return null;
-            }
-
-            // Walk all declared fields looking for a cached NoiseConfig instance
-            for (Class<?> cls = gen.getClass();
-                 cls != null && cls != Object.class;
-                 cls = cls.getSuperclass()) {
-                for (Field f : cls.getDeclaredFields()) {
-                    if (NoiseConfig.class.isAssignableFrom(f.getType())) {
-                        f.setAccessible(true);
-                        NoiseConfig nc = (NoiseConfig) f.get(gen);
-                        if (nc != null) return nc;
-                    }
-                }
-            }
-
-            HelloTerrainMod.LOGGER.warn(
-                    "[WorldNoiseAccess] No NoiseConfig field found on {}",
-                    gen.getClass().getName());
+            return world.getChunkManager().getNoiseConfig();
         } catch (Exception e) {
             HelloTerrainMod.LOGGER.warn(
-                    "[WorldNoiseAccess] Reflection failed: {}", e.getMessage());
+                    "[WorldNoiseAccess] Failed to get NoiseConfig: {}", e.getMessage());
+            return null;
         }
-        return null;
     }
 
     /** Expose for diagnostics. */
