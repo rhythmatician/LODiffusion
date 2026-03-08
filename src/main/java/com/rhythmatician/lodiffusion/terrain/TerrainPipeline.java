@@ -17,7 +17,8 @@ import net.minecraft.world.chunk.Chunk;
 import net.minecraft.world.gen.noise.NoiseConfig;
 
 /**
- * High-level terrain pipeline: capture → cache → infer (to target LOD) → write → carve at LOD0.
+ * High-level terrain pipeline: capture → cache → infer (to target LOD 1-4) → write.
+ * LOD0 is left to vanilla Minecraft.
  */
 public final class TerrainPipeline implements AutoCloseable {
     // Logger can be added when wiring chunk write paths
@@ -41,12 +42,11 @@ public final class TerrainPipeline implements AutoCloseable {
                                                 Path initModel, Path initCfg,
                                                 Path m12Model, Path m12Cfg,
                                                 Path m24Model, Path m24Cfg,
-                                                Path m48Model, Path m48Cfg,
-                                                Path m816Model, Path m816Cfg)
+                                                Path m48Model, Path m48Cfg)
             throws IOException, ai.djl.translate.TranslateException {
         FeatureCache fc = new FeatureCache();
         ModelOrchestrator mo = ModelOrchestrator.loadAll(manager, initModel, initCfg, m12Model, m12Cfg,
-                m24Model, m24Cfg, m48Model, m48Cfg, m816Model, m816Cfg);
+                m24Model, m24Cfg, m48Model, m48Cfg);
         return new TerrainPipeline(fc, mo, CarveAdapter.NOOP, manager);
     }
 

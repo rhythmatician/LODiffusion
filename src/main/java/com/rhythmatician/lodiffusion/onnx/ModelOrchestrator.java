@@ -10,7 +10,8 @@ import ai.djl.ndarray.NDManager;
 import ai.djl.translate.TranslateException;
 
 /**
- * Loads and runs the five models in sequence, returning the final NDArray voxels.
+ * Loads and runs the four progressive LOD models in sequence (LOD4 → LOD1).
+ * LOD0 is left to vanilla Minecraft.
  */
 public final class ModelOrchestrator implements AutoCloseable {
 
@@ -28,8 +29,7 @@ public final class ModelOrchestrator implements AutoCloseable {
                                             Path initModel, Path initConfig,
                                             Path m12Model, Path m12Config,
                                             Path m24Model, Path m24Config,
-                                            Path m48Model, Path m48Config,
-                                            Path m816Model, Path m816Config)
+                                            Path m48Model, Path m48Config)
             throws IOException, TranslateException {
 
         ProgressiveLODPipeline.Builder b = new ProgressiveLODPipeline.Builder(manager);
@@ -37,7 +37,6 @@ public final class ModelOrchestrator implements AutoCloseable {
         b.setModel(ProgressiveLODPipeline.STAGE_LOD4_TO_LOD3, m12Model, ConfigLoader.load(m12Config), "LOD4->LOD3");
         b.setModel(ProgressiveLODPipeline.STAGE_LOD3_TO_LOD2, m24Model, ConfigLoader.load(m24Config), "LOD3->LOD2");
         b.setModel(ProgressiveLODPipeline.STAGE_LOD2_TO_LOD1, m48Model, ConfigLoader.load(m48Config), "LOD2->LOD1");
-        b.setModel(ProgressiveLODPipeline.STAGE_LOD1_TO_LOD0, m816Model, ConfigLoader.load(m816Config), "LOD1->LOD0");
 
         return new ModelOrchestrator(manager, b.build());
     }

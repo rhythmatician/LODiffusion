@@ -1,8 +1,5 @@
 package com.rhythmatician.lodiffusion.voxy;
 
-import java.util.HashSet;
-import java.util.Set;
-
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -31,13 +28,6 @@ public final class VoxySectionWriter {
 
     /** Counter for diagnostic logging — log detail for first N sections. */
     private int sectionsWritten = 0;
-
-    /**
-     * Tracks section positions we have written this session.
-     * Used to distinguish our LODiffusion data (safe to overwrite during
-     * progressive refinement) from Voxy-native data (must not overwrite).
-     */
-    private final Set<Long> writtenSections = new HashSet<>();
 
     private final Object worldEngine;
     private final Object voxyMapper;
@@ -72,15 +62,13 @@ public final class VoxySectionWriter {
                              int sectionX, int sectionY, int sectionZ,
                              int biomeVoxyId) {
 
-        // ---- Overwrite protection ----
-        // Only protect Voxy-native data (from real chunk loading).
-        // Our own LODiffusion writes are safe to overwrite — that's how
-        // progressive refinement works (LOD 4 → 3 → 2 → 1).
-        long posKey = sectionPosKey(sectionX, sectionY, sectionZ);
-        if (VoxyCompat.sectionExists(worldEngine, sectionX, sectionY, sectionZ)
-                && !writtenSections.contains(posKey)) {
+        // ---- Insert-only guard ----
+        // Never overwrite any existing section data.  Each progressive LOD
+        // step writes to distinct section coordinates (different resolution
+        // grids), so there is no need for self-overwrite tracking.
+        if (VoxyCompat.sectionExists(worldEngine, sectionX, sectionY, sectionZ)) {
             if (sectionsWritten < 10) {
-                LOGGER.info("[VoxySectionWriter] Skipping ({},{},{}) — Voxy has native data",
+                LOGGER.info("[VoxySectionWriter] Skipping ({},{},{}) — section already exists",
                         sectionX, sectionY, sectionZ);
             }
             sectionsWritten++;
@@ -179,9 +167,6 @@ public final class VoxySectionWriter {
         LOGGER.debug("[VoxySectionWriter] Inserting section ({},{},{}) into Voxy world", sectionX, sectionY, sectionZ);
         VoxyCompat.insertUpdate(worldEngine, section);
 
-        // Track that we wrote this section (for progressive overwrite)
-        writtenSections.add(posKey);
-
         if (detailed || sectionsWritten % 100 == 0) {
             LOGGER.info("[VoxySectionWriter] Wrote section ({},{},{}) — {} solid voxels [total written: {}]",
                     sectionX, sectionY, sectionZ, nonAirCount, sectionsWritten + 1);
@@ -212,11 +197,11 @@ public final class VoxySectionWriter {
     }
 
     /**
-     * Clear ownership claims for an entire column of sections.
+     * Clear is a no-op with insert-only semantics.
      *
-     * <p>Called when real vanilla chunks have been loaded at this position.
-     * This ensures that even if the chunk later unloads, we won't overwrite
-     * Voxy's native data on a subsequent LOD pass.
+     * <p>Retained for API compatibility.  With the insert-only guard,
+     * LODiffusion never overwrites any existing section, so there is
+     * nothing to "forget".
      *
      * @param sectionX chunk-section X
      * @param sectionZ chunk-section Z
@@ -224,15 +209,6 @@ public final class VoxySectionWriter {
      * @param numY     number of Y sections (e.g., 16)
      */
     public void forgetColumn(int sectionX, int sectionZ, int baseY, int numY) {
-        for (int sy = baseY; sy < baseY + numY; sy++) {
-            writtenSections.remove(sectionPosKey(sectionX, sy, sectionZ));
-        }
-    }
-
-    /** Compact key for a section position (no LOD component). */
-    private static long sectionPosKey(int x, int y, int z) {
-        return ((long) (x & 0xFFFF) << 32)
-             | ((long) (y & 0xFFFF) << 16)
-             | (z & 0xFFFFL);
+        // no-op: insert-only guard handles all protection
     }
 }

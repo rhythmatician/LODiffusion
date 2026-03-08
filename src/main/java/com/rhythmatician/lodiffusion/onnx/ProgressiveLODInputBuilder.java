@@ -15,12 +15,13 @@ import net.minecraft.world.Heightmap;
  * Handles the conversion from native API shapes to model-specific input tensors
  * with proper normalization according to the model configuration.
  * 
- * Supports all five models in the progressive pipeline:
+ * Supports all four models in the progressive pipeline:
  * 0. Init (Bootstrap): Noise → LOD4 (1×1×1)
  * 1. LOD4 → LOD3: 1×1×1 → 2×2×2
  * 2. LOD3 → LOD2: 2×2×2 → 4×4×4
  * 3. LOD2 → LOD1: 4×4×4 → 8×8×8
- * 4. LOD1 → LOD0: 8×8×8 → 16×16×16
+ *
+ * LOD0 is NOT generated — vanilla Minecraft handles full resolution.
  */
 public class ProgressiveLODInputBuilder {
     
@@ -38,7 +39,7 @@ public class ProgressiveLODInputBuilder {
      *
      * @param cache NoiseTap cache with raw data at native API resolutions
      * @param parentPrev Previous LOD level output (air_mask), or zeros for first model
-     * @param lodLevel LOD level (0=init, 1=lod4→lod3, 2=lod3→lod2, 3=lod2→lod1, 4=lod1→lod0)
+     * @param lodLevel LOD level (0=init, 1=lod4→lod3, 2=lod3→lod2, 3=lod2→lod1)
      * @return Map of tensor names to NDArrays ready for model inference
      */
     public Map<String, NDArray> buildInputs(
@@ -91,8 +92,7 @@ public class ProgressiveLODInputBuilder {
             case 1 -> 1;  // LOD4→LOD3: takes 1³ from Init
             case 2 -> 2;  // LOD3→LOD2: takes 2³ from LOD4→LOD3
             case 3 -> 4;  // LOD2→LOD1: takes 4³ from LOD3→LOD2
-            case 4 -> 8;  // LOD1→LOD0: takes 8³ from LOD2→LOD1
-            default -> throw new IllegalArgumentException("Invalid LOD level: " + lodLevel);
+            default -> throw new IllegalArgumentException("Invalid LOD level (0-3): " + lodLevel);
         };
 
         return manager.zeros(new Shape(1, 1, inputRes, inputRes, inputRes));
