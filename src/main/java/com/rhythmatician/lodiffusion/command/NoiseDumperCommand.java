@@ -34,9 +34,8 @@ import net.minecraft.world.Heightmap;
  * <ul>
  *   <li>{@code heightmap_surface} — 16×16 WORLD_SURFACE_WG heights (x-major)</li>
  *   <li>{@code heightmap_ocean_floor} — 16×16 OCEAN_FLOOR_WG heights (x-major)</li>
- *   <li>{@code router6} — 6 density-router channels × 256 surface samples
- *       (temperature, vegetation, continents, erosion, depth, ridges)</li>
- *   <li>{@code biomes} — 16×16 biome indices at block resolution (x-major)</li>
+ *   <li>{@code biome_names} — 16×16 biome registry key names at block resolution
+ *       (e.g. "minecraft:plains"), x-major</li>
  *   <li>{@code seed}, {@code chunk_x}, {@code chunk_z}</li>
  * </ul>
  *
@@ -167,7 +166,7 @@ public final class NoiseDumperCommand {
      * <p>All data is computed via {@link WorldNoiseAccess} — no loaded chunk
      * or world state is required.
      *
-     * @param noise  the noise access (provides heightmaps, router6, biomes)
+     * @param noise  the noise access (provides heightmaps, biomes)
      * @param cx     chunk X coordinate
      * @param cz     chunk Z coordinate
      * @param seed   world seed
@@ -185,19 +184,15 @@ public final class NoiseDumperCommand {
         float[][] oceanHm = noise.sampleHeightmap(cx, cz,
                 Heightmap.Type.OCEAN_FLOOR_WG);
 
-        // Sample router6 at surface level (chunk-free via DensityFunction.sample())
-        float[][] router6 = noise.sampleRouter6(cx, cz, surfaceHm);
-
         // Sample biomes at surface level (chunk-free via BiomeSource.getBiome())
-        int[][] biomes = noise.sampleBiomes(cx, cz, surfaceHm);
+        String[][] biomeNames = noise.sampleBiomeNames(cx, cz, surfaceHm);
 
-        // Build JSON
-        StringBuilder sb = new StringBuilder(8192);
+        // Build JSON — heightmaps + biome names for add_column_heights.py
+        StringBuilder sb = new StringBuilder(4096);
         sb.append("{\n");
         sb.append("  \"chunk_x\": ").append(cx).append(",\n");
         sb.append("  \"chunk_z\": ").append(cz).append(",\n");
         sb.append("  \"seed\": ").append(seed).append(",\n");
-        sb.append("  \"router6_available\": true,\n");
 
         // Heightmaps — flat 256 values, x-major (x outer, z inner)
         sb.append("  \"heightmap_surface\": [");
@@ -208,28 +203,12 @@ public final class NoiseDumperCommand {
         appendFloatGrid(sb, oceanHm);
         sb.append("],\n");
 
-        // Router6 — 6 channels × 256 values each (x-major within channel)
-        String[] fieldNames = {
-            "temperature", "vegetation", "continents", "erosion", "depth", "ridges"
-        };
-        sb.append("  \"router6\": {\n");
-        for (int fi = 0; fi < 6; fi++) {
-            sb.append("    \"").append(fieldNames[fi]).append("\": [");
-            float[] channel = router6[fi];
-            for (int i = 0; i < channel.length; i++) {
-                if (i > 0) sb.append(',');
-                sb.append(channel[i]);
-            }
-            sb.append(fi < 5 ? "],\n" : "]\n");
-        }
-        sb.append("  },\n");
-
-        // Biomes — flat 256 values, x-major (block resolution)
-        sb.append("  \"biomes\": [");
+        // Biome names — flat 256 strings, x-major (block resolution)
+        sb.append("  \"biome_names\": [");
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
                 if (x > 0 || z > 0) sb.append(',');
-                sb.append(biomes[x][z]);
+                sb.append('"').append(biomeNames[x][z]).append('"');
             }
         }
         sb.append("]\n");

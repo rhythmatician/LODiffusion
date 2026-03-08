@@ -233,23 +233,24 @@ public final class WorldNoiseAccess {
     // ------------------------------------------------------------------
 
     /**
-     * Sample biome integer indices for a 16×16 section column using the
+     * Sample biome names for a 16×16 section column using the
      * server-side {@link BiomeSource}.
      *
      * <p>Biomes are sampled at quarter-resolution (4-block steps) as per
      * Minecraft's biome storage convention, then each block column gets
      * the biome of its containing quarter.
      *
-     * <p>The biome index is derived from the biome's registry raw ID
-     * modulo 256, providing a stable mapping within a given world.
+     * <p>Returns the biome's registry key name (e.g. {@code "minecraft:plains"}).
+     * The Python pipeline maps these to canonical integer IDs via a shared
+     * alphabetical biome mapping.
      *
      * @param sectionX section X coordinate
      * @param sectionZ section Z coordinate
      * @param heightmap surface heightmap for Y coordinate
-     * @return int[16][16] of biome indices (0–255)
+     * @return String[16][16] of biome registry key names
      */
-    public int[][] sampleBiomes(int sectionX, int sectionZ, float[][] heightmap) {
-        int[][] biomes = new int[16][16];
+    public String[][] sampleBiomeNames(int sectionX, int sectionZ, float[][] heightmap) {
+        String[][] biomes = new String[16][16];
         int baseX = sectionX * 16;
         int baseZ = sectionZ * 16;
 
@@ -266,15 +267,35 @@ public final class WorldNoiseAccess {
                         bx >> 2, surfaceY >> 2, bz >> 2,
                         noiseConfig.getMultiNoiseSampler());
 
-                // Use the same hash-based mapping as AnchorSampler.sampleBiomes()
-                int biomeIdx = Math.abs(biomeEntry.hashCode()) % 256;
+                // Extract registry key name (e.g. "minecraft:plains")
+                String biomeName = biomeEntry.getKey()
+                        .map(key -> key.getValue().toString())
+                        .orElse("minecraft:unknown");
 
                 // Fill the 4×4 block region
                 for (int dx = 0; dx < 4; dx++) {
                     for (int dz = 0; dz < 4; dz++) {
-                        biomes[qx * 4 + dx][qz * 4 + dz] = biomeIdx;
+                        biomes[qx * 4 + dx][qz * 4 + dz] = biomeName;
                     }
                 }
+            }
+        }
+        return biomes;
+    }
+
+    /**
+     * Sample biome integer indices for a 16×16 section column.
+     *
+     * @deprecated Use {@link #sampleBiomeNames} for stable canonical encoding.
+     *     This method uses unstable {@code hashCode() % 256} encoding.
+     */
+    @Deprecated
+    public int[][] sampleBiomes(int sectionX, int sectionZ, float[][] heightmap) {
+        String[][] names = sampleBiomeNames(sectionX, sectionZ, heightmap);
+        int[][] biomes = new int[16][16];
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                biomes[x][z] = Math.abs(names[x][z].hashCode()) % 256;
             }
         }
         return biomes;

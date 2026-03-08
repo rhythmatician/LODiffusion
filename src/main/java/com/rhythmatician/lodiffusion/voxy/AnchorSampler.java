@@ -1,7 +1,6 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 import net.minecraft.registry.entry.RegistryEntry;
-import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.Heightmap;
 import net.minecraft.world.biome.Biome;
 import net.minecraft.world.chunk.Chunk;
@@ -101,8 +100,14 @@ public final class AnchorSampler {
         // 1. Real heightmap from ChunkGenerator.getHeight()
         float[][] hmap = noiseAccess.sampleHeightmap(sectionX, sectionZ);
 
-        // 2. Real biomes from BiomeSource
-        int[][] biomeIdx = noiseAccess.sampleBiomes(sectionX, sectionZ, hmap);
+        // 2. Real biomes from BiomeSource → canonical IDs
+        String[][] biomeNames = noiseAccess.sampleBiomeNames(sectionX, sectionZ, hmap);
+        int[][] biomeIdx = new int[16][16];
+        for (int x = 0; x < 16; x++) {
+            for (int z = 0; z < 16; z++) {
+                biomeIdx[x][z] = BiomeMapping.toCanonicalId(biomeNames[x][z]);
+            }
+        }
 
         // 3. Height-planes are derived from the heightmap (pure math — same either way)
         float[][] heightPlanes = computeHeightPlanes(hmap);
@@ -120,20 +125,19 @@ public final class AnchorSampler {
     /**
      * Extract a [16][16] biome integer-index grid for the chunk.
      * Uses the surface-level biome at each column (y=64).
+     *
+     * <p>Uses {@link BiomeMapping#toCanonicalId} for stable, deterministic
+     * encoding that matches the Python training pipeline.
      */
     static int[][] sampleBiomes(Chunk chunk) {
         int[][] out = new int[16][16];
-        if (chunk == null) return out;  // default 0 (air biome)
+        if (chunk == null) return out;  // default 0
 
-        ChunkPos cp = chunk.getPos();
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
-                int bx = cp.getStartX() + lx;
-                int bz = cp.getStartZ() + lz;
                 // Sample biome at sea level as representative
                 RegistryEntry<Biome> biomeEntry = chunk.getBiomeForNoiseGen(lx >> 2, 4, lz >> 2);
-                // Map registry entry to a stable integer index using raw ID hash
-                out[lx][lz] = Math.abs(biomeEntry.hashCode()) % 256;
+                out[lx][lz] = BiomeMapping.toCanonicalId(biomeEntry);
             }
         }
         return out;
