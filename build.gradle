@@ -37,6 +37,8 @@ repositories {
 }
 
 loom {
+	accessWidenerPath = file("src/main/resources/lodiffusion.accesswidener")
+
 	splitEnvironmentSourceSets()
 
 	mods {

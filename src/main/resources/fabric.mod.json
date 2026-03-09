@@ -13,6 +13,7 @@
   },
   "license": "MIT",
   "icon": "assets/lodiffusion/icon.png",
+  "accessWidener": "lodiffusion.accesswidener",
   "environment": "*",
   "entrypoints": {
     "main": [

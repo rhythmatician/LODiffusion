@@ -2,20 +2,31 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 
+import net.minecraft.block.BlockState;
+import net.minecraft.block.Blocks;
 import net.minecraft.registry.RegistryKey;
 import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.world.Heightmap;
 import net.minecraft.world.World;
 import net.minecraft.world.biome.Biome;
 import net.minecraft.world.biome.source.BiomeSource;
-import net.minecraft.world.chunk.Chunk;
-import net.minecraft.world.chunk.ChunkStatus;
+import net.minecraft.world.gen.chunk.AquiferSampler;
+import net.minecraft.world.gen.chunk.Blender;
 import net.minecraft.world.gen.chunk.ChunkGenerator;
+import net.minecraft.world.gen.chunk.ChunkGeneratorSettings;
+import net.minecraft.world.gen.chunk.ChunkNoiseSampler;
+import net.minecraft.world.gen.chunk.GenerationShapeConfig;
+import net.minecraft.world.gen.chunk.NoiseChunkGenerator;
 import net.minecraft.world.gen.densityfunction.DensityFunction;
+import net.minecraft.world.gen.densityfunction.DensityFunctionTypes;
 import net.minecraft.world.gen.noise.NoiseConfig;
 import net.minecraft.world.gen.noise.NoiseRouter;
+
+import java.util.Arrays;
+import java.util.function.Predicate;
 
 
 /**
@@ -159,44 +170,136 @@ public final class WorldNoiseAccess {
 
     /**
      * Sample BOTH heightmaps (WORLD_SURFACE_WG and OCEAN_FLOOR_WG) for a chunk
-     * in a single pass using the chunk generation pipeline.
+     * in a single pass using a full-chunk {@link ChunkNoiseSampler}.
      *
-     * <p>Requests the chunk at {@link ChunkStatus#NOISE} status, which runs
-     * {@code NoiseChunkGenerator.populateNoise()} once using a full 4×4 cell
-     * {@code ChunkNoiseSampler}. This is ~64× cheaper than calling
-     * {@code getHeight()} 512 times (once per column per heightmap type), since
-     * the cell noise is computed once and interpolated across all 256 columns.
+     * <p>Constructs one {@code ChunkNoiseSampler(4, ...)} covering the entire
+     * 16×16 chunk (4 horizontal noise cells), then walks all block columns
+     * top-down using the same interpolation loop as
+     * {@code NoiseChunkGenerator.populateNoise()}, recording the first solid
+     * block per column for each heightmap type.
      *
-     * <p>This method must be safe to call from any thread — the server's chunk
-     * pipeline handles its own threading internally.
+     * <p><b>Why this is fast (~64× over {@code getHeight()} ×256):</b>
+     * The dominant cost is {@code sampleStartDensity()} / {@code sampleEndDensity()},
+     * which evaluate the full noise router tree to fill interpolator buffers.
+     * Here we call these <em>5 times total</em> (once + 4 horizontal cells) for
+     * the whole chunk. The equivalent with independent per-column samplers
+     * ({@code horizontalCellCount=1}) is 512 calls (256 columns × 2 types).
+     * Within each 4×4 cell, all 64 block states are cheap trilinear interpolation.
+     *
+     * <p><b>Thread safety:</b> Each invocation creates its own
+     * {@code ChunkNoiseSampler} with independent interpolator state. No shared
+     * mutable state — safe to call from N threads simultaneously.
+     *
+     * <p><b>No side effects:</b> No chunks are created or cached. Pure computation
+     * identical to what happens inside {@code populateNoise()}, minus block writes.
      *
      * @param sectionX section X coordinate (chunk X)
      * @param sectionZ section Z coordinate (chunk Z)
-     * @return float[2][16][16] — index 0 = WORLD_SURFACE_WG, index 1 = OCEAN_FLOOR_WG
+     * @return {@code float[2][16][16]}: index 0 = WORLD_SURFACE_WG,
+     *         index 1 = OCEAN_FLOOR_WG. Values are {@code topSolidBlockY + 1},
+     *         consistent with {@link ChunkGenerator#getHeight}.
      */
     public float[][][] sampleBothHeightmaps(int sectionX, int sectionZ) {
-        // Ask the server pipeline to generate this chunk up to NOISE status.
-        // populateNoise() runs internally and fills both WORLD_SURFACE_WG and
-        // OCEAN_FLOOR_WG heightmaps on the ProtoChunk. Much faster than 512
-        // independent getHeight() calls because ChunkNoiseSampler reuses noise
-        // evaluations across the 4×4 interpolation cells.
-        Chunk chunk = serverWorld.getChunk(sectionX, sectionZ, ChunkStatus.NOISE, true);
-        if (chunk == null) {
-            // Fallback to getHeight() if chunk pipeline unavailable
+        if (!(generator instanceof NoiseChunkGenerator ncg)) {
+            // Non-noise generator (e.g. flat world) — fall back to per-column sampling
             float[][] surface = sampleHeightmap(sectionX, sectionZ, Heightmap.Type.WORLD_SURFACE_WG);
-            float[][] oceanFloor = sampleHeightmap(sectionX, sectionZ, Heightmap.Type.OCEAN_FLOOR_WG);
-            return new float[][][] { surface, oceanFloor };
+            float[][] ocean   = sampleHeightmap(sectionX, sectionZ, Heightmap.Type.OCEAN_FLOOR_WG);
+            return new float[][][] { surface, ocean };
         }
 
-        float[][] surface = new float[16][16];
-        float[][] oceanFloor = new float[16][16];
+        ChunkGeneratorSettings settings = ncg.getSettings().value();
+        GenerationShapeConfig shape = settings.generationShapeConfig().trimHeight(serverWorld);
 
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                surface[lx][lz]    = chunk.sampleHeightmap(Heightmap.Type.WORLD_SURFACE_WG, lx, lz);
-                oceanFloor[lx][lz] = chunk.sampleHeightmap(Heightmap.Type.OCEAN_FLOOR_WG,   lx, lz);
+        // Standard overworld values: hCells=4, hCellB=4, vCellB=8, minCellY=-8, cellHeight=48
+        int hCells     = 16 / shape.horizontalCellBlockCount();
+        int hCellB     = shape.horizontalCellBlockCount();
+        int vCellB     = shape.verticalCellBlockCount();
+        int minCellY   = MathHelper.floorDiv(shape.minimumY(), vCellB);
+        int cellHeight = MathHelper.floorDiv(shape.height(),   vCellB);
+        int startX     = sectionX * 16;
+        int startZ     = sectionZ * 16;
+
+        // Replicate NoiseChunkGenerator.createFluidLevelSampler().
+        // The private Supplier<FluidLevelSampler> on NoiseChunkGenerator is
+        // inaccessible, so we reconstruct it from the public settings.
+        int seaLevel = settings.seaLevel();
+        AquiferSampler.FluidLevel lavaLevel = new AquiferSampler.FluidLevel(-54, Blocks.LAVA.getDefaultState());
+        AquiferSampler.FluidLevel seaFluid  = new AquiferSampler.FluidLevel(seaLevel, settings.defaultFluid());
+        AquiferSampler.FluidLevelSampler fluidSampler =
+                (x, y, z) -> y < Math.min(-54, seaLevel) ? lavaLevel : seaFluid;
+
+        // One sampler for the entire 16×16 chunk — 4 horizontal cells × 4.
+        // Beardifier.INSTANCE is a no-op since we have no structure bounding boxes.
+        ChunkNoiseSampler sampler = new ChunkNoiseSampler(
+                hCells, noiseConfig, startX, startZ, shape,
+                DensityFunctionTypes.Beardifier.INSTANCE,
+                settings, fluidSampler, Blender.getNoBlending());
+
+        Predicate<BlockState> surfacePred = Heightmap.Type.WORLD_SURFACE_WG.getBlockPredicate();
+        Predicate<BlockState> oceanPred   = Heightmap.Type.OCEAN_FLOOR_WG.getBlockPredicate();
+
+        int bottomY = shape.minimumY();
+        float[][] surface    = new float[16][16];
+        float[][] oceanFloor = new float[16][16];
+        for (float[] row : surface)    Arrays.fill(row, bottomY);
+        for (float[] row : oceanFloor) Arrays.fill(row, bottomY);
+
+        // Per-column flags: once both heightmaps are found for a column (iterating
+        // top-down), we skip sampleBlockState() for it. interpolate*() still runs
+        // in order so the sampler's state machine advances correctly.
+        boolean[] surfaceDone = new boolean[256];
+        boolean[] oceanDone   = new boolean[256];
+
+        // Mirror of NoiseChunkGenerator.populateNoise() — same loop structure,
+        // same call order — but collecting heightmaps instead of writing blocks.
+        sampler.sampleStartDensity();
+
+        for (int o = 0; o < hCells; o++) {            // horizontal cell X (0-3)
+            sampler.sampleEndDensity(o);
+
+            for (int p = 0; p < hCells; p++) {        // horizontal cell Z (0-3)
+                for (int r = cellHeight - 1; r >= 0; r--) {  // vertical cell, top → bottom
+                    sampler.onSampledCellCorners(r, p);
+
+                    for (int s = vCellB - 1; s >= 0; s--) {  // block within cell, top → bottom
+                        int blockY = (minCellY + r) * vCellB + s;
+                        sampler.interpolateY(blockY, (double) s / vCellB);
+
+                        for (int w = 0; w < hCellB; w++) {   // block X within cell
+                            int blockX = startX + o * hCellB + w;
+                            int lx     = o * hCellB + w;
+                            sampler.interpolateX(blockX, (double) w / hCellB);
+
+                            for (int z = 0; z < hCellB; z++) { // block Z within cell
+                                int blockZ = startZ + p * hCellB + z;
+                                int lz     = p * hCellB + z;
+                                sampler.interpolateZ(blockZ, (double) z / hCellB);
+
+                                int idx = lx * 16 + lz;
+                                if (surfaceDone[idx] && oceanDone[idx]) continue;
+
+                                BlockState state = sampler.sampleBlockState();
+                                // null from ChunkNoiseSampler means AIR; fall back
+                                // to default block (stone) for density > 0 regions
+                                BlockState actual = (state == null)
+                                        ? settings.defaultBlock() : state;
+
+                                if (!surfaceDone[idx] && surfacePred.test(actual)) {
+                                    surface[lx][lz] = blockY + 1;
+                                    surfaceDone[idx] = true;
+                                }
+                                if (!oceanDone[idx] && oceanPred.test(actual)) {
+                                    oceanFloor[lx][lz] = blockY + 1;
+                                    oceanDone[idx] = true;
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
+
+        sampler.stopInterpolation();
         return new float[][][] { surface, oceanFloor };
     }
 
