@@ -103,50 +103,62 @@ Local equivalent:
 
 ---
 
-## 🧠 Phase 4 — Model Training Pipeline (U-Net, PyTorch, ONNX)
+## 🧠 ONNX Model Integration (NOT Training)
 
-Copilot should help implement a complete model training pipeline for LODiffusion terrain generation.
+**CRITICAL:** Model training happens in **VoxelTree**, not LODiffusion. LODiffusion loads pre-trained ONNX models.
 
-### 🏗️ Goals
-- Train a U-Net-based diffusion model that upsamples terrain patches from coarse to fine resolution (8×8 → 16×16)
-- Accept multi-channel input: heightmaps and biome classmaps
-- Use sinusoidal timestep encoding for diffusion
-- Export the trained model to ONNX for Java inference
+### 🏗️ What LODiffusion Does
+- Loads four progressive ONNX models exported by VoxelTree
+- Chains them at runtime via `ProgressiveModelRunner`
+- Feeds sampled vanilla features via `AnchorSampler`
+- Writes results to Voxy via `VoxySectionWriter`
+- Integrates with DH LOD levels via `DistantHorizonsCompat`
 
-### 📦 Code Structure
-- All training scripts go in the `train/` directory
-- Key files:
-  - `train/train.py`: U-Net training script
-  - `train/extract_patches.py`: Reads `.mca` → outputs `.npy`/`.pt`
-  - `train/dataset.py`: Loads training data (terrain patches)
-  - `train/unet.py`: U-Net model architecture
-  - `train/utils.py`: Normalization, logging, metrics
-  - `train/config.yaml`: Hyperparameters
+### 📦 Key Classes
+- **`ProgressiveModelRunner`** (`onnx/`): Loads 4 models; chains inference stages; handles tensor I/O
+- **`LodGenerationService`** (`voxy/`): Background service generating terrain in spiral order around player
+- **`AnchorSampler`** (`config/`): Extracts `x_height_planes [1,5,16,16]`, `x_biome [1,16,16]`, `x_y_index [1]` from vanilla worldgen
+- **`VoxySectionWriter`** (`voxy/`): Argmax logits → voxel chunks → push to Voxy via reflection
+- **`VoxyBlockMapper`** (`onnx/`): Maps model block indices to Voxy block IDs using `*_config.json` mappings
+- **`DistantHorizonsCompat`** (`dh/`): Runtime DH LOD queries (compileOnly dependency)
 
-### ✅ Data Format
-- Inputs: 8×8×2 (height, biome), float32, normalized to [-1, 1]
-- Outputs: 16×16 height prediction (optionally biome too)
-- Use `.npy` or `.pt` files as input—no live chunk parsing
+### ✅ Model Deployment Workflow
 
-### 🧪 What to Help With
-- Scaffold minimal working versions of `train.py`, `unet.py`, and `dataset.py`
-- Define `TerrainPatchDataset(torch.utils.data.Dataset)` with __getitem__ returning input/output tensors
-- Implement basic training loop with logging and checkpointing
-- Use `torch.onnx.export()` to save model to `lodiffusion.onnx`
+1. **VoxelTree trains & exports** (VoxelTree project):
+   ```bash
+   python scripts/export_lod.py --output production/vN
+   python verify_lodiffusion_v1.py production/vN  # validate shapes + hashes
+   python scripts/deploy_models.py production/vN  # copy to LODiffusion config
+   ```
 
-### 🚫 What NOT to Do
-- Don't write Java code (that's for runtime, not training)
-- Don't handle `.mca` parsing—this is already handled in Java
-- Don't write TensorFlow code
+2. **Validate in LODiffusion**:
+   - Startup: `ProgressiveModelRunner` loads all 4 ONNX files + validates against `pipeline_manifest.json`
+   - Smoke test: compares test vectors from each `*_test_vectors.npz` against DJL inference output
+   - Fail fast: any shape mismatch or missing file → startup error (logged, not silent)
 
-### 🧪 Testing Strategy
-- Include `test/train_test.py` for validating a tiny model on dummy data
-- Add CLI argument parsing to `train.py` (argparse or YAML-based)
-- Use PyTorch 2.x and target ONNX 1.15+
+3. **No Code Changes in LODiffusion** — just redeploy models via script above
 
-### 📎 Documentation Targets
-- Update `docs/PROJECT-OUTLINE.md` when `train.py` and ONNX export are complete
-- Update `README.md` to include Python training instructions
+### 📐 Tensor Contract (VoxelTree ↔ LODiffusion)
+
+Full spec in `docs/MODEL-CONTRACT.md`. Summary:
+
+| Model | Init inputs | Parent (refine only) | Output D | Java post-proc |
+|---|---|---|---|---|
+| `init_to_lod4` | height_planes, biome, y_index | — | 1 | — |
+| `refine_lod4_to_lod3` | same | `[1,1,1,1,1]` | 2 | — |
+| `refine_lod3_to_lod2` | same | `[1,1,2,2,2]` | 4 | — |
+| `refine_lod2_to_lod1` | same | `[1,1,4,4,4]` | 8 | upsample 2× to 16³ |
+
+### 🧪 Integration Tests
+- `ProgressiveModelRunnerTest`: mock inference, verify output shapes
+- `AnchorSamplerTest`: mock vanilla world data, verify tensor construction
+- `VoxySectionWriterTest`: mock Voxy API, verify argmax → block mapping
+
+### 🚫 What NOT to Do Here
+- Train models (VoxelTree owns training)
+- Modify ONNX files directly (export from VoxelTree)
+- Create alternative inference paths (`ProgressiveModelRunner` is the only path)
+- Embed model weights as code (always load from external ONNX files)
 
 ---
 
@@ -218,9 +230,7 @@ curl -X GET, curl --request GET
 - `.github/copilot-instructions/development.md` — Misc best practices
 - `.github/copilot-instructions/distant-horizons-integration.md` — DH APIs + fallback
 - `docs/CI-CHECKLIST.md` — Copilot’s own PR checklist
-- `docs/PROJECT-OUTLINE.md` — Full project plan
+- `docs/PROJECT-OUTLINE.md` — Full project plan (4 model progressive pipeline)
 - `docs/instructions.md` — Developer instructions
-
-## Coplilot's Journals
-- `PHASE-1-REFLECTION.md` — Copilot's journal of mistakes + learnings
-- `docs\COVERAGE-IMPROVEMENT-REFLECTION.md` — Copilot's coverage improvement journal
+- `docs/INTEGRATION-REQUIREMENTS.md` — VoxelTree ↔ LODiffusion boundary spec
+- `docs/MODEL-CONTRACT.md` — Authoritative tensor contract (shapes, I/O, deployment)
