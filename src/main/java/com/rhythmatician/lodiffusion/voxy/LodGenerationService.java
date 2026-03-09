@@ -738,7 +738,10 @@ public final class LodGenerationService {
                     float bestVal = logits[0][0][d0][d1][d2];
                     for (int b = 1; b < Math.min(vocabSize, logits[0].length); b++) {
                         float v = logits[0][b][d0][d1][d2];
-                        if (v > bestVal) { bestVal = v; best = b; }
+                        if (v > bestVal) {
+                            bestVal = v;
+                            best = b;
+                        }
                     }
                     if (best > 0) solidCount++;
                 }

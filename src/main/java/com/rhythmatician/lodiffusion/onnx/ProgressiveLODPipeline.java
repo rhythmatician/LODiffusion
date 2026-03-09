@@ -125,7 +125,10 @@ public class ProgressiveLODPipeline implements AutoCloseable {
                     float bestVal = flat[i];
                     for (int ch = 1; ch < c; ch++) {
                         float v = flat[ch * spatialSize + i];
-                        if (v > bestVal) { bestVal = v; bestCh = ch; }
+                        if (v > bestVal) {
+                            bestVal = v;
+                            bestCh = ch;
+                        }
                     }
                     bin[i] = bestCh == 0 ? 0f : 1f;
                 }
