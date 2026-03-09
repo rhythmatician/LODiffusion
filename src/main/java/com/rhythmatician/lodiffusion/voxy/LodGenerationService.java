@@ -11,7 +11,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 
 import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
-import com.rhythmatician.lodiffusion.onnx.UnifiedModelRunner;
+import com.rhythmatician.lodiffusion.onnx.ModelConfig;
+import com.rhythmatician.lodiffusion.onnx.BlockVocabulary;
+import com.rhythmatician.lodiffusion.onnx.ProgressiveModelRunner;
 import com.rhythmatician.lodiffusion.onnx.UnifiedModelRunner.InferenceResult;
 
 import net.minecraft.server.MinecraftServer;
@@ -184,7 +186,7 @@ public final class LodGenerationService {
             HelloTerrainMod.LOGGER.info("[LodGen] Got Voxy WorldEngine — loading model...");
 
             // Load model
-            UnifiedModelRunner model = loadModel();
+            ProgressiveModelRunner model = loadModel();
             if (model == null) {
                 HelloTerrainMod.LOGGER.error("[LodGen] ONNX model failed to load — aborting");
                 return;
@@ -238,7 +240,7 @@ public final class LodGenerationService {
      * terrain appears fast and gets refined progressively.
      */
     private void generateProgressiveLods(World world,
-                                          UnifiedModelRunner model,
+                                          ProgressiveModelRunner model,
                                           VoxySectionWriter writer,
                                           VoxyBlockMapper blockMapper) {
         int centerX = playerSectionX;
@@ -249,7 +251,7 @@ public final class LodGenerationService {
                 "{} passes (LOD {}→{}) around ({}, {})  contract={}",
                 COARSEST_LOD - FINEST_LOD + 1,
                 COARSEST_LOD, FINEST_LOD, centerX, centerZ,
-                model.isV2() ? "v2" : "v1");
+                "v3.progressive");
 
         for (int lod = COARSEST_LOD; lod >= FINEST_LOD; lod--) {
             if (stopRequested.get()) return;
@@ -457,7 +459,7 @@ public final class LodGenerationService {
      * @param ctx pre-sampled column conditioning (heightmap, biome, router6)
      */
     private void inferAndPushSection(World world,
-                                      UnifiedModelRunner model,
+                                      ProgressiveModelRunner model,
                                       VoxySectionWriter writer,
                                       VoxyBlockMapper blockMapper,
                                       ColumnContext ctx,
@@ -466,41 +468,19 @@ public final class LodGenerationService {
             throws Exception {
 
         int yIndex = Math.max(0, Math.min(23, sectionY - Y_BASE_SECTION));
-        long posKey = sectionPosKey(sectionX, sectionY, sectionZ);
 
         // Conditioning already sampled per-column in ColumnContext
-        float[][] rawHm    = ctx.rawHm();
         int[][]   biomeIdx = ctx.biomeIdx();
         float[][] hp5      = ctx.hp5();
-        float[][] r6       = ctx.r6();
 
-        // Parent: cached from previous LOD pass, or heightmap-based seed
-        float[][][] parent = (lod == COARSEST_LOD)
-                ? buildInitialParent(sectionY, rawHm)
-                : parentCache.getOrDefault(
-                      posKey, buildInitialParent(sectionY, rawHm));
-
-        // ---- infer ----
+        // Run the full progressive chain: init→LOD4→3→2→1 (8³ upsampled to 16³)
+        // ProgressiveModelRunner manages the 4-stage parent chain internally.
         InferenceResult result;
-        if (model.isV2()) {
-            // hp5 and r6 already computed above (from noise access or chunk+approximation)
-            result = model.generateV2(
-                    parent, hp5, r6, biomeIdx, yIndex, lod);
-        } else {
-            float[][] normHm     = minMaxNormalize(rawHm);
-            // For V1, build biome one-hot from available data
-            float[][][] biomeHot = buildBiomeOneHot(biomeIdx,
-                    model.config().effectiveBiomeVocabSize());
-            // Transpose heightmap from [X][Z] to [Z][X] to match training convention
-            float[][] normHmT = transposeSpatial(normHm);
-            result = model.generate(parent, biomeHot, normHmT, lod);
-        }
-
-        // Cache coarsened output for the next (finer) LOD pass
-        if (lod > FINEST_LOD) {
-            parentCache.put(posKey, coarsenToParent(result.airMask()));
-        } else {
-            parentCache.remove(posKey);  // free memory
+        try {
+            result = model.generate(hp5, biomeIdx, yIndex);
+        } catch (ai.djl.translate.TranslateException e) {
+            throw new RuntimeException("ProgressiveModelRunner inference failed at (" +
+                    sectionX + "," + sectionY + "," + sectionZ + ")", e);
         }
 
         // Diagnostics: sample different Y levels to compare underground vs sky
@@ -515,17 +495,10 @@ public final class LodGenerationService {
         }
 
         if (shouldDiag) {
-            // Count solid cells in parent tensor
-            int parentSolid = 0;
-            for (int i = 0; i < 8; i++)
-                for (int j = 0; j < 8; j++)
-                    for (int k = 0; k < 8; k++)
-                        if (parent[i][j][k] > 0.5f) parentSolid++;
-
-            logDiagnostics(result, model, blockMapper,
+            logDiagnostics(result, model.config(), model.vocabulary(), blockMapper,
                     sectionX, sectionY, sectionZ,
                     result.elapsedMs(), lod,
-                    yIndex, parentSolid);
+                    yIndex, 0 /* parent not tracked by ProgressiveModelRunner */);
             diagnosticCount++;
         }
 
@@ -578,29 +551,6 @@ public final class LodGenerationService {
      * otherwise.  This gives the model a reasonable starting structure
      * instead of an empty (all-air) grid.
      */
-    private float[][][] buildInitialParent(int sectionY, float[][] heightmap) {
-        // Parent layout: [d0=Y][d1=Z][d2=X] matching model axis convention.
-        // heightmap is [X][Z] (Minecraft convention).
-        float[][][] parent = new float[8][8][8];
-        float baseY = sectionY * 16f;
-        for (int mcX = 0; mcX < 8; mcX++) {
-            for (int mcZ = 0; mcZ < 8; mcZ++) {
-                float h = heightmap[mcX * 2][mcZ * 2];
-                for (int mcY = 0; mcY < 8; mcY++) {
-                    float cellY = baseY + mcY * 2f + 1f;
-                    parent[mcY][mcZ][mcX] = cellY < h ? 1.0f : 0.0f;
-                }
-            }
-        }
-        return parent;
-    }
-
-    /**
-     * Position-only key for the parent cache (no LOD component).
-     */
-    private long sectionPosKey(int x, int y, int z) {
-        return sectionKey(x, y, z, 0);
-    }
 
     /**
      * Remove cached parents outside the given radius from center.
@@ -622,14 +572,15 @@ public final class LodGenerationService {
      * Log detailed model-output diagnostics for a section.
      */
     private void logDiagnostics(InferenceResult result,
-                                 UnifiedModelRunner model,
+                                 ModelConfig config,
+                                 BlockVocabulary vocabulary,
                                  VoxyBlockMapper blockMapper,
                                  int sectionX, int sectionY, int sectionZ,
                                  long elapsedMs, int lod,
                                  int yIndex, int parentSolid) {
         float[][][][][] mask   = result.airMask();
         float[][][][][] logits = result.blockLogits();
-        int vocabSize = model.config().effectiveBlockVocabSize();
+        int vocabSize = config.effectiveBlockVocabSize();
 
         // Air mask stats
         int maskPositive = 0;
@@ -666,8 +617,8 @@ public final class LodGenerationService {
         }
 
         int voxyId = blockMapper.getVoxyBlockId(centerBest);
-        String blockName = centerBest < model.vocabulary().size()
-                ? model.vocabulary().getName(centerBest) : "???";
+        String blockName = centerBest < vocabulary.size()
+                ? vocabulary.getName(centerBest) : "???";
 
         HelloTerrainMod.LOGGER.info(
                 "[LodGen] DIAG LOD {} ({},{},{}): " +
@@ -723,56 +674,6 @@ public final class LodGenerationService {
             }
         }
         return hm;
-    }
-
-    /**
-     * Per-patch min-max normalise a raw heightmap to [0, 1],
-     * matching the training data preparation.
-     */
-    private float[][] minMaxNormalize(float[][] raw) {
-        float min = Float.MAX_VALUE, max = -Float.MAX_VALUE;
-        for (int x = 0; x < 16; x++)
-            for (int z = 0; z < 16; z++) {
-                if (raw[x][z] < min) min = raw[x][z];
-                if (raw[x][z] > max) max = raw[x][z];
-            }
-        float range = Math.max(max - min, 1e-6f);
-        float[][] norm = new float[16][16];
-        for (int x = 0; x < 16; x++)
-            for (int z = 0; z < 16; z++)
-                norm[x][z] = (raw[x][z] - min) / range;
-        return norm;
-    }
-
-    /**
-     * Transpose a 16×16 spatial array from [X][Z] (Minecraft) to [Z][X]
-     * (training convention).  The ONNX model was trained with heightmaps
-     * and biome grids in (Z, X) order, but Minecraft-side data uses (X, Z).
-     */
-    private static float[][] transposeSpatial(float[][] a) {
-        int rows = a.length;
-        int cols = a[0].length;
-        float[][] t = new float[cols][rows];
-        for (int i = 0; i < rows; i++)
-            for (int j = 0; j < cols; j++)
-                t[j][i] = a[i][j];
-        return t;
-    }
-
-    /**
-     * Build biome one-hot from real biome indices.
-     * Each column gets a 1.0 at its biome index in the vocabulary dimension.
-     */
-    private float[][][] buildBiomeOneHot(int[][] biomeIdx, int biomeVocabSize) {
-        // biomeIdx is [X][Z] (MC convention).
-        // Model expects [V][Z][X] (training convention).
-        float[][][] oneHot = new float[biomeVocabSize][16][16];
-        for (int x = 0; x < 16; x++)
-            for (int z = 0; z < 16; z++) {
-                int b = biomeIdx[x][z] % biomeVocabSize;
-                oneHot[b][z][x] = 1.0f;
-            }
-        return oneHot;
     }
 
     // ------------------------------------------------------------------ //
@@ -872,11 +773,11 @@ public final class LodGenerationService {
     /**
      * Load the ONNX model (same lazy-load as OnnxTerrainGenerator).
      */
-    private UnifiedModelRunner loadModel() {
+    private ProgressiveModelRunner loadModel() {
         try {
-            java.nio.file.Path onnxPath = Config.modelPath();
-            java.nio.file.Path configPath = onnxPath.getParent().resolve("model_config.json");
-            return UnifiedModelRunner.load(onnxPath, configPath);
+            java.nio.file.Path modelDir = Config.modelDir();
+            HelloTerrainMod.LOGGER.info("[LodGen] Loading progressive models from {}...", modelDir);
+            return ProgressiveModelRunner.loadAll(modelDir);
         } catch (Exception e) {
             HelloTerrainMod.LOGGER.error("[LodGen] Model load failed: {}", e.getMessage(), e);
             return null;

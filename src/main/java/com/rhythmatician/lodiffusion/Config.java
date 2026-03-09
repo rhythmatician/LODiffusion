@@ -76,6 +76,17 @@ public final class Config {
     return Paths.get(getString("modelPath", "config/lodiffusion/model.onnx"));
   }
 
+  /**
+   * Directory containing the 4 progressive ONNX models exported by export_lod.py.
+   * Defaults to the parent of {@link #modelPath()} (i.e. {@code config/lodiffusion/}).
+   */
+  public static java.nio.file.Path modelDir() {
+    String raw = getString("modelDir", "");
+    if (!raw.isBlank()) return Paths.get(raw);
+    java.nio.file.Path parent = modelPath().getParent();
+    return parent != null ? parent : Paths.get("config", "lodiffusion");
+  }
+
   public static String adapter() {
     return getString("adapter", "unified_v1");
   }
