@@ -67,7 +67,15 @@ public final class LodGenerationService {
      * Ensures caves near the surface, tree canopies, and hilly terrain are
      * captured.  Sections outside surface ± margin are skipped entirely.
      */
-    private static final int SURFACE_MARGIN = 2;  // 2 sections = 32 blocks
+    private static final int SURFACE_MARGIN = 1;  // 1 section = 16 blocks
+
+    /**
+     * When true, force the air mask to predict air for voxels above the
+     * surface heightmap.  This compensates for undertrained models that
+     * predict all-solid, preventing terrain from extending above the
+     * real surface.  Can be disabled once the model learns air boundaries.
+     */
+    private static final boolean HEIGHTMAP_CLIP = false;
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
@@ -305,9 +313,23 @@ public final class LodGenerationService {
                     }
                 }
 
-                // Convert block Y to section Y, then add margin
-                int minSectionY = ((int) Math.floor(minH)) / 16 - SURFACE_MARGIN;
-                int maxSectionY = ((int) Math.ceil(maxH))  / 16 + SURFACE_MARGIN;
+                // Convert block Y to section Y, then add margin.
+                // Use Math.floorDiv for correct behavior with negative heights
+                // (Java's / truncates toward zero, floorDiv rounds toward -∞).
+                int minSectionY = Math.floorDiv((int) Math.floor(minH), 16) - SURFACE_MARGIN;
+                int maxSectionY = Math.floorDiv((int) Math.ceil(maxH), 16) + SURFACE_MARGIN;
+
+                // Log heightmap range for first 3 columns
+                if (diagnosticCount < 3) {
+                    HelloTerrainMod.LOGGER.info(
+                            "[LodGen] Column ({},{}) heightmap: min={} max={} → "
+                            + "sectionY=[{},{}] (blocks [{},{}])",
+                            sx, sz, minH, maxH,
+                            Math.max(minSectionY, Y_BASE_SECTION),
+                            Math.min(maxSectionY, Y_BASE_SECTION + Y_SECTIONS - 1),
+                            Math.max(minSectionY, Y_BASE_SECTION) * 16,
+                            (Math.min(maxSectionY, Y_BASE_SECTION + Y_SECTIONS - 1) + 1) * 16 - 1);
+                }
 
                 // Clamp to the valid Y range
                 minSectionY = Math.max(minSectionY, Y_BASE_SECTION);
@@ -486,6 +508,32 @@ public final class LodGenerationService {
         } catch (ai.djl.translate.TranslateException e) {
             throw new RuntimeException("ProgressiveModelRunner inference failed at (" +
                     sectionX + "," + sectionY + "," + sectionZ + ")", e);
+        }
+
+        // ---- Heightmap clipping ----
+        // Force air above the surface to compensate for undertrained models
+        // that predict all-solid.  The model's air mask is overridden for
+        // voxels whose world Y >= surface heightmap at that (x,z) column.
+        if (HEIGHTMAP_CLIP && ctx.rawHm() != null) {
+            float[][][][][] mask = result.airMask(); // [1][1][Y][Z][X]
+            int clipped = 0;
+            for (int lx = 0; lx < 16; lx++) {
+                for (int lz = 0; lz < 16; lz++) {
+                    float surfaceY = ctx.rawHm()[lx][lz];
+                    for (int ly = 0; ly < 16; ly++) {
+                        int worldY = sectionY * 16 + ly;
+                        if (worldY >= surfaceY && mask[0][0][ly][lz][lx] > 0f) {
+                            mask[0][0][ly][lz][lx] = -1f; // force air
+                            clipped++;
+                        }
+                    }
+                }
+            }
+            if (diagnosticCount < 5 && clipped > 0) {
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen] Heightmap clip ({},{},{}): forced {}/4096 voxels to air",
+                        sectionX, sectionY, sectionZ, clipped);
+            }
         }
 
         // Diagnostics: sample different Y levels to compare underground vs sky
