@@ -103,6 +103,41 @@ public final class LodGenerationQueue {
         return stageQueues[stage].poll();
     }
 
+    /**
+     * Drain up to {@code maxBatch} tasks from a stage queue in one shot.
+     *
+     * <p>First performs a blocking poll with the given timeout to wait for
+     * at least one task, then greedily drains any additional tasks that
+     * are already queued (up to {@code maxBatch - 1} more).  This enables
+     * batched inference: the worker collects as many tasks as are available
+     * without introducing extra latency when the queue is sparse.
+     *
+     * @param stage     which stage queue to drain (0–3)
+     * @param maxBatch  maximum number of tasks to return in one call
+     * @param timeout   how long to wait for the <em>first</em> task
+     * @param unit      time unit for the timeout
+     * @return list of 0–{@code maxBatch} tasks; empty if the timeout
+     *         expired with no tasks available
+     */
+    public java.util.List<SectionTask> drainStage(int stage, int maxBatch,
+                                                   long timeout, TimeUnit unit)
+            throws InterruptedException {
+        java.util.List<SectionTask> batch = new java.util.ArrayList<>(maxBatch);
+
+        // Wait for at least one task
+        SectionTask first = stageQueues[stage].poll(timeout, unit);
+        if (first == null) return batch;
+        batch.add(first);
+
+        // Greedily take more without blocking
+        while (batch.size() < maxBatch) {
+            SectionTask next = stageQueues[stage].poll();
+            if (next == null) break;
+            batch.add(next);
+        }
+        return batch;
+    }
+
     // ── Completion signals ──────────────────────────────────────────────
 
     /** Signal that all sections have been added to the stage-0 queue. */

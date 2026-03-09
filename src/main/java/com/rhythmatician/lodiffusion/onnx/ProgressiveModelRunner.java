@@ -22,19 +22,26 @@ import ai.djl.translate.TranslateException;
  *
  * <h3>Contract: {@code lodiffusion.v3.progressive}</h3>
  *
+ * <p>All four ONNX models are exported with <b>dynamic batch</b> dimensions,
+ * meaning the batch axis (dim 0) is symbolic and can accept any N≥1.
+ * This class supports both single-sample inference ({@link #generate},
+ * {@link #generateStage}) and batched inference ({@link #generateStageBatch})
+ * where multiple sections are evaluated in a single ONNX call for higher
+ * throughput.
+ *
  * <pre>
- * Pipeline stages:
- *   init_to_lod4        inputs: (hp[1,5,16,16], biome[1,16,16], y[1])
- *                       output: block_logits[1,N,1,1,1]
+ * Pipeline stages (N = batch size):
+ *   init_to_lod4        inputs: (hp[N,5,16,16], biome[N,16,16], y[N])
+ *                       output: block_logits[N,V,1,1,1]
  *
- *   refine_lod4_to_lod3 inputs: (hp, biome, y, parent[1,1,1,1,1])
- *                       output: block_logits[1,N,2,2,2]
+ *   refine_lod4_to_lod3 inputs: (hp, biome, y, parent[N,1,1,1,1])
+ *                       output: block_logits[N,V,2,2,2]
  *
- *   refine_lod3_to_lod2 inputs: (hp, biome, y, parent[1,1,2,2,2])
- *                       output: block_logits[1,N,4,4,4]
+ *   refine_lod3_to_lod2 inputs: (hp, biome, y, parent[N,1,2,2,2])
+ *                       output: block_logits[N,V,4,4,4]
  *
- *   refine_lod2_to_lod1 inputs: (hp, biome, y, parent[1,1,4,4,4])
- *                       output: block_logits[1,N,8,8,8]
+ *   refine_lod2_to_lod1 inputs: (hp, biome, y, parent[N,1,4,4,4])
+ *                       output: block_logits[N,V,8,8,8]
  * </pre>
  *
  * <p>Air is represented as block class 0 in the unified softmax — there is
@@ -67,15 +74,19 @@ public final class ProgressiveModelRunner implements AutoCloseable {
     };
 
     /**
-     * Parent input tensor shapes for each stage.  Stage 0 has no parent.
+     * Parent input tensor spatial shapes for each stage.  Stage 0 has no parent.
      * The parent is the binary solid-occupancy derived from block logits
      * argmax (class 0 = air → 0, else → 1) of the previous stage.
+     *
+     * <p>Only the spatial dimensions (channel, D, D, D) are listed here;
+     * the batch dimension is prepended dynamically at runtime (1 for
+     * single-sample, N for batched).
      */
     static final long[][] PARENT_INPUT_SHAPES = {
         null,                // stage 0: no parent
-        {1, 1, 1, 1, 1},    // stage 1: parent from stage 0
-        {1, 1, 2, 2, 2},    // stage 2: parent from stage 1
-        {1, 1, 4, 4, 4},    // stage 3: parent from stage 2
+        {1, 1, 1, 1},       // stage 1: parent from stage 0  (ch=1, 1³)
+        {1, 2, 2, 2},       // stage 2: parent from stage 1  (ch=1, 2³)
+        {1, 4, 4, 4},       // stage 3: parent from stage 2  (ch=1, 4³)
     };
 
     /**
@@ -408,8 +419,10 @@ public final class ProgressiveModelRunner implements AutoCloseable {
             if (stage == 0) {
                 inputs = new NDList(xHp, xBiome, xY);
             } else {
+                long[] spatialShape = PARENT_INPUT_SHAPES[stage];
                 NDArray parent = sub.create(parentFlat,
-                        new Shape(PARENT_INPUT_SHAPES[stage]));
+                        new Shape(1, spatialShape[0], spatialShape[1],
+                                  spatialShape[2], spatialShape[3]));
                 inputs = new NDList(xHp, xBiome, xY, parent);
             }
 
@@ -432,6 +445,132 @@ public final class ProgressiveModelRunner implements AutoCloseable {
                         new InferenceResult(buf.logits16, elapsed),
                         elapsed);
             }
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Batched inference
+    // ------------------------------------------------------------------
+
+    /**
+     * Run a <em>single</em> pipeline stage for a <b>batch</b> of sections
+     * in one ONNX call.
+     *
+     * <p>This is the high-throughput counterpart to {@link #generateStage}:
+     * instead of processing one section at a time, it stacks N sections'
+     * conditioning tensors into batch-N inputs, runs a single ONNX
+     * predictor call, then splits the batch output back into per-section
+     * {@link StageOutput} objects.
+     *
+     * <p>Requires ONNX models exported with dynamic batch axes
+     * ({@code export_lod.py ≥ v3.1}).  Falls back gracefully to single-sample
+     * if called with {@code batchSize == 1}.
+     *
+     * @param stage        which stage to run (0–3)
+     * @param hp5Rows      height planes per section: {@code [batchSize][5][256]}
+     * @param biomeIdxs    biome indices per section: {@code [batchSize][16][16]}
+     * @param yIndices     raw Y section indices: {@code [batchSize]}
+     * @param parentFlats  binary solid parent per section:
+     *                     {@code [batchSize][spatialSize]} ({@code null} entries
+     *                     allowed for stage 0)
+     * @return list of per-section stage outputs, in the same order as the inputs
+     */
+    public List<StageOutput> generateStageBatch(
+            int stage,
+            float[][][] hp5Rows,
+            int[][][] biomeIdxs,
+            int[] yIndices,
+            float[][] parentFlats) throws TranslateException {
+
+        int batchSize = hp5Rows.length;
+        long t0 = System.currentTimeMillis();
+
+        try (NDManager sub = manager.newSubManager()) {
+
+            // ── Stack conditioning tensors across the batch ─────────────
+            // hp: [batchSize, 5, 16, 16]  (transpose x↔z per-sample)
+            float[] hpBatch = new float[batchSize * 5 * 256];
+            for (int b = 0; b < batchSize; b++) {
+                int bOff = b * 5 * 256;
+                for (int ch = 0; ch < 5; ch++) {
+                    for (int lx = 0; lx < 16; lx++) {
+                        for (int lz = 0; lz < 16; lz++) {
+                            hpBatch[bOff + ch * 256 + lz * 16 + lx] =
+                                    hp5Rows[b][ch][lx * 16 + lz];
+                        }
+                    }
+                }
+            }
+            NDArray xHp = sub.create(hpBatch, new Shape(batchSize, 5, 16, 16));
+
+            // biome: [batchSize, 16, 16]  (transpose x↔z per-sample)
+            long[] bioBatch = new long[batchSize * 256];
+            for (int b = 0; b < batchSize; b++) {
+                int bOff = b * 256;
+                for (int lx = 0; lx < 16; lx++) {
+                    for (int lz = 0; lz < 16; lz++) {
+                        bioBatch[bOff + lz * 16 + lx] = biomeIdxs[b][lx][lz];
+                    }
+                }
+            }
+            NDArray xBiome = sub.create(bioBatch, new Shape(batchSize, 16, 16));
+
+            // y: [batchSize]
+            long[] yBatch = new long[batchSize];
+            for (int b = 0; b < batchSize; b++) {
+                yBatch[b] = yIndices[b];
+            }
+            NDArray xY = sub.create(yBatch, new Shape(batchSize));
+
+            // ── Build input list ────────────────────────────────────────
+            NDList inputs;
+            if (stage == 0) {
+                inputs = new NDList(xHp, xBiome, xY);
+            } else {
+                // Stack parents: [batchSize, 1, D, D, D]
+                long[] spatialShape = PARENT_INPUT_SHAPES[stage];
+                int parentSpatialSize = 1;
+                for (long dim : spatialShape) parentSpatialSize *= (int) dim;
+                float[] parentBatch = new float[batchSize * parentSpatialSize];
+                for (int b = 0; b < batchSize; b++) {
+                    System.arraycopy(parentFlats[b], 0,
+                            parentBatch, b * parentSpatialSize, parentSpatialSize);
+                }
+                NDArray parent = sub.create(parentBatch,
+                        new Shape(batchSize, spatialShape[0], spatialShape[1],
+                                  spatialShape[2], spatialShape[3]));
+                inputs = new NDList(xHp, xBiome, xY, parent);
+            }
+
+            // ── Single ONNX call for the whole batch ────────────────────
+            NDList batchOutputs = runStage(stage, inputs);
+            NDArray batchLogits = extractBlockLogits(batchOutputs);
+            // batchLogits shape: [batchSize, vocabSize, D, D, D]
+
+            long elapsed = System.currentTimeMillis() - t0;
+            long perSample = batchSize > 0 ? elapsed / batchSize : elapsed;
+
+            // ── Split per-sample results ────────────────────────────────
+            List<StageOutput> results = new ArrayList<>(batchSize);
+            for (int b = 0; b < batchSize; b++) {
+                // Slice single sample: NDArray index → [vocabSize, D, D, D]
+                // then expandDims(0) → [1, vocabSize, D, D, D]
+                NDArray singleLogits = batchLogits.get(b).expandDims(0);
+
+                if (stage < 3) {
+                    float[] solidFlat = toSolidParentFlatFromLogits(singleLogits);
+                    float[][][][][] nativeLogits = extract5D(singleLogits);
+                    results.add(new StageOutput(solidFlat, nativeLogits, null, perSample));
+                } else {
+                    float[][][][][] nativeLogits = extract5D(singleLogits);
+                    int vocabSize = (int) batchLogits.getShape().getShape()[1];
+                    float[][][][][] logits16 = new float[1][vocabSize][16][16][16];
+                    extractAndUpsample5D(singleLogits, logits16);
+                    results.add(new StageOutput(null, nativeLogits,
+                            new InferenceResult(logits16, perSample), perSample));
+                }
+            }
+            return results;
         }
     }
 

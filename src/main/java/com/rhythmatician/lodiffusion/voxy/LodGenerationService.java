@@ -83,6 +83,16 @@ public final class LodGenerationService {
             Math.min(Runtime.getRuntime().availableProcessors(), 4);
 
     /**
+     * Maximum number of sections to batch into a single ONNX inference call.
+     * Dynamic-batch ONNX models amortize per-call overhead across the batch,
+     * improving throughput significantly.  Empirically, 8–16 gives a good
+     * balance between throughput and latency.
+     *
+     * <p>Set to 1 to disable batching (falls back to single-sample mode).
+     */
+    private static final int MAX_BATCH_SIZE = 8;
+
+    /**
      * Generation radius (in sections).  All sections within this Manhattan
      * distance from the player are generated, closest first.
      */
@@ -417,58 +427,81 @@ public final class LodGenerationService {
     // ------------------------------------------------------------------ //
 
     /**
-     * Worker loop for a single pipeline stage.  Polls from the stage's
-     * priority queue, processes tasks, and promotes them to the next stage.
-     * Exits when upstream is done and the queue is permanently empty.
+     * Worker loop for a single pipeline stage.  Drains batches of tasks from
+     * the stage's priority queue, processes them in a single batched ONNX call,
+     * and promotes them to the next stage.  Falls back to single-sample when
+     * only one task is available.  Exits when upstream is done and the queue
+     * is permanently empty.
      */
     private void runStageWorker(int stage, LodGenerationQueue queue,
                                  ProgressiveModelRunner model,
                                  VoxySectionWriter writer,
                                  VoxyBlockMapper blockMapper) {
         String threadName = Thread.currentThread().getName();
-        HelloTerrainMod.LOGGER.info("[LodGen] {} starting", threadName);
+        HelloTerrainMod.LOGGER.info("[LodGen] {} starting (maxBatch={})",
+                threadName, MAX_BATCH_SIZE);
 
         int processed = 0;
 
         while (!stopRequested.get()) {
-            SectionTask task;
+            List<SectionTask> batch;
             try {
-                task = queue.poll(stage, 200, TimeUnit.MILLISECONDS);
+                batch = queue.drainStage(stage, MAX_BATCH_SIZE,
+                        200, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 break;
             }
 
-            if (task == null) {
+            if (batch.isEmpty()) {
                 // Check if upstream is done and our queue is permanently empty
                 if (queue.isUpstreamDone(stage)) {
-                    // One final non-blocking poll to avoid TOCTOU race
-                    task = queue.poll(stage);
-                    if (task == null) break;
+                    // One final non-blocking drain to avoid TOCTOU race
+                    batch = new ArrayList<>();
+                    SectionTask last;
+                    while ((last = queue.poll(stage)) != null) {
+                        batch.add(last);
+                    }
+                    if (batch.isEmpty()) break;
                 } else {
                     continue;
                 }
             }
 
-            if (!task.claimForProcessing()) continue;
+            // Claim all tasks; filter out any that can't be claimed
+            List<SectionTask> claimed = new ArrayList<>(batch.size());
+            for (SectionTask task : batch) {
+                if (task.claimForProcessing()) {
+                    claimed.add(task);
+                }
+            }
+            if (claimed.isEmpty()) continue;
 
             try {
-                processStageTask(stage, task, model, writer, blockMapper);
-                processed++;
+                if (claimed.size() == 1) {
+                    // Single-sample fast path (uses thread-local buffers)
+                    processStageTask(stage, claimed.get(0), model, writer, blockMapper);
+                } else {
+                    // Batched ONNX inference
+                    processStageBatch(stage, claimed, model, writer, blockMapper);
+                }
+                processed += claimed.size();
 
-                if (processed % 500 == 0) {
+                if (processed % 500 < claimed.size()) {
                     HelloTerrainMod.LOGGER.info(
-                            "[LodGen] {} progress: {} processed, queues: [{}|{}|{}|{}], done: {}",
-                            threadName, processed,
+                            "[LodGen] {} progress: {} processed (last batch={}), queues: [{}|{}|{}|{}], done: {}",
+                            threadName, processed, claimed.size(),
                             queue.stageQueueSize(0), queue.stageQueueSize(1),
                             queue.stageQueueSize(2), queue.stageQueueSize(3),
                             queue.completedCount());
                 }
             } catch (Exception e) {
-                task.markFailed(e.getMessage());
-                queue.markFailed();
+                for (SectionTask task : claimed) {
+                    task.markFailed(e.getMessage());
+                    queue.markFailed();
+                }
                 if (!stopRequested.get()) {
-                    HelloTerrainMod.LOGGER.warn("[LodGen] {} failed on {}: {}",
-                            threadName, task, e.getMessage());
+                    HelloTerrainMod.LOGGER.warn("[LodGen] {} batch failed ({} tasks): {}",
+                            threadName, claimed.size(), e.getMessage());
                 }
             }
         }
@@ -548,6 +581,86 @@ public final class LodGenerationService {
             task.markReady();
             generatedSections.add(task.key);
             activeQueue.markCompleted();
+        }
+    }
+
+    /**
+     * Process a batch of section tasks at a given pipeline stage using a
+     * single batched ONNX inference call.
+     *
+     * <p>This is the batched counterpart to {@link #processStageTask}: it
+     * collects conditioning data from all tasks, calls
+     * {@link ProgressiveModelRunner#generateStageBatch}, then distributes
+     * the per-section results identically to the single-sample path
+     * (write to Voxy, promote to next stage, etc.).
+     */
+    private void processStageBatch(int stage, List<SectionTask> tasks,
+                                    ProgressiveModelRunner model,
+                                    VoxySectionWriter writer,
+                                    VoxyBlockMapper blockMapper) throws Exception {
+
+        int batchSize = tasks.size();
+
+        // ── Collect conditioning arrays from all tasks ──────────────────
+        float[][][] hp5Rows   = new float[batchSize][][];
+        int[][][]   biomeIdxs = new int[batchSize][][];
+        int[]       yIndices  = new int[batchSize];
+        float[][]   parentFlats = new float[batchSize][];
+
+        for (int i = 0; i < batchSize; i++) {
+            SectionTask task = tasks.get(i);
+            ColumnContext ctx = task.columnContext;
+            hp5Rows[i]    = ctx.hp5();
+            biomeIdxs[i]  = ctx.biomeIdx();
+            yIndices[i]   = task.sectionY - Y_BASE_SECTION;
+            parentFlats[i] = task.parentFlat;
+        }
+
+        // ── Single batched ONNX call ────────────────────────────────────
+        List<ProgressiveModelRunner.StageOutput> outputs =
+                model.generateStageBatch(stage, hp5Rows, biomeIdxs,
+                        yIndices, parentFlats);
+
+        // ── Distribute per-section results ──────────────────────────────
+        int voxyLvl = COARSEST_LOD - stage;
+
+        for (int i = 0; i < batchSize; i++) {
+            SectionTask task = tasks.get(i);
+            ProgressiveModelRunner.StageOutput output = outputs.get(i);
+            ColumnContext ctx = task.columnContext;
+
+            int[][] biomeVoxyIds = buildBiomeVoxyIds(ctx.biomeIdx(), blockMapper);
+
+            float[][][][][] nativeLogits = output.blockLogits();
+            if (nativeLogits != null) {
+                if (HEIGHTMAP_CLIP && ctx.rawHm() != null) {
+                    applyHeightmapClipScaled(nativeLogits, ctx.rawHm(),
+                            task.sectionY, voxyLvl);
+                }
+                writer.writeUpsampledSection(nativeLogits,
+                        model.config().effectiveBlockVocabSize(),
+                        voxyLvl, task.sectionX, task.sectionY, task.sectionZ,
+                        biomeVoxyIds);
+            }
+
+            if (stage < 3) {
+                task.promoteToNextStage(output.solidParentFlat());
+                activeQueue.promoteToNextStage(task);
+            } else {
+                InferenceResult result = output.finalResult();
+
+                if (diagnosticCount.get() < 10) {
+                    int yIndex = task.sectionY - Y_BASE_SECTION;
+                    logDiagnostics(result, model.config(), model.vocabulary(),
+                            blockMapper, task.sectionX, task.sectionY, task.sectionZ,
+                            output.elapsedMs(), 1, yIndex, 0);
+                    diagnosticCount.incrementAndGet();
+                }
+
+                task.markReady();
+                generatedSections.add(task.key);
+                activeQueue.markCompleted();
+            }
         }
     }
 
