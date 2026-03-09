@@ -469,7 +469,10 @@ public final class LodGenerationService {
                                       int sectionZ, int lod)
             throws Exception {
 
-        int yIndex = Math.max(0, Math.min(23, sectionY - Y_BASE_SECTION));
+        // 0-based y index: sectionY -4 → 0, -3 → 1, ..., 11 → 15
+        // Matches training extraction: y_index = world_y - Y_BASE_SECTION
+        // The ONNX model has clamp(0, 23) built in for safety.
+        int yIndex = sectionY - Y_BASE_SECTION;
 
         // Conditioning already sampled per-column in ColumnContext
         int[][]   biomeIdx = ctx.biomeIdx();

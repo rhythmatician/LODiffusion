@@ -240,7 +240,8 @@ public final class ProgressiveModelRunner implements AutoCloseable {
      *       {@link com.rhythmatician.lodiffusion.voxy.AnchorSampler#computeHeightPlanes}.</li>
      *   <li>{@code biomeIdx} — canonical biome IDs {@code [16][16]} in [x][z] order
      *       (Minecraft convention); transposed internally to match training.</li>
-     *   <li>{@code yIndex}   — vertical slab index in [0, 23].</li>
+     *   <li>{@code yIndex}   — raw section Y coordinate (e.g. -4 for y=-64).
+     *       The ONNX model clamps to [0, 23] internally, matching training.</li>
      * </ul>
      *
      * @return {@link InferenceResult} with {@code blockLogits} and {@code airMask}
