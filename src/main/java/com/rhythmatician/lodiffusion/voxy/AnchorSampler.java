@@ -56,8 +56,14 @@ public final class AnchorSampler {
     public record AnchorInputs(
         float[][]  heightPlanes5,  // [5][256] row-major (will be reshaped to [5,16,16])
         float[][]  router6,        // [6][256] row-major (will be reshaped to [6,16,16])
-        int[][]    biomeIdx        // [16][16]
-    ) {}
+        int[][]    biomeIdx,       // [16][16]
+        float[][]  rawHm           // [16][16] surface block-Y (may be null for chunk/synth path)
+    ) {
+        /** Backwards-compat constructor (rawHm not available). */
+        public AnchorInputs(float[][] heightPlanes5, float[][] router6, int[][] biomeIdx) {
+            this(heightPlanes5, router6, biomeIdx, null);
+        }
+    }
 
     /**
      * Sample v2 anchor inputs for the 16×16 section at the given chunk coordinates.
@@ -97,7 +103,9 @@ public final class AnchorSampler {
      */
     public static AnchorInputs sampleFromNoise(WorldNoiseAccess noiseAccess,
                                                 int sectionX, int sectionZ) {
-        // 1. Real heightmap from ChunkGenerator.getHeight()
+        // 1. Real heightmap — uses ChunkNoiseSampler internally (~64× faster than
+        //    256 individual getHeight() calls).  We keep hmap so callers can
+        //    retrieve it via AnchorInputs.rawHm() without a second sampling pass.
         float[][] hmap = noiseAccess.sampleHeightmap(sectionX, sectionZ);
 
         // 2. Real biomes from BiomeSource → canonical IDs
@@ -115,7 +123,7 @@ public final class AnchorSampler {
         // 4. Real router6 from NoiseRouter density functions
         float[][] router6 = noiseAccess.sampleRouter6(sectionX, sectionZ, hmap);
 
-        return new AnchorInputs(heightPlanes, router6, biomeIdx);
+        return new AnchorInputs(heightPlanes, router6, biomeIdx, hmap);
     }
 
     // ------------------------------------------------------------------

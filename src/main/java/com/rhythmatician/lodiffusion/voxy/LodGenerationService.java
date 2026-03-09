@@ -400,9 +400,11 @@ public final class LodGenerationService {
 
         if (noiseAccess != null) {
             // *** PRIMARY PATH: Real noise data at any coordinate ***
+            // sampleFromNoise() now returns rawHm inside AnchorInputs — no second
+            // sampleHeightmap() call needed (eliminates 256 duplicate getHeight() calls).
             AnchorSampler.AnchorInputs anchor =
                     AnchorSampler.sampleFromNoise(noiseAccess, sectionX, sectionZ);
-            rawHm    = noiseAccess.sampleHeightmap(sectionX, sectionZ);
+            rawHm    = anchor.rawHm();
             biomeIdx = anchor.biomeIdx();
             hp5      = anchor.heightPlanes5();
             r6       = anchor.router6();

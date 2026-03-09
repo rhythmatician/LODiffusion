@@ -156,16 +156,16 @@ public final class WorldNoiseAccess {
     /**
      * Sample the real surface heightmap for a 16×16 section column.
      *
-     * <p>Uses {@link ChunkGenerator#getHeight(int, int, Heightmap.Type,
-     * net.minecraft.world.HeightLimitView, NoiseConfig)} which works at
-     * any coordinate without needing a loaded chunk.
+     * <p>Delegates to {@link #sampleBothHeightmaps} so that the fast
+     * {@code ChunkNoiseSampler(4)} path is used for overworld-style generators
+     * (~64× faster than 256 independent {@code getHeight()} calls).
      *
      * @param sectionX section X coordinate (chunk X)
      * @param sectionZ section Z coordinate (chunk Z)
      * @return float[16][16] of surface Y values in block coordinates
      */
     public float[][] sampleHeightmap(int sectionX, int sectionZ) {
-        return sampleHeightmap(sectionX, sectionZ, Heightmap.Type.WORLD_SURFACE_WG);
+        return sampleBothHeightmaps(sectionX, sectionZ)[0];  // [0] = WORLD_SURFACE_WG
     }
 
     /**

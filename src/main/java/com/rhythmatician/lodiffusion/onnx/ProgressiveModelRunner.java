@@ -89,7 +89,7 @@ public final class ProgressiveModelRunner implements AutoCloseable {
      *                 {@code _config.json} sidecars (produced by export_lod.py)
      * @throws IOException if any model or config cannot be loaded
      */
-    @SuppressWarnings("unchecked")
+    @SuppressWarnings({"unchecked", "rawtypes"})
     public static ProgressiveModelRunner loadAll(Path modelDir) throws IOException {
         ZooModel<NDList, NDList>[] models = new ZooModel[4];
         ModelConfig[] configs = new ModelConfig[4];
