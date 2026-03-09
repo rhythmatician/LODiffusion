@@ -25,17 +25,22 @@ import ai.djl.translate.TranslateException;
  * <pre>
  * Pipeline stages:
  *   init_to_lod4        inputs: (hp[1,5,16,16], biome[1,16,16], y[1])
- *                       output: block_logits[1,N,1,1,1], air_mask[1,1,1,1,1]
+ *                       output: block_logits[1,N,1,1,1]
  *
  *   refine_lod4_to_lod3 inputs: (hp, biome, y, parent[1,1,1,1,1])
- *                       output: block_logits[1,N,2,2,2], air_mask[1,1,2,2,2]
+ *                       output: block_logits[1,N,2,2,2]
  *
  *   refine_lod3_to_lod2 inputs: (hp, biome, y, parent[1,1,2,2,2])
- *                       output: block_logits[1,N,4,4,4], air_mask[1,1,4,4,4]
+ *                       output: block_logits[1,N,4,4,4]
  *
  *   refine_lod2_to_lod1 inputs: (hp, biome, y, parent[1,1,4,4,4])
- *                       output: block_logits[1,N,8,8,8], air_mask[1,1,8,8,8]
+ *                       output: block_logits[1,N,8,8,8]
  * </pre>
+ *
+ * <p>Air is represented as block class 0 in the unified softmax — there is
+ * no separate air mask output.  Binary solid-occupancy parents for inter-stage
+ * propagation are derived from the block logits via argmax: if the predicted
+ * class is 0 (air) the parent value is 0; otherwise 1.
  *
  * <p>The final 8³ output is upsampled 2× via nearest-neighbour repetition to
  * produce 16³ outputs that match the shape expected by {@link com.rhythmatician.lodiffusion.voxy.VoxySectionWriter}.
@@ -60,6 +65,34 @@ public final class ProgressiveModelRunner implements AutoCloseable {
         "refine_lod3_to_lod2_config.json",
         "refine_lod2_to_lod1_config.json"
     };
+
+    /**
+     * Parent input tensor shapes for each stage.  Stage 0 has no parent.
+     * The parent is the binary solid-occupancy derived from block logits
+     * argmax (class 0 = air → 0, else → 1) of the previous stage.
+     */
+    static final long[][] PARENT_INPUT_SHAPES = {
+        null,                // stage 0: no parent
+        {1, 1, 1, 1, 1},    // stage 1: parent from stage 0
+        {1, 1, 2, 2, 2},    // stage 2: parent from stage 1
+        {1, 1, 4, 4, 4},    // stage 3: parent from stage 2
+    };
+
+    /**
+     * Result of a single pipeline stage execution.
+     *
+     * @param solidParentFlat  binary solid parent for the next stage (stages 0-2);
+     *                         {@code null} for the final stage
+     * @param finalResult      full inference result (stage 3 only); {@code null}
+     *                         for intermediate stages
+     * @param elapsedMs        wall time for this stage
+     */
+    public record StageOutput(float[] solidParentFlat,
+                              InferenceResult finalResult,
+                              long elapsedMs) {
+        /** True if this is from the final stage (3). */
+        public boolean isFinal() { return finalResult != null; }
+    }
 
     private final NDManager manager;
     @SuppressWarnings("unchecked")
@@ -250,9 +283,10 @@ public final class ProgressiveModelRunner implements AutoCloseable {
      *       The ONNX model clamps to [0, 23] internally, matching training.</li>
      * </ul>
      *
-     * @return {@link InferenceResult} with {@code blockLogits} and {@code airMask}
-     *         both shaped {@code [1][N/1][16][16][16]} (2× upsampled from the
-     *         pipeline's 8³ native output)
+     * @return {@link InferenceResult} with {@code blockLogits}
+     *         shaped {@code [1][N][16][16][16]} (2× upsampled from the
+     *         pipeline's 8³ native output).  Air is class 0 in the unified
+     *         softmax — there is no separate air mask.
      */
     public InferenceResult generate(float[][] hp5Row, int[][] biomeIdx, int yIndex)
             throws TranslateException {
@@ -285,35 +319,113 @@ public final class ProgressiveModelRunner implements AutoCloseable {
             NDArray xY     = sub.create(new long[]{yIndex}, new Shape(1));
 
             // ── Stage 0: init → LOD4  (no parent) ───────────────────────
-            NDList s0in  = new NDList(xHp, xBiome, xY);
-            NDList s0out = runStage(0, s0in);
-            NDArray air0 = extractAirMask(s0out);   // [1,1,1,1,1]
+            NDList s0in   = new NDList(xHp, xBiome, xY);
+            NDList s0out  = runStage(0, s0in);
+            NDArray logits0 = extractBlockLogits(s0out);  // [1,N,1,1,1]
 
             // ── Stage 1: LOD4 → LOD3 ────────────────────────────────────
-            NDArray p1   = toSolidParent(air0);     // [1,1,1,1,1] binary
-            NDList s1out = runStage(1, new NDList(xHp, xBiome, xY, p1));
-            NDArray air1 = extractAirMask(s1out);   // [1,1,2,2,2]
+            NDArray p1    = toSolidParentFromLogits(logits0);  // [1,1,1,1,1]
+            NDList s1out  = runStage(1, new NDList(xHp, xBiome, xY, p1));
+            NDArray logits1 = extractBlockLogits(s1out);       // [1,N,2,2,2]
 
             // ── Stage 2: LOD3 → LOD2 ────────────────────────────────────
-            NDArray p2   = toSolidParent(air1);     // [1,1,2,2,2] binary
-            NDList s2out = runStage(2, new NDList(xHp, xBiome, xY, p2));
-            NDArray air2 = extractAirMask(s2out);   // [1,1,4,4,4]
+            NDArray p2    = toSolidParentFromLogits(logits1);  // [1,1,2,2,2]
+            NDList s2out  = runStage(2, new NDList(xHp, xBiome, xY, p2));
+            NDArray logits2 = extractBlockLogits(s2out);       // [1,N,4,4,4]
 
             // ── Stage 3: LOD2 → LOD1 ────────────────────────────────────
-            NDArray p3      = toSolidParent(air2);  // [1,1,4,4,4] binary
+            NDArray p3      = toSolidParentFromLogits(logits2);  // [1,1,4,4,4]
             NDList s3out    = runStage(3, new NDList(xHp, xBiome, xY, p3));
-            NDArray logits8 = extractBlockLogits(s3out);  // [1,N,8,8,8]
-            NDArray air8    = extractAirMask(s3out);      // [1,1,8,8,8]
+            NDArray logits8 = extractBlockLogits(s3out);         // [1,N,8,8,8]
 
-            // ── Fused extract + 2× upsample into pooled 16³ buffers ─────
-            // Reads NDArray flat data and writes directly into pre-allocated
-            // 16³ arrays, skipping the intermediate 8³ allocation entirely.
-            // Saves ~2.5 MB of heap allocation per inference call.
+            // ── Fused extract + 2× upsample into pooled 16³ buffer ──────
             extractAndUpsample5D(logits8, buf.logits16);
-            extractAndUpsample5D(air8, buf.air16);
 
             long elapsed = System.currentTimeMillis() - t0;
-            return new InferenceResult(buf.logits16, buf.air16, elapsed);
+            return new InferenceResult(buf.logits16, elapsed);
+        }
+    }
+
+    /**
+     * Run a <em>single</em> stage of the progressive pipeline.
+     *
+     * <p>Designed for the per-stage threading pipeline where each stage runs
+     * on its own worker thread.  The conditioning tensors (hp5, biome, y)
+     * are reconstructed each call since stages run on different threads with
+     * independent {@link NDManager} scopes.
+     *
+     * <ul>
+     *   <li><b>Stages 0-2</b> — returns a deep-copied flat binary parent
+     *       array safe for cross-thread handoff.</li>
+     *   <li><b>Stage 3</b> — returns the full {@link InferenceResult} with
+     *       16³ block logits and air mask (referencing thread-local buffers;
+     *       must be consumed before the next call on the same thread).</li>
+     * </ul>
+     *
+     * @param stage       which stage to run (0–3)
+     * @param hp5Row      height planes {@code [5][256]} in x-major row-major order
+     * @param biomeIdx    biome indices {@code [16][16]} in [x][z] order
+     * @param yIndex      raw section Y index (e.g. -4 for y=-64)
+     * @param parentFlat  binary solid parent from previous stage
+     *                    ({@code null} for stage 0)
+     * @return stage output with either intermediate parent or final result
+     */
+    public StageOutput generateStage(int stage, float[][] hp5Row, int[][] biomeIdx,
+                                      int yIndex, float[] parentFlat)
+            throws TranslateException {
+
+        long t0 = System.currentTimeMillis();
+        InferenceBuffers buf = getOrCreateBuffers();
+
+        try (NDManager sub = manager.newSubManager()) {
+
+            // ── Conditioning tensors (same transpose as generate()) ─────
+            float[] hpFlat = buf.hpFlat;
+            for (int ch = 0; ch < 5; ch++) {
+                for (int lx = 0; lx < 16; lx++) {
+                    for (int lz = 0; lz < 16; lz++) {
+                        hpFlat[ch * 256 + lz * 16 + lx] = hp5Row[ch][lx * 16 + lz];
+                    }
+                }
+            }
+            NDArray xHp = sub.create(hpFlat, new Shape(1, 5, 16, 16));
+
+            long[] bioFlat = buf.bioFlat;
+            for (int lx = 0; lx < 16; lx++) {
+                for (int lz = 0; lz < 16; lz++) {
+                    bioFlat[lz * 16 + lx] = biomeIdx[lx][lz];
+                }
+            }
+            NDArray xBiome = sub.create(bioFlat, new Shape(1, 16, 16));
+            NDArray xY     = sub.create(new long[]{yIndex}, new Shape(1));
+
+            // ── Build input list ────────────────────────────────────────
+            NDList inputs;
+            if (stage == 0) {
+                inputs = new NDList(xHp, xBiome, xY);
+            } else {
+                NDArray parent = sub.create(parentFlat,
+                        new Shape(PARENT_INPUT_SHAPES[stage]));
+                inputs = new NDList(xHp, xBiome, xY, parent);
+            }
+
+            // ── Run the single stage ────────────────────────────────────
+            NDList outputs = runStage(stage, inputs);
+            long elapsed = System.currentTimeMillis() - t0;
+
+            if (stage < 3) {
+                // Intermediate: derive binary solid parent from block logits
+                NDArray logits = extractBlockLogits(outputs);
+                float[] solidFlat = toSolidParentFlatFromLogits(logits);
+                return new StageOutput(solidFlat, null, elapsed);
+            } else {
+                // Final: extract + 2× upsample into pooled 16³ buffer
+                NDArray logits8 = extractBlockLogits(outputs);
+                extractAndUpsample5D(logits8, buf.logits16);
+                return new StageOutput(null,
+                        new InferenceResult(buf.logits16, elapsed),
+                        elapsed);
+            }
         }
     }
 
@@ -328,40 +440,76 @@ public final class ProgressiveModelRunner implements AutoCloseable {
     }
 
     /**
-     * Convert raw air-mask logits to a binary solid-occupancy parent tensor.
-     * Model convention: positive logit = solid; negative = air.
+     * Derive a binary solid-occupancy parent tensor from block logits.
      *
-     * <p>Note: DJL's {@code OrtNDArray.gt()} triggers infinite recursion in
-     * {@code NDArrayAdapter.gt()} (StackOverflowError), so we threshold
-     * manually via the raw float array.
+     * <p>Performs argmax along the channel dimension (dim 1) of the
+     * {@code [1, N, D, D, D]} logits tensor.  If the predicted class is 0
+     * (air) the parent value is 0; otherwise 1.
+     *
+     * <p>Returns an NDArray of shape {@code [1, 1, D, D, D]} suitable for
+     * feeding as {@code x_parent} to the next pipeline stage.
      */
-    private static NDArray toSolidParent(NDArray airLogits) {
-        float[] src = airLogits.toFloatArray();
-        float[] dst = new float[src.length];
-        for (int i = 0; i < src.length; i++) {
-            dst[i] = src[i] > 0f ? 1f : 0f;
+    private static NDArray toSolidParentFromLogits(NDArray blockLogits) {
+        long[] s = blockLogits.getShape().getShape();
+        int c = (int) s[1], d = (int) s[2], h = (int) s[3], w = (int) s[4];
+        float[] flat = blockLogits.toFloatArray();
+        int spatialSize = d * h * w;
+        float[] dst = new float[spatialSize];
+
+        // flat layout: [batch=0][channel][d][h][w]  — channel is the fastest-varying outer dim
+        for (int i = 0; i < spatialSize; i++) {
+            // For each spatial position, find argmax across channels
+            int bestCh = 0;
+            float bestVal = flat[i];  // channel 0 at spatial position i
+            for (int ch = 1; ch < c; ch++) {
+                float v = flat[ch * spatialSize + i];
+                if (v > bestVal) {
+                    bestVal = v;
+                    bestCh = ch;
+                }
+            }
+            dst[i] = bestCh == 0 ? 0f : 1f;
         }
-        return airLogits.getManager().create(dst, airLogits.getShape());
+        return blockLogits.getManager().create(dst, new Shape(1, 1, d, h, w));
     }
 
-    /** Extract the air-mask output (channel dim == 1). */
-    private static NDArray extractAirMask(NDList outputs) {
-        for (NDArray t : outputs) {
-            long[] s = t.getShape().getShape();
-            if (s.length == 5 && s[1] == 1) return t;
+    /**
+     * Same as {@link #toSolidParentFromLogits} but returns a fresh
+     * {@code float[]} suitable for cross-thread handoff (no NDArray
+     * lifecycle dependency).
+     */
+    private static float[] toSolidParentFlatFromLogits(NDArray blockLogits) {
+        long[] s = blockLogits.getShape().getShape();
+        int c = (int) s[1], d = (int) s[2], h = (int) s[3], w = (int) s[4];
+        float[] flat = blockLogits.toFloatArray();
+        int spatialSize = d * h * w;
+        float[] dst = new float[spatialSize];
+
+        for (int i = 0; i < spatialSize; i++) {
+            int bestCh = 0;
+            float bestVal = flat[i];
+            for (int ch = 1; ch < c; ch++) {
+                float v = flat[ch * spatialSize + i];
+                if (v > bestVal) {
+                    bestVal = v;
+                    bestCh = ch;
+                }
+            }
+            dst[i] = bestCh == 0 ? 0f : 1f;
         }
-        throw new IllegalStateException(
-                "[ProgressiveModelRunner] air_mask (ch=1, rank=5) not found in outputs");
+        return dst;
     }
 
-    /** Extract the block-logits output (channel dim > 1). */
+    /** Extract the block-logits output (the sole output tensor). */
     private static NDArray extractBlockLogits(NDList outputs) {
+        if (outputs.size() == 1) return outputs.get(0);
+        // Fallback: find by shape (channel dim > 1, rank 5)
         for (NDArray t : outputs) {
             long[] s = t.getShape().getShape();
             if (s.length == 5 && s[1] > 1) return t;
         }
         throw new IllegalStateException(
-                "[ProgressiveModelRunner] block_logits (ch>1, rank=5) not found in outputs");
+                "[ProgressiveModelRunner] block_logits not found in outputs");
     }
 
     // ------------------------------------------------------------------
@@ -373,7 +521,6 @@ public final class ProgressiveModelRunner implements AutoCloseable {
      * Eliminates the major GC-pressure sources:
      * <ul>
      *   <li>{@code logits16} — {@code float[1][vocabSize][16][16][16]} (~2.2 MB)</li>
-     *   <li>{@code air16} — {@code float[1][1][16][16][16]} (16 KB)</li>
      *   <li>{@code hpFlat} / {@code bioFlat} — conditioning scratch arrays</li>
      * </ul>
      *
@@ -386,12 +533,10 @@ public final class ProgressiveModelRunner implements AutoCloseable {
         final float[] hpFlat  = new float[5 * 16 * 16];
         final long[]  bioFlat = new long[256];
         final float[][][][][] logits16;  // [1][vocabSize][16][16][16]
-        final float[][][][][] air16;     // [1][1][16][16][16]
 
         InferenceBuffers(int vocabSize) {
             this.vocabSize = vocabSize;
             this.logits16  = new float[1][vocabSize][16][16][16];
-            this.air16     = new float[1][1][16][16][16];
         }
     }
 

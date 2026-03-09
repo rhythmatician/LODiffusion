@@ -49,7 +49,6 @@ public class ProgressiveLODPipeline implements AutoCloseable {
 
     public record GenerationResult(
         float[][][][][] blockLogits,  // [1][N][D][D][D]
-        float[][][][][] airMask,      // [1][1][D][D][D]
         long totalTimeMs,
         long[] modelTimesMs,          // [4]
         int[] resolutions             // [1,2,4,8]
@@ -84,7 +83,6 @@ public class ProgressiveLODPipeline implements AutoCloseable {
 
         NDArray parent = null; // x_parent propagates; null for init
         float[][][][][] lastLogits = null;
-        float[][][][][] lastAir = null;
 
         // Number of stages to run: from init (stage 0) through the target
         // targetLod=4 → 1 stage (init only), targetLod=1 → all 4 stages
@@ -99,53 +97,47 @@ public class ProgressiveLODPipeline implements AutoCloseable {
             NDList inputs = toNamedNDList(inputMap, s.config());
             try (var predictor = s.model().newPredictor(new NoopTranslator())) {
                 NDList out = predictor.predict(inputs);
-                
-                // Pick outputs by shape
-                NDArray blockLogits = null;
-                NDArray airMask = null;
-                
-                for (NDArray tensor : out) {
-                    long[] shape = tensor.getShape().getShape();
-                    if (shape.length == 5 && shape[0] == 1) {
-                        long channels = shape[1];
-                        if (channels > 100) {  // block_logits has ~1104 channels
+
+                // Single output: block_logits [1, N, D, D, D]
+                NDArray blockLogits = out.get(0);
+                if (out.size() > 1) {
+                    // Fallback: find by shape (channel dim > 100)
+                    for (NDArray tensor : out) {
+                        long[] shape = tensor.getShape().getShape();
+                        if (shape.length == 5 && shape[0] == 1 && shape[1] > 100) {
                             blockLogits = tensor;
-                        } else if (channels == 1) {  // air_mask has 1 channel
-                            airMask = tensor;
+                            break;
                         }
                     }
                 }
-                
-                if (blockLogits == null) {
-                    throw new IllegalStateException("Could not find block_logits output tensor");
-                }
-                if (airMask == null) {
-                    throw new IllegalStateException("Could not find air_mask output tensor");
-                }
 
                 lastLogits = extractTensor5D(blockLogits);
-                lastAir = extractTensor5D(airMask);
 
-                // Propagate binary occupancy (from air_mask) as x_parent to next stage.
-                // The air_mask has shape [1, 1, D, D, D] with positive values = solid.
-                // Threshold at 0 to get binary occupancy matching the Python model's
-                // expected x_parent format: [1, 1, P, P, P] float32 in {0, 1}.
-                //
-                // Note: DJL's OrtNDArray.gt() triggers infinite recursion in
-                // NDArrayAdapter.gt() (StackOverflowError), so we threshold manually.
-                float[] raw = airMask.toFloatArray();
-                float[] bin = new float[raw.length];
-                for (int i = 0; i < raw.length; i++) {
-                    bin[i] = raw[i] > 0f ? 1f : 0f;
+                // Propagate binary occupancy (from argmax of block logits) as
+                // x_parent to the next stage.  Air = class 0; solid = any other.
+                long[] shape = blockLogits.getShape().getShape();
+                int c = (int) shape[1], d = (int) shape[2], h = (int) shape[3], w = (int) shape[4];
+                float[] flat = blockLogits.toFloatArray();
+                int spatialSize = d * h * w;
+                float[] bin = new float[spatialSize];
+                for (int i = 0; i < spatialSize; i++) {
+                    int bestCh = 0;
+                    float bestVal = flat[i];
+                    for (int ch = 1; ch < c; ch++) {
+                        float v = flat[ch * spatialSize + i];
+                        if (v > bestVal) { bestVal = v; bestCh = ch; }
+                    }
+                    bin[i] = bestCh == 0 ? 0f : 1f;
                 }
-                parent = airMask.getManager().create(bin, airMask.getShape());
+                parent = blockLogits.getManager().create(bin,
+                        new ai.djl.ndarray.types.Shape(1, 1, d, h, w));
             }
 
             times[stage] = System.currentTimeMillis() - t0;
         }
 
         long total = System.currentTimeMillis() - start;
-        return new GenerationResult(lastLogits, lastAir, total, times, resolutions);
+        return new GenerationResult(lastLogits, total, times, resolutions);
     }
 
     private NDList toNamedNDList(Map<String, NDArray> inputs, ModelConfig cfg) {

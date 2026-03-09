@@ -1,5 +1,7 @@
 package com.rhythmatician.lodiffusion.voxy;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -24,10 +26,10 @@ public final class VoxySectionWriter {
     private static final Logger LOGGER = LoggerFactory.getLogger(VoxySectionWriter.class);
 
     /** Default light value: full sky light, no block light → 0x0F. */
-    private static final int DEFAULT_LIGHT = 0x0F;
+    static final int DEFAULT_LIGHT = 0x0F;
 
-    /** Counter for diagnostic logging — log detail for first N sections. */
-    private int sectionsWritten = 0;
+    /** Counter for diagnostic logging — log detail for first N sections. Thread-safe. */
+    private final AtomicInteger sectionsWritten = new AtomicInteger();
 
     private final Object worldEngine;
     private final Object voxyMapper;
@@ -45,6 +47,18 @@ public final class VoxySectionWriter {
         this.blockMapper = blockMapper;
         LOGGER.info("[VoxySectionWriter] Created — engine={}, mapper={}", 
                 worldEngine.getClass().getSimpleName(), voxyMapper.getClass().getSimpleName());
+    }
+
+    /**
+     * Test constructor for use without a live WorldEngine.
+     * Bypasses Voxy runtime requirements.
+     *
+     * @param blockMapper  model→Voxy block ID mapping (may be a stub)
+     */
+    public VoxySectionWriter(VoxyBlockMapper blockMapper) {
+        this.worldEngine = null;
+        this.voxyMapper = null;
+        this.blockMapper = blockMapper;
     }
 
     /**
@@ -67,33 +81,98 @@ public final class VoxySectionWriter {
         // step writes to distinct section coordinates (different resolution
         // grids), so there is no need for self-overwrite tracking.
         if (VoxyCompat.sectionExists(worldEngine, sectionX, sectionY, sectionZ)) {
-            if (sectionsWritten < 10) {
+            if (sectionsWritten.get() < 10) {
                 LOGGER.info("[VoxySectionWriter] Skipping ({},{},{}) — section already exists",
                         sectionX, sectionY, sectionZ);
             }
-            sectionsWritten++;
+            sectionsWritten.incrementAndGet();
             return;
         }
 
-        float[][][][][] logits = result.blockLogits();  // [1][N][16][16][16]
-        float[][][][][] mask   = result.airMask();      // [1][1][16][16][16]
+        boolean detailed = sectionsWritten.get() < 5; // Log detail for first 5 sections
 
-        boolean detailed = sectionsWritten < 5; // Log detail for first 5 sections
+        // Build the filled section
+        FilledSectionResult filled = buildFilledSection(result, vocabSize,
+                sectionX, sectionY, sectionZ, biomeVoxyIds, detailed);
 
-        // Diagnostic: check air mask stats
+        Object section = filled.section();
+        int nonAirCount = filled.nonAirCount();
+
         if (detailed) {
-            int positiveCount = 0;
-            float minMask = Float.MAX_VALUE, maxMask = -Float.MAX_VALUE;
+            LOGGER.info("[VoxySectionWriter] Section ({},{},{}) — {} non-air voxels out of 4096",
+                    sectionX, sectionY, sectionZ, nonAirCount);
+        }
+
+        // Short-circuit: if the section is entirely air, skip mip + insert
+        if (nonAirCount == 0) {
+            if (detailed) {
+                LOGGER.warn("[VoxySectionWriter] Skipping all-air section ({},{},{})", sectionX, sectionY, sectionZ);
+            }
+            sectionsWritten.incrementAndGet();
+            return;
+        }
+
+        // 3. Compute mip pyramid (L1..L4) via Voxy's WorldConversionFactory
+        LOGGER.debug("[VoxySectionWriter] Computing mip pyramid for ({},{},{})", sectionX, sectionY, sectionZ);
+        VoxyCompat.mipSection(section, voxyMapper);
+
+        // 4. Push into world
+        LOGGER.debug("[VoxySectionWriter] Inserting section ({},{},{}) into Voxy world", sectionX, sectionY, sectionZ);
+        VoxyCompat.insertUpdate(worldEngine, section);
+
+        int written = sectionsWritten.incrementAndGet();
+        if (detailed || written % 100 == 0) {
+            LOGGER.info("[VoxySectionWriter] Wrote section ({},{},{}) — {} solid voxels [total written: {}]",
+                    sectionX, sectionY, sectionZ, nonAirCount, written);
+        }
+    }
+
+    /**
+     * Result of building a filled VoxelizedSection (before mip and insert).
+     *
+     * @param section      the VoxelizedSection object (reflected)
+     * @param nonAirCount  count of non-air voxels in L0
+     */
+    public record FilledSectionResult(Object section, int nonAirCount) {}
+
+    /**
+     * Build a filled VoxelizedSection from model output.
+     *
+     * <p>This method creates the section, sets its position, fills L0 voxels,
+     * and returns the result without performing mip computation or insertion.
+     *
+     * @param result          the model's InferenceResult
+     * @param vocabSize       number of block types in the model vocabulary
+     * @param sectionX        Voxy chunk-section X (block X / 16)
+     * @param sectionY        Voxy chunk-section Y (block Y / 16)
+     * @param sectionZ        Voxy chunk-section Z (block Z / 16)
+     * @param biomeVoxyIds    per-column Voxy biome IDs [16][16], indexed [x][z]
+     * @param logDiagnostics  if true, log air mask statistics
+     * @return the filled section and non-air count
+     */
+    public FilledSectionResult buildFilledSection(InferenceResult result, int vocabSize,
+                                            int sectionX, int sectionY, int sectionZ,
+                                            int[][] biomeVoxyIds, boolean logDiagnostics) {
+
+        float[][][][][] logits = result.blockLogits();  // [1][N][16][16][16]
+
+        // Diagnostic: check air/solid distribution from argmax
+        if (logDiagnostics) {
+            int airCount = 0;
             for (int d0 = 0; d0 < 16; d0++)
                 for (int d1 = 0; d1 < 16; d1++)
                     for (int d2 = 0; d2 < 16; d2++) {
-                        float v = mask[0][0][d0][d1][d2];
-                        if (v > 0) positiveCount++;
-                        if (v < minMask) minMask = v;
-                        if (v > maxMask) maxMask = v;
+                        // Quick argmax check: is class 0 (air) the winner?
+                        int best = 0;
+                        float bestVal = logits[0][0][d0][d1][d2];
+                        for (int b = 1; b < vocabSize; b++) {
+                            float v = logits[0][b][d0][d1][d2];
+                            if (v > bestVal) { bestVal = v; best = b; }
+                        }
+                        if (best == 0) airCount++;
                     }
-            LOGGER.info("[VoxySectionWriter] Section ({},{},{}) air_mask stats: positive={}/4096, min={}, max={}",
-                    sectionX, sectionY, sectionZ, positiveCount, minMask, maxMask);
+            LOGGER.info("[VoxySectionWriter] Section ({},{},{}) argmax stats: air={}/4096, solid={}/4096",
+                    sectionX, sectionY, sectionZ, airCount, 4096 - airCount);
         }
 
         // 1. Create empty VoxelizedSection
@@ -113,25 +192,24 @@ public final class VoxySectionWriter {
                     long voxel;
                     int biome = biomeVoxyIds[x][z]; // per-column biome
 
-                    // Access model output at [batch=0][chan][d0=Y][d1=Z][d2=X]
-                    if (mask[0][0][y][z][x] <= 0f) {
-                        // Air — use air with default light
+                    // Unified argmax over ALL channels (air = class 0)
+                    int bestIdx = 0;
+                    float bestVal = logits[0][0][y][z][x];
+                    for (int b = 1; b < vocabSize; b++) {
+                        float v = logits[0][b][y][z][x];
+                        if (v > bestVal) {
+                            bestVal = v;
+                            bestIdx = b;
+                        }
+                    }
+
+                    if (bestIdx == 0) {
+                        // Air — class 0 won the argmax
                         voxel = VoxyCompat.composeVoxel(0, biome, DEFAULT_LIGHT);
                     } else {
-                        // Solid — argmax over block logits
-                        int bestIdx = 0;
-                        float bestVal = logits[0][0][y][z][x];
-                        for (int b = 1; b < vocabSize; b++) {
-                            float v = logits[0][b][y][z][x];
-                            if (v > bestVal) {
-                                bestVal = v;
-                                bestIdx = b;
-                            }
-                        }
-
                         int voxyBlockId = blockMapper.getVoxyBlockId(bestIdx);
                         if (voxyBlockId == 0) {
-                            // Mapped to air despite solid mask — keep as air
+                            // Mapped to air despite solid prediction — keep as air
                             voxel = VoxyCompat.composeVoxel(0, biome, DEFAULT_LIGHT);
                         } else {
                             voxel = VoxyCompat.composeVoxel(voxyBlockId, biome, DEFAULT_LIGHT);
@@ -146,33 +224,7 @@ public final class VoxySectionWriter {
 
         VoxyCompat.setNonAirCount(section, nonAirCount);
 
-        if (detailed) {
-            LOGGER.info("[VoxySectionWriter] Section ({},{},{}) — {} non-air voxels out of 4096",
-                    sectionX, sectionY, sectionZ, nonAirCount);
-        }
-
-        // Short-circuit: if the section is entirely air, skip mip + insert
-        if (nonAirCount == 0) {
-            if (detailed) {
-                LOGGER.warn("[VoxySectionWriter] Skipping all-air section ({},{},{})", sectionX, sectionY, sectionZ);
-            }
-            sectionsWritten++;
-            return;
-        }
-
-        // 3. Compute mip pyramid (L1..L4) via Voxy's WorldConversionFactory
-        LOGGER.debug("[VoxySectionWriter] Computing mip pyramid for ({},{},{})", sectionX, sectionY, sectionZ);
-        VoxyCompat.mipSection(section, voxyMapper);
-
-        // 4. Push into world
-        LOGGER.debug("[VoxySectionWriter] Inserting section ({},{},{}) into Voxy world", sectionX, sectionY, sectionZ);
-        VoxyCompat.insertUpdate(worldEngine, section);
-
-        if (detailed || sectionsWritten % 100 == 0) {
-            LOGGER.info("[VoxySectionWriter] Wrote section ({},{},{}) — {} solid voxels [total written: {}]",
-                    sectionX, sectionY, sectionZ, nonAirCount, sectionsWritten + 1);
-        }
-        sectionsWritten++;
+        return new FilledSectionResult(section, nonAirCount);
     }
 
     /**

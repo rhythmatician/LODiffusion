@@ -175,7 +175,7 @@ public record ModelConfig(
 
         if (outputs == null)
             throw new IllegalStateException("ModelConfig has no outputs");
-        for (String req : new String[]{"block_logits", "air_mask"}) {
+        for (String req : new String[]{"block_logits"}) {
             if (!outputs.containsKey(req))
                 throw new IllegalStateException("Missing required output: " + req);
         }

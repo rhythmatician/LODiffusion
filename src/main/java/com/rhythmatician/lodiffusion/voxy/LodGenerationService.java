@@ -2,14 +2,10 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
@@ -30,31 +26,28 @@ import net.minecraft.world.chunk.ChunkStatus;
  * Background service that generates terrain around the player and pushes it
  * into Voxy for distant rendering.
  *
- * <h3>Architecture — Progressive LOD Passes</h3>
- * <p>The ONNX model is a <em>refinement machine</em>.  Generation runs in
- * <b>4 progressive passes</b>, one per LOD level, each covering a different
- * radius around the player:
+ * <h3>Architecture — Per-Stage Pipeline</h3>
+ * <p>The ONNX model is a 4-stage <em>refinement pipeline</em>.  Each section
+ * flows through all 4 stages, closest-to-player first:
  *
  * <ol>
- *   <li><b>LOD 4</b> (radius 16) — coarsest pass, covers the horizon fast.
- *       Uses a heightmap-based initial parent.  Result is pushed to Voxy
- *       immediately so terrain appears quickly.</li>
- *   <li><b>LOD 3</b> (radius 12) — takes the coarsened LOD 4 output as
- *       parent, refines it.  Overwrites the LOD 4 sections in Voxy.</li>
- *   <li><b>LOD 2</b> (radius 8) — refines LOD 3 output.</li>
- *   <li><b>LOD 1</b> (radius 4) — finest pass, closest to the player.
- *       Final quality terrain.</li>
+ *   <li><b>Stage 0</b> (init → LOD4) — a pool of workers processes sections
+ *       with no parent dependency.</li>
+ *   <li><b>Stage 1</b> (LOD4 → LOD3) — single worker thread, takes the
+ *       binary air mask from stage 0 as parent input.</li>
+ *   <li><b>Stage 2</b> (LOD3 → LOD2) — single worker thread.</li>
+ *   <li><b>Stage 3</b> (LOD2 → LOD1) — single worker thread, produces the
+ *       final 16³ output and writes it to Voxy.</li>
  * </ol>
  *
- * <p>Each pass coarsens its 16³ air-mask output to 8³ and caches it so
- * the next pass can use it as the parent occupancy input.  Voxy's
- * {@code insertUpdate} handles the internal mip pyramid automatically.
+ * <p>Sections are prioritized by Manhattan distance from the player so
+ * nearby terrain appears first.  The pipeline ensures maximum throughput
+ * by keeping all stages busy concurrently.
  */
 public final class LodGenerationService {
 
     /** Model LOD token range. */
     private static final int COARSEST_LOD = 4;
-    private static final int FINEST_LOD   = 1;
 
     /**
      * Radius (in sections) for each LOD pass.  Index = LOD level.
@@ -82,12 +75,18 @@ public final class LodGenerationService {
     private static final boolean HEIGHTMAP_CLIP = true;
 
     /**
-     * Number of parallel worker threads for the coarsest LOD pass.
-     * Higher values speed up initial terrain generation at the cost of
-     * more CPU usage.  Capped at 4 to avoid starving the game thread.
+     * Number of parallel worker threads for stage 0 (init → LOD4).
+     * Stage 0 has no parent dependency so sections can run concurrently.
+     * Capped at 4 to avoid starving the game thread.
      */
-    private static final int LOD4_PARALLELISM =
+    private static final int STAGE_0_PARALLELISM =
             Math.min(Runtime.getRuntime().availableProcessors(), 4);
+
+    /**
+     * Generation radius (in sections).  All sections within this Manhattan
+     * distance from the player are generated, closest first.
+     */
+    private static final int GENERATION_RADIUS = PASS_RADIUS[COARSEST_LOD];
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
@@ -98,11 +97,15 @@ public final class LodGenerationService {
     private volatile int playerSectionX;
     private volatile int playerSectionZ;
 
-    /** Tracks which (section, lod) combos we've already generated. Thread-safe. */
+    /** Tracks which (section) positions we've already generated. Thread-safe. */
     private final Set<Long> generatedSections = ConcurrentHashMap.newKeySet();
 
-    /** Coarsened parent cache: posKey → float[8][8][8] from previous LOD pass. */
-    private final Map<Long, float[][][]> parentCache = new HashMap<>();
+    /** Cached column conditioning data — avoids redundant noise sampling. Thread-safe. */
+    private final ConcurrentHashMap<Long, ColumnContext> columnContextCache =
+            new ConcurrentHashMap<>();
+
+    /** Active pipeline queue (set during pipeline execution). */
+    private volatile LodGenerationQueue activeQueue;
 
     /** Stats: how many sections used real vs synthetic conditioning data. Thread-safe. */
     private final AtomicInteger realDataSections = new AtomicInteger();
@@ -136,11 +139,13 @@ public final class LodGenerationService {
         stopRequested.set(false);
         positionReady.set(false);
         generatedSections.clear();
-        parentCache.clear();
+        columnContextCache.clear();
+        activeQueue = null;
         realDataSections.set(0);
         syntheticDataSections.set(0);
         noiseAccessSections.set(0);
         skippedAirSections.set(0);
+        diagnosticCount.set(0);
         noiseAccess = null;
         this.server = server;
 
@@ -167,7 +172,10 @@ public final class LodGenerationService {
         }
         running.set(false);
         generatedSections.clear();
-        parentCache.clear();
+        columnContextCache.clear();
+        LodGenerationQueue q = activeQueue;
+        if (q != null) q.clear();
+        activeQueue = null;
         HelloTerrainMod.LOGGER.info("[LodGen] Service stopped");
     }
 
@@ -238,8 +246,8 @@ public final class LodGenerationService {
             HelloTerrainMod.LOGGER.info("[LodGen] Starting generation from player section ({}, {})",
                     playerSectionX, playerSectionZ);
 
-            // Main generation loop: coarsest LODs first, then refine
-            generateProgressiveLods(world, model, writer, blockMapper);
+            // Run the per-stage pipeline
+            runPipeline(world, model, writer, blockMapper);
 
         } catch (Exception e) {
             if (!stopRequested.get()) {
@@ -251,208 +259,313 @@ public final class LodGenerationService {
         }
     }
 
+    // ------------------------------------------------------------------ //
+    //  Per-stage pipeline
+    // ------------------------------------------------------------------ //
+
     /**
-     * Generate terrain in progressive LOD passes, coarsest-to-finest.
-     *
-     * <p>Each pass covers a decreasing radius: LOD 4 sweeps the horizon
-     * quickly, while LOD 1 only refines the area closest to the player.
-     * Each section's result is pushed to Voxy immediately, so coarse
-     * terrain appears fast and gets refined progressively.
+     * Run the per-stage pipeline: populate a priority queue with all sections
+     * in the generation radius, then start stage workers that process sections
+     * through stages 0→1→2→3.
      */
-    private void generateProgressiveLods(World world,
-                                          ProgressiveModelRunner model,
-                                          VoxySectionWriter writer,
-                                          VoxyBlockMapper blockMapper) {
+    private void runPipeline(World world,
+                              ProgressiveModelRunner model,
+                              VoxySectionWriter writer,
+                              VoxyBlockMapper blockMapper) {
         int centerX = playerSectionX;
         int centerZ = playerSectionZ;
 
+        LodGenerationQueue queue = new LodGenerationQueue();
+        this.activeQueue = queue;
+
+        // Populate the queue with all sections in the generation radius
+        populateQueue(queue, world, centerX, centerZ);
+
+        if (stopRequested.get()) return;
+
+        int total = queue.totalEnqueued();
         HelloTerrainMod.LOGGER.info(
-                "[LodGen] Starting progressive generation — " +
-                "{} passes (LOD {}→{}) around ({}, {})  contract={}  parallelism={}",
-                COARSEST_LOD - FINEST_LOD + 1,
-                COARSEST_LOD, FINEST_LOD, centerX, centerZ,
-                "v3.progressive", LOD4_PARALLELISM);
+                "[LodGen] Pipeline starting — {} sections, {} stage-0 workers + 3 stage workers, radius={}",
+                total, STAGE_0_PARALLELISM, GENERATION_RADIUS);
 
-        for (int lod = COARSEST_LOD; lod >= FINEST_LOD; lod--) {
-            if (stopRequested.get()) return;
+        // ── Create stage worker threads ─────────────────────────────────
+        int numWorkers = STAGE_0_PARALLELISM + 3;
+        Thread[] workers = new Thread[numWorkers];
+        AtomicInteger stage0Active = new AtomicInteger(STAGE_0_PARALLELISM);
 
-            int radius = PASS_RADIUS[lod];
-            boolean distantFirst = false;
-            List<int[]> columns = buildSpiralSections(
-                    centerX, centerZ, radius, distantFirst);
-            AtomicInteger passCount = new AtomicInteger();
-            diagnosticCount.set(0);
-
-            HelloTerrainMod.LOGGER.info(
-                    "[LodGen] LOD {} pass — radius={}, ~{} columns, " +
-                    "distant-first={}, × {} Y = ~{} sections",
-                    lod, radius, columns.size(),
-                    distantFirst, Y_SECTIONS,
-                    columns.size() * Y_SECTIONS);
-
-            boolean useParallel = lod == COARSEST_LOD && LOD4_PARALLELISM > 1;
-
-            if (useParallel) {
-                // ── Multi-threaded pass for coarsest LOD ─────────────
-                // LOD 4 covers the widest radius with the cheapest model.
-                // Parallelising column processing fills the horizon faster.
-                ExecutorService executor = Executors.newFixedThreadPool(
-                        LOD4_PARALLELISM, r -> {
-                            Thread t = new Thread(r, "LODiffusion-LOD4");
-                            t.setDaemon(true);
-                            return t;
-                        });
-
-                final int lodFinal = lod;
-                List<Future<Integer>> futures = new ArrayList<>();
-                for (int[] col : columns) {
-                    final int sx = col[0], sz = col[1];
-                    futures.add(executor.submit(() ->
-                            processColumn(world, model, writer, blockMapper,
-                                    sx, sz, lodFinal)));
-                }
-
-                // Collect results as they complete (futures are ordered
-                // center-first from the spiral, so progress is natural)
-                for (Future<Integer> f : futures) {
-                    if (stopRequested.get()) break;
-                    try {
-                        int count = f.get();
-                        int total = passCount.addAndGet(count);
-                        if (count > 0 && total % 200 < count) {
-                            HelloTerrainMod.LOGGER.info(
-                                    "[LodGen] LOD {} progress: {} sections " +
-                                    "(skipped {} air)",
-                                    lodFinal, total, skippedAirSections.get());
-                        }
-                    } catch (Exception e) {
-                        if (!stopRequested.get()) {
-                            HelloTerrainMod.LOGGER.warn(
-                                    "[LodGen] Column task failed: {}",
-                                    e.getMessage());
-                        }
+        // Stage 0: pool of workers (no parent dependency → safe to parallelize)
+        for (int i = 0; i < STAGE_0_PARALLELISM; i++) {
+            final int idx = i;
+            workers[i] = new Thread(() -> {
+                try {
+                    runStageWorker(0, queue, model, writer, blockMapper);
+                } finally {
+                    if (stage0Active.decrementAndGet() == 0) {
+                        queue.signalStageComplete(0);
                     }
                 }
+            }, "LODiffusion-Stage0-" + idx);
+            workers[i].setDaemon(true);
+        }
 
-                executor.shutdownNow();
-            } else {
-                // ── Single-threaded pass for finer LODs ──────────────
-                for (int[] col : columns) {
-                    if (stopRequested.get()) return;
-                    int count = processColumn(world, model, writer, blockMapper,
-                            col[0], col[1], lod);
-                    int total = passCount.addAndGet(count);
-                    if (count > 0 && total % 200 < count) {
-                        HelloTerrainMod.LOGGER.info(
-                                "[LodGen] LOD {} progress: {} sections " +
-                                "(skipped {} air)",
-                                lod, total, skippedAirSections.get());
-                    }
+        // Stages 1, 2, 3: single-threaded each
+        for (int s = 1; s <= 3; s++) {
+            final int stage = s;
+            int workerIdx = STAGE_0_PARALLELISM + s - 1;
+            workers[workerIdx] = new Thread(() -> {
+                try {
+                    runStageWorker(stage, queue, model, writer, blockMapper);
+                } finally {
+                    queue.signalStageComplete(stage);
                 }
-            }
+            }, "LODiffusion-Stage" + stage);
+            workers[workerIdx].setDaemon(true);
+        }
 
-            HelloTerrainMod.LOGGER.info(
-                    "[LodGen] LOD {} pass complete — {} sections generated, {} skipped " +
-                    "(noise={}, real={}, synthetic={})",
-                    lod, passCount.get(), skippedAirSections.get(),
-                    noiseAccessSections.get(), realDataSections.get(),
-                    syntheticDataSections.get());
+        // ── Start all workers ───────────────────────────────────────────
+        for (Thread w : workers) w.start();
 
-            // Free cached parents outside the next pass's radius
-            if (lod > FINEST_LOD) {
-                pruneParentCache(centerX, centerZ, PASS_RADIUS[lod - 1]);
-            } else {
-                parentCache.clear();
+        // ── Wait for completion ─────────────────────────────────────────
+        for (Thread w : workers) {
+            try {
+                w.join();
+            } catch (InterruptedException e) {
+                if (!stopRequested.get()) {
+                    HelloTerrainMod.LOGGER.warn("[LodGen] Pipeline interrupted");
+                }
+                break;
             }
         }
 
-        HelloTerrainMod.LOGGER.info("[LodGen] All LOD passes complete");
+        // Free cached column context (may be large with noise data)
+        columnContextCache.clear();
+
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen] Pipeline complete — {} done, {} failed out of {} total " +
+                "(noise={}, real={}, synthetic={}, skippedAir={})",
+                queue.completedCount(), queue.failedCount(), total,
+                noiseAccessSections.get(), realDataSections.get(),
+                syntheticDataSections.get(), skippedAirSections.get());
     }
 
     /**
-     * Process all Y sections for a single column.
-     *
-     * <p>Thread-safe — multiple columns can be processed concurrently.
-     * Each column samples its own conditioning data and writes results
-     * independently to Voxy.
-     *
-     * @return the number of sections actually generated
+     * Populate the stage-0 queue with all sections in the generation radius.
+     * Sections are prioritized by Manhattan distance (closest first).
      */
-    private int processColumn(World world, ProgressiveModelRunner model,
-                               VoxySectionWriter writer,
-                               VoxyBlockMapper blockMapper,
-                               int sx, int sz, int lod) {
-        if (stopRequested.get()) return 0;
+    private void populateQueue(LodGenerationQueue queue, World world,
+                                int centerX, int centerZ) {
+        List<int[]> columns = buildSpiralSections(centerX, centerZ,
+                GENERATION_RADIUS, false);
 
-        // Skip columns where vanilla has loaded real chunks
-        if (tryGetLoadedChunk(world, sx, sz) != null) {
-            writer.forgetColumn(sx, sz, Y_BASE_SECTION, Y_SECTIONS);
-            return 0;
-        }
-
-        // Sample conditioning data ONCE per column
-        ColumnContext ctx = buildColumnContext(world, sx, sz);
-
-        // Compute Y range from surface heightmap
-        float minH = Float.MAX_VALUE, maxH = -Float.MAX_VALUE;
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                float h = ctx.rawHm[lx][lz];
-                if (h < minH) minH = h;
-                if (h > maxH) maxH = h;
-            }
-        }
-
-        int minSectionY = Math.floorDiv((int) Math.floor(minH), 16) - SURFACE_MARGIN;
-        int maxSectionY = Math.floorDiv((int) Math.ceil(maxH), 16) + SURFACE_MARGIN;
-
-        // Log heightmap range for first few columns
-        if (diagnosticCount.get() < 3) {
-            diagnosticCount.incrementAndGet();
-            HelloTerrainMod.LOGGER.info(
-                    "[LodGen] Column ({},{}) heightmap: min={} max={} → "
-                    + "sectionY=[{},{}] (blocks [{},{}])",
-                    sx, sz, minH, maxH,
-                    Math.max(minSectionY, Y_BASE_SECTION),
-                    Math.min(maxSectionY, Y_BASE_SECTION + Y_SECTIONS - 1),
-                    Math.max(minSectionY, Y_BASE_SECTION) * 16,
-                    (Math.min(maxSectionY, Y_BASE_SECTION + Y_SECTIONS - 1) + 1) * 16 - 1);
-        }
-
-        // Clamp to the valid Y range
-        minSectionY = Math.max(minSectionY, Y_BASE_SECTION);
-        maxSectionY = Math.min(maxSectionY, Y_BASE_SECTION + Y_SECTIONS - 1);
-
-        int generated = 0;
-        for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+        int enqueued = 0;
+        for (int[] col : columns) {
             if (stopRequested.get()) break;
 
-            long lodKey = sectionKey(sx, sy, sz, lod);
-            if (generatedSections.contains(lodKey)) continue;
+            int sx = col[0], sz = col[1];
+
+            // Skip columns where vanilla has loaded real chunks
+            if (tryGetLoadedChunk(world, sx, sz) != null) continue;
+
+            // Get or build column context (cached across Y sections)
+            ColumnContext ctx = getOrBuildColumnContext(world, sx, sz);
+
+            // Compute Y range from surface heightmap
+            float minH = Float.MAX_VALUE, maxH = -Float.MAX_VALUE;
+            for (int lx = 0; lx < 16; lx++) {
+                for (int lz = 0; lz < 16; lz++) {
+                    float h = ctx.rawHm()[lx][lz];
+                    if (h < minH) minH = h;
+                    if (h > maxH) maxH = h;
+                }
+            }
+
+            int minSectionY = Math.max(
+                    Math.floorDiv((int) Math.floor(minH), 16) - SURFACE_MARGIN,
+                    Y_BASE_SECTION);
+            int maxSectionY = Math.min(
+                    Math.floorDiv((int) Math.ceil(maxH), 16) + SURFACE_MARGIN,
+                    Y_BASE_SECTION + Y_SECTIONS - 1);
+
+            int priority = Math.abs(sx - centerX) + Math.abs(sz - centerZ);
+
+            for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+                long key = sectionKey(sx, sy, sz);
+                if (generatedSections.contains(key)) continue;
+
+                SectionTask task = new SectionTask(sx, sy, sz, priority, key);
+                task.columnContext = ctx;
+                if (queue.enqueue(task)) {
+                    enqueued++;
+                }
+            }
+
+            // Track sections we skipped (above/below surface)
+            int generatedRange = maxSectionY - minSectionY + 1;
+            skippedAirSections.addAndGet(Y_SECTIONS - generatedRange);
+        }
+
+        queue.setTotalEnqueued(enqueued);
+        queue.signalPopulationDone();
+
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen] Enqueued {} sections from {} columns (radius={})",
+                enqueued, columns.size(), GENERATION_RADIUS);
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Stage workers
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Worker loop for a single pipeline stage.  Polls from the stage's
+     * priority queue, processes tasks, and promotes them to the next stage.
+     * Exits when upstream is done and the queue is permanently empty.
+     */
+    private void runStageWorker(int stage, LodGenerationQueue queue,
+                                 ProgressiveModelRunner model,
+                                 VoxySectionWriter writer,
+                                 VoxyBlockMapper blockMapper) {
+        String threadName = Thread.currentThread().getName();
+        HelloTerrainMod.LOGGER.info("[LodGen] {} starting", threadName);
+
+        int processed = 0;
+
+        while (!stopRequested.get()) {
+            SectionTask task;
+            try {
+                task = queue.poll(stage, 200, TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                break;
+            }
+
+            if (task == null) {
+                // Check if upstream is done and our queue is permanently empty
+                if (queue.isUpstreamDone(stage)) {
+                    // One final non-blocking poll to avoid TOCTOU race
+                    task = queue.poll(stage);
+                    if (task == null) break;
+                } else {
+                    continue;
+                }
+            }
+
+            if (!task.claimForProcessing()) continue;
 
             try {
-                inferAndPushSection(world, model, writer, blockMapper,
-                        ctx, sx, sy, sz, lod);
-                generatedSections.add(lodKey);
-                generated++;
-            } catch (Exception e) {
-                HelloTerrainMod.LOGGER.warn(
-                        "[LodGen] Failed ({},{},{}) LOD {}: {}",
-                        sx, sy, sz, lod, e.getMessage());
-            }
+                processStageTask(stage, task, model, writer, blockMapper);
+                processed++;
 
-            // Cooperatively yield instead of hard-sleeping 5ms per section.
-            // The old Thread.sleep(5) added 15+ seconds of pure sleeping
-            // per LOD pass (~3000 sections × 5ms each).
-            Thread.yield();
-            if (stopRequested.get()) break;
+                if (processed % 500 == 0) {
+                    HelloTerrainMod.LOGGER.info(
+                            "[LodGen] {} progress: {} processed, queues: [{}|{}|{}|{}], done: {}",
+                            threadName, processed,
+                            queue.stageQueueSize(0), queue.stageQueueSize(1),
+                            queue.stageQueueSize(2), queue.stageQueueSize(3),
+                            queue.completedCount());
+                }
+            } catch (Exception e) {
+                task.markFailed(e.getMessage());
+                queue.markFailed();
+                if (!stopRequested.get()) {
+                    HelloTerrainMod.LOGGER.warn("[LodGen] {} failed on {}: {}",
+                            threadName, task, e.getMessage());
+                }
+            }
         }
 
-        // Count sections we skipped (above/below surface)
-        int generatedRange = maxSectionY - minSectionY + 1;
-        skippedAirSections.addAndGet(Y_SECTIONS - generatedRange);
+        HelloTerrainMod.LOGGER.info("[LodGen] {} exiting — processed {} tasks",
+                threadName, processed);
+    }
 
-        return generated;
+    /**
+     * Process a single section task at a given pipeline stage.
+     *
+     * <ul>
+     *   <li><b>Stages 0-2:</b> run inference, promote task to next stage
+     *       with the binary solid parent.</li>
+     *   <li><b>Stage 3:</b> run inference, apply heightmap clipping,
+     *       write result to Voxy, mark task as ready.</li>
+     * </ul>
+     */
+    private void processStageTask(int stage, SectionTask task,
+                                   ProgressiveModelRunner model,
+                                   VoxySectionWriter writer,
+                                   VoxyBlockMapper blockMapper)
+            throws Exception {
+
+        ColumnContext ctx = task.columnContext;
+        int yIndex = task.sectionY - Y_BASE_SECTION;
+
+        ProgressiveModelRunner.StageOutput output = model.generateStage(
+                stage, ctx.hp5(), ctx.biomeIdx(), yIndex, task.parentFlat);
+
+        if (stage < 3) {
+            // Intermediate stage: promote to next stage with solid parent
+            task.promoteToNextStage(output.solidParentFlat());
+            activeQueue.promoteToNextStage(task);
+        } else {
+            // Final stage: heightmap clip → diagnostics → write to Voxy
+            InferenceResult result = output.finalResult();
+
+            if (HEIGHTMAP_CLIP && ctx.rawHm() != null) {
+                applyHeightmapClip(result.blockLogits(), ctx.rawHm(), task.sectionY);
+            }
+
+            // Diagnostics for first few sections
+            if (diagnosticCount.get() < 10) {
+                logDiagnostics(result, model.config(), model.vocabulary(), blockMapper,
+                        task.sectionX, task.sectionY, task.sectionZ,
+                        output.elapsedMs(), 1 /* finest LOD */,
+                        yIndex, 0);
+                diagnosticCount.incrementAndGet();
+            }
+
+            // Translate canonical biome IDs → Voxy biome IDs
+            int[][] biomeVoxyIds = buildBiomeVoxyIds(ctx.biomeIdx(), blockMapper);
+
+            // Write to Voxy
+            writer.writeSection(result, model.config().effectiveBlockVocabSize(),
+                    task.sectionX, task.sectionY, task.sectionZ, biomeVoxyIds);
+
+            task.markReady();
+            generatedSections.add(task.key);
+            activeQueue.markCompleted();
+        }
+    }
+
+    /**
+     * Force air above the surface heightmap by boosting the air logit
+     * (channel 0) to a large value, ensuring argmax selects air.
+     */
+    private static void applyHeightmapClip(float[][][][][] logits, float[][] rawHm,
+                                            int sectionY) {
+        for (int lx = 0; lx < 16; lx++) {
+            for (int lz = 0; lz < 16; lz++) {
+                float surfaceY = rawHm[lx][lz];
+                for (int ly = 0; ly < 16; ly++) {
+                    int worldY = sectionY * 16 + ly;
+                    if (worldY >= surfaceY) {
+                        // Set air logit (channel 0) to a large value so it
+                        // wins the argmax over any solid-block logit.
+                        logits[0][0][ly][lz][lx] = 100f;
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Translate canonical biome IDs to Voxy biome IDs for a column.
+     */
+    private static int[][] buildBiomeVoxyIds(int[][] biomeIdx,
+                                              VoxyBlockMapper blockMapper) {
+        int[][] biomeVoxyIds = new int[16][16];
+        for (int lx = 0; lx < 16; lx++) {
+            for (int lz = 0; lz < 16; lz++) {
+                biomeVoxyIds[lx][lz] = blockMapper.getVoxyBiomeId(biomeIdx[lx][lz]);
+            }
+        }
+        return biomeVoxyIds;
     }
 
     /** Counter for detailed diagnostics (reset per LOD pass). Thread-safe. */
@@ -466,7 +579,7 @@ public final class LodGenerationService {
      * Pre-sampled conditioning data for a single 16×16 column (chunk).
      * Sampled once per column and reused for all Y sections in that column.
      */
-    private record ColumnContext(
+    record ColumnContext(
         float[][] rawHm,       // [16][16] surface heightmap in block Y
         int[][]   biomeIdx,    // [16][16] biome indices
         float[][] hp5,         // [5][256] height-planes (row-major)
@@ -544,98 +657,13 @@ public final class LodGenerationService {
     }
 
     /**
-     * Run a single inference pass for one section at a given LOD,
-     * then push the result to Voxy immediately.
-     *
-     * <p>For the coarsest LOD (4), uses a heightmap-based initial parent.
-     * For finer LODs, uses the cached coarsened output from the previous
-     * LOD pass as the parent.
-     *
-     * @param ctx pre-sampled column conditioning (heightmap, biome, router6)
+     * Get or build column context with caching. Thread-safe.
+     * Avoids redundant noise sampling when multiple Y sections share
+     * the same column.
      */
-    private void inferAndPushSection(World world,
-                                      ProgressiveModelRunner model,
-                                      VoxySectionWriter writer,
-                                      VoxyBlockMapper blockMapper,
-                                      ColumnContext ctx,
-                                      int sectionX, int sectionY,
-                                      int sectionZ, int lod)
-            throws Exception {
-
-        // 0-based y index: sectionY -4 → 0, -3 → 1, ..., 11 → 15
-        // Matches training extraction: y_index = world_y - Y_BASE_SECTION
-        // The ONNX model has clamp(0, 23) built in for safety.
-        int yIndex = sectionY - Y_BASE_SECTION;
-
-        // Conditioning already sampled per-column in ColumnContext
-        int[][]   biomeIdx = ctx.biomeIdx();
-        float[][] hp5      = ctx.hp5();
-
-        // Run the full progressive chain: init→LOD4→3→2→1 (8³ upsampled to 16³)
-        // ProgressiveModelRunner manages the 4-stage parent chain internally.
-        InferenceResult result;
-        try {
-            result = model.generate(hp5, biomeIdx, yIndex);
-        } catch (ai.djl.translate.TranslateException e) {
-            throw new RuntimeException("ProgressiveModelRunner inference failed at (" +
-                    sectionX + "," + sectionY + "," + sectionZ + ")", e);
-        }
-
-        // ---- Heightmap clipping ----
-        // Force air above the surface to compensate for undertrained models
-        // that predict all-solid.  The model's air mask is overridden for
-        // voxels whose world Y >= surface heightmap at that (x,z) column.
-        if (HEIGHTMAP_CLIP && ctx.rawHm() != null) {
-            float[][][][][] mask = result.airMask(); // [1][1][Y][Z][X]
-            int clipped = 0;
-            for (int lx = 0; lx < 16; lx++) {
-                for (int lz = 0; lz < 16; lz++) {
-                    float surfaceY = ctx.rawHm()[lx][lz];
-                    for (int ly = 0; ly < 16; ly++) {
-                        int worldY = sectionY * 16 + ly;
-                        if (worldY >= surfaceY && mask[0][0][ly][lz][lx] > 0f) {
-                            mask[0][0][ly][lz][lx] = -1f; // force air
-                            clipped++;
-                        }
-                    }
-                }
-            }
-            if (diagnosticCount.get() < 5 && clipped > 0) {
-                HelloTerrainMod.LOGGER.info(
-                        "[LodGen] Heightmap clip ({},{},{}): forced {}/4096 voxels to air",
-                        sectionX, sectionY, sectionZ, clipped);
-            }
-        }
-
-        // Diagnostics: sample different Y levels to compare underground vs sky
-        boolean shouldDiag = false;
-        if (diagnosticCount.get() < 3) {
-            // Always log first 3 sections (from first column)
-            shouldDiag = true;
-        } else if (diagnosticCount.get() < 10) {
-            // After first 3, only log extreme Y levels to see above-ground behavior
-            // Log Y near surface (sectionY 3-4) and well above (sectionY 8+)
-            shouldDiag = sectionY == 4 || sectionY == 8 || sectionY == 11;
-        }
-
-        if (shouldDiag) {
-            logDiagnostics(result, model.config(), model.vocabulary(), blockMapper,
-                    sectionX, sectionY, sectionZ,
-                    result.elapsedMs(), lod,
-                    yIndex, 0 /* parent not tracked by ProgressiveModelRunner */);
-            diagnosticCount.incrementAndGet();
-        }
-
-        // Push to Voxy immediately — terrain appears progressively
-        // Translate canonical biome IDs → Voxy biome IDs (per-column)
-        int[][] biomeVoxyIds = new int[16][16];
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                biomeVoxyIds[lx][lz] = blockMapper.getVoxyBiomeId(biomeIdx[lx][lz]);
-            }
-        }
-        writer.writeSection(result, model.config().effectiveBlockVocabSize(),
-                sectionX, sectionY, sectionZ, biomeVoxyIds);
+    private ColumnContext getOrBuildColumnContext(World world, int sx, int sz) {
+        long key = ((long) (sx & 0xFFFF) << 16) | (sz & 0xFFFFL);
+        return columnContextCache.computeIfAbsent(key, k -> buildColumnContext(world, sx, sz));
     }
 
     // ------------------------------------------------------------------ //
@@ -643,30 +671,36 @@ public final class LodGenerationService {
     // ------------------------------------------------------------------ //
 
     /**
-     * Coarsen a 16³ air-mask to an 8³ binary parent occupancy grid.
+     * Coarsen a 16³ block-logits tensor to an 8³ binary parent occupancy grid.
      *
-     * <p>Uses max-pooling over 2×2×2 blocks: if <em>any</em> voxel in the
-     * block has air_mask &gt; 0 (model predicts solid), the parent cell is
-     * set to 1.0.  This approximates the Voxy mipper's opacity-biased
-     * selection for binary occupancy data.
+     * <p>Uses max-pooling over 2×2×2 blocks via argmax: if <em>any</em> voxel
+     * in the block predicts solid (argmax != 0), the parent cell is set to 1.0.
      *
-     * @param airMask model output [1][1][16][16][16]; positive = solid
+     * @param blockLogits model output [1][N][16][16][16]
      * @return [8][8][8] binary parent (0.0 = air, 1.0 = solid)
      */
-    static float[][][] coarsenToParent(float[][][][][] airMask) {
+    static float[][][] coarsenToParent(float[][][][][] blockLogits) {
+        int vocabSize = blockLogits[0].length;
         float[][][] parent = new float[8][8][8];
         for (int px = 0; px < 8; px++) {
             for (int py = 0; py < 8; py++) {
                 for (int pz = 0; pz < 8; pz++) {
-                    float maxVal = -Float.MAX_VALUE;
+                    boolean anySolid = false;
+                    outer:
                     for (int dx = 0; dx < 2; dx++)
                         for (int dy = 0; dy < 2; dy++)
                             for (int dz = 0; dz < 2; dz++) {
-                                float v = airMask[0][0]
-                                        [px * 2 + dx][py * 2 + dy][pz * 2 + dz];
-                                if (v > maxVal) maxVal = v;
+                                int vy = px * 2 + dx, vz = py * 2 + dy, vx = pz * 2 + dz;
+                                // argmax: is any channel > 0 (air channel)?
+                                float airLogit = blockLogits[0][0][vy][vz][vx];
+                                for (int c = 1; c < vocabSize; c++) {
+                                    if (blockLogits[0][c][vy][vz][vx] > airLogit) {
+                                        anySolid = true;
+                                        break outer;
+                                    }
+                                }
                             }
-                    parent[px][py][pz] = maxVal > 0f ? 1.0f : 0.0f;
+                    parent[px][py][pz] = anySolid ? 1.0f : 0.0f;
                 }
             }
         }
@@ -683,22 +717,6 @@ public final class LodGenerationService {
      */
 
     /**
-     * Remove cached parents outside the given radius from center.
-     */
-    private void pruneParentCache(int centerX, int centerZ, int keepRadius) {
-        parentCache.entrySet().removeIf(e -> {
-            long key = e.getKey();
-            int x = (short) ((key >> 32) & 0xFFFF);
-            int z = (short) (key & 0xFFFF);
-            return Math.abs(x - centerX) > keepRadius
-                || Math.abs(z - centerZ) > keepRadius;
-        });
-        HelloTerrainMod.LOGGER.debug(
-                "[LodGen] Parent cache pruned to {} entries (keepRadius={})",
-                parentCache.size(), keepRadius);
-    }
-
-    /**
      * Log detailed model-output diagnostics for a section.
      */
     private void logDiagnostics(InferenceResult result,
@@ -708,20 +726,21 @@ public final class LodGenerationService {
                                  int sectionX, int sectionY, int sectionZ,
                                  long elapsedMs, int lod,
                                  int yIndex, int parentSolid) {
-        float[][][][][] mask   = result.airMask();
         float[][][][][] logits = result.blockLogits();
         int vocabSize = config.effectiveBlockVocabSize();
 
-        // Air mask stats
-        int maskPositive = 0;
-        float maskMin = Float.MAX_VALUE, maskMax = -Float.MAX_VALUE;
+        // Argmax solid count (air = class 0)
+        int solidCount = 0;
         for (int d0 = 0; d0 < 16; d0++)
             for (int d1 = 0; d1 < 16; d1++)
                 for (int d2 = 0; d2 < 16; d2++) {
-                    float v = mask[0][0][d0][d1][d2];
-                    if (v > 0) maskPositive++;
-                    if (v < maskMin) maskMin = v;
-                    if (v > maskMax) maskMax = v;
+                    int best = 0;
+                    float bestVal = logits[0][0][d0][d1][d2];
+                    for (int b = 1; b < Math.min(vocabSize, logits[0].length); b++) {
+                        float v = logits[0][b][d0][d1][d2];
+                        if (v > bestVal) { bestVal = v; best = b; }
+                    }
+                    if (best > 0) solidCount++;
                 }
 
         // Block logit stats
@@ -751,15 +770,13 @@ public final class LodGenerationService {
                 ? vocabulary.getName(centerBest) : "???";
 
         HelloTerrainMod.LOGGER.info(
-                "[LodGen] DIAG LOD {} ({},{},{}): " +
-                "yIdx={} parent={}/512 solid | " +
-                "air_mask solid={}/4096 range=[{},{}] | " +
+                "[LodGen] DIAG stage {} ({},{},{}): " +
+                "yIdx={} | solid={}/4096 | " +
                 "logit range=[{},{}] | " +
                 "center: idx={} '{}' voxyId={} | " +
                 "{}ms",
                 lod, sectionX, sectionY, sectionZ,
-                yIndex, parentSolid,
-                maskPositive, maskMin, maskMax,
+                yIndex, solidCount,
                 logitMin, logitMax,
                 centerBest, blockName, voxyId,
                 elapsedMs);
@@ -859,9 +876,12 @@ public final class LodGenerationService {
         }
     }
 
-    private long sectionKey(int x, int y, int z, int lod) {
-        return ((long) lod << 48) | ((long) (x & 0xFFFF) << 32)
-                | ((long) (y & 0xFFFF) << 16) | (z & 0xFFFFL);
+    /**
+     * Pack section coordinates into a single long key for deduplication.
+     * Each axis uses 20 bits, supporting ±524,287 sections.
+     */
+    static long sectionKey(int x, int y, int z) {
+        return ((long) (x & 0xFFFFF) << 40) | ((long) (y & 0xFFFFF) << 20) | (z & 0xFFFFFL);
     }
 
     /**

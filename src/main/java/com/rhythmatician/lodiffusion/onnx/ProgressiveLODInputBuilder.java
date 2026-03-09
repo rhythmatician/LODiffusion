@@ -38,7 +38,7 @@ public class ProgressiveLODInputBuilder {
      * Build complete input tensor map for a progressive LOD model.
      *
      * @param cache NoiseTap cache with raw data at native API resolutions
-     * @param parentPrev Previous LOD level output (air_mask), or zeros for first model
+     * @param parentPrev Previous LOD level binary occupancy (derived from block_logits argmax), or zeros for first model
      * @param lodLevel LOD level (0=init, 1=lod4→lod3, 2=lod3→lod2, 3=lod2→lod1)
      * @return Map of tensor names to NDArrays ready for model inference
      */

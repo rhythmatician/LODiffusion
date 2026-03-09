@@ -65,7 +65,7 @@ public final class TerrainPipeline implements AutoCloseable {
 
         ProgressiveLODPipeline.GenerationResult res = orchestrator.run(feat, targetLod);
 
-        // TODO: write res.blockLogits/airMask into chunk (respect target LOD)
+        // TODO: write res.blockLogits() into chunk (respect target LOD; air = class 0)
 
         if (targetLod == 0) {
             carve.carve(chunk); // vanilla carve gate at LOD0 only

@@ -29,6 +29,9 @@ public final class VoxyCompat {
     /** Cached availability flag — computed once at first access. */
     private static volatile Boolean available;
 
+    /** Whether the MC-dependent WorldIdentifier bindings have been resolved. */
+    private static volatile boolean worldBindingsReady;
+
     // Reflected classes (resolved lazily)
     private static Class<?> worldEngineClass;
     private static Class<?> worldUpdaterClass;
@@ -51,7 +54,16 @@ public final class VoxyCompat {
     //  Detection
     // ------------------------------------------------------------------ //
 
-    /** True if Voxy classes are on the classpath. */
+    /**
+     * True if the core Voxy section API is available on the classpath.
+     *
+     * <p>Only binds the MC-independent methods (section creation, mip, insert).
+     * The {@code WorldIdentifier} bindings that require {@code net.minecraft.world.World}
+     * are deferred to {@link #ensureWorldBindings()}, which is called lazily from
+     * {@link #getWorldEngine} / {@link #getOrCreateWorldEngine}.  This allows the
+     * availability check (and the tests that use it) to succeed without Minecraft
+     * classes on the classpath.
+     */
     public static boolean isAvailable() {
         Boolean cached = available;
         if (cached != null) return cached;
@@ -64,7 +76,7 @@ public final class VoxyCompat {
                 voxelizedSectionClass = Class.forName("me.cortex.voxy.common.voxelization.VoxelizedSection");
                 mapperClass           = Class.forName("me.cortex.voxy.common.world.other.Mapper");
 
-                // Resolve key methods
+                // Resolve MC-independent methods
                 insertUpdateMethod = worldUpdaterClass.getMethod("insertUpdate",
                         worldEngineClass, voxelizedSectionClass);
                 createEmptyMethod  = voxelizedSectionClass.getMethod("createEmpty");
@@ -75,13 +87,6 @@ public final class VoxyCompat {
                 mipSectionMethod = convFactoryClass.getMethod("mipSection",
                         voxelizedSectionClass, mapperClass);
 
-                // WorldIdentifier — for obtaining WorldEngine from a World
-                Class<?> worldIdClass = Class.forName("me.cortex.voxy.commonImpl.WorldIdentifier");
-                ofEngineMethod = worldIdClass.getMethod("ofEngine",
-                        net.minecraft.world.World.class);
-                ofEngineNullableMethod = worldIdClass.getMethod("ofEngineNullable",
-                        net.minecraft.world.World.class);
-
                 // Section existence check — for overwrite protection
                 acquireIfExistsMethod = worldEngineClass.getMethod("acquireIfExists",
                         int.class, int.class, int.class, int.class);
@@ -89,11 +94,16 @@ public final class VoxyCompat {
                         "me.cortex.voxy.common.world.WorldSection");
                 worldSectionReleaseMethod = worldSectionClass.getMethod("release");
 
+                // WorldIdentifier methods (need net.minecraft.world.World) are bound lazily.
+
                 available = true;
-                LOGGER.info("Voxy detected — reflection bindings resolved");
+                LOGGER.info("Voxy detected — core reflection bindings resolved");
             } catch (ClassNotFoundException | NoSuchMethodException e) {
                 available = false;
                 LOGGER.info("Voxy not found: " + e.getMessage());
+            } catch (LinkageError e) {
+                available = false;
+                LOGGER.info("Voxy class loading failed: " + e.getMessage());
             }
             return available;
         }
@@ -172,6 +182,34 @@ public final class VoxyCompat {
     }
 
     /**
+     * Lazily bind the {@code WorldIdentifier} methods that require
+     * {@code net.minecraft.world.World} as a parameter.
+     *
+     * <p>Deferred from {@link #isAvailable()} so that the core section API
+     * (create/fill/mip/insert) is available in test environments where Minecraft
+     * classes are not on the classpath.
+     */
+    private static void ensureWorldBindings() {
+        ensureAvailable();
+        if (worldBindingsReady) return;
+        synchronized (VoxyCompat.class) {
+            if (worldBindingsReady) return;
+            try {
+                Class<?> worldIdClass = Class.forName("me.cortex.voxy.commonImpl.WorldIdentifier");
+                ofEngineMethod = worldIdClass.getMethod("ofEngine",
+                        net.minecraft.world.World.class);
+                ofEngineNullableMethod = worldIdClass.getMethod("ofEngineNullable",
+                        net.minecraft.world.World.class);
+                worldBindingsReady = true;
+                LOGGER.info("Voxy WorldIdentifier bindings resolved");
+            } catch (ClassNotFoundException | NoSuchMethodException | LinkageError e) {
+                throw new IllegalStateException(
+                        "Failed to bind Voxy WorldIdentifier (Minecraft not available?): " + e.getMessage(), e);
+            }
+        }
+    }
+
+    /**
      * Get the Voxy WorldEngine for a given Minecraft World.
      *
      * <p>Uses {@code WorldIdentifier.ofEngineNullable(World)} which returns null
@@ -181,7 +219,7 @@ public final class VoxyCompat {
      * @return the WorldEngine, or null if not yet available
      */
     public static Object getWorldEngine(net.minecraft.world.World world) {
-        ensureAvailable();
+        ensureWorldBindings();
         try {
             return ofEngineNullableMethod.invoke(null, world);
         } catch (Exception e) {
@@ -197,7 +235,7 @@ public final class VoxyCompat {
      * @return the WorldEngine (never null if Voxy is available)
      */
     public static Object getOrCreateWorldEngine(net.minecraft.world.World world) {
-        ensureAvailable();
+        ensureWorldBindings();
         try {
             return ofEngineMethod.invoke(null, world);
         } catch (Exception e) {

@@ -59,7 +59,7 @@ public final class ConfigLoader {
         // inputs  – e.g. {x_parent:[1,1,8,8,8], x_biome:[1,256,16,16,1], ...}
         Map<String, int[]> inputs = parseShapeMap(root.getAsJsonObject("inputs"));
 
-        // outputs – e.g. {block_logits:[1,1104,16,16,16], air_mask:[1,1,16,16,16]}
+        // outputs – e.g. {block_logits:[1,1104,8,8,8]} (air = class 0 in unified softmax)
         Map<String, int[]> outputs = parseShapeMap(root.getAsJsonObject("outputs"));
 
         // assumptions – opaque key/value bag
