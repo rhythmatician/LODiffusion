@@ -17,31 +17,29 @@ Render plausible terrain for far chunks via a progressive LOD pipeline driven by
 
 ### **PHASE 1 — Core LOD Engine & Runtime Contracts (🆕 In-progress)**
 
-**Goal:** Replace the old “single diffusion pass” with a **5-stage refinement ladder** and shared input contract with VoxelTree.
+**Goal:** Replace the old "single diffusion pass" with a **4-model progressive refinement ladder** and shared input contract with VoxelTree.
 
 **What’s new**
 
-* **Five models**: `Init(→LOD4)`, `LOD4→3`, `3→2`, `2→1`, `1→0`
-* **Shared cached inputs** (from worldgen), **identical** across all five models:
+* **Four models**: `Init→LOD4`, `LOD4→3`, `LOD3→2`, `LOD2→1` (LOD0 is vanilla-authoritative)
+* **Shared conditioning inputs** (identical across all models):
 
-  * `x_height_planes` **\[1,5,1,16,16]** (surface, ocean\_floor, slope\_x, slope\_z, curvature)
-  * `x_biome_quart` **\[1,6,4,4,4]** (quart lattice features)
-  * `x_router6` **\[1,6,1,16,16]** (Router-6 at one Y slice)
-  * *(opt)* `x_barrier` **\[1,1,1,16,16]**, *(opt)* `x_aquifer3` **\[1,3,1,16,16]**, *(opt)* `x_cave_prior4` **\[1,1,4,4,4]**
-  * Scalars: `x_chunk_pos` **\[1,2]**, `x_lod` **\[1,1]**
-* **Per-stage parent prior** only:
+  * `x_height_planes` **[1,5,16,16]** float32 — surface, ocean\_floor, slope\_x, slope\_z, curvature
+  * `x_biome` **[1,16,16]** int64 — vanilla biome index per (x,z)
+  * `x_y_index` **[1]** int64 — vertical slab index [0,23]
+* **Per-stage parent prior** (refinement models only):
 
-  * `x_parent_prev`: `[1,1,D,D,D]` with **D ∈ {1,2,4,8}\`** (zeros for Init; previous output otherwise)
-* **Outputs (per stage)**: `block_logits [1,N,D,D,D]`, `air_mask [1,1,D,D,D]` where D={1,2,4,8,16}
+  * `x_parent` **[1,1,P,P,P]** float32 — previous stage output; P ∈ {1,2,4} (absent for Init)
+* **Outputs (per stage)**: `block_logits [1,N,D,D,D]`, `air_mask [1,1,D,D,D]` where D∈{1,2,4,8}; Java runner upsamples final stage 2× to 16³
 
 **Rules**
 
-* **No upsampling in the mod** (ever). LODiffusion passes the cached native-grid tensors as-is; each ONNX model performs any resizing/broadcast internally with static ops.
+* **ONNX models produce static shapes.** Final stage (`refine_lod2_to_lod1`) outputs 8³; `ProgressiveModelRunner` upsamples 2× to 16³ before writing to Voxy.
 * **Vanilla `carve()` at LOD0 only.** Distant terrain skips carve; near terrain (LOD0) calls vanilla carve to finalize caves/aquifers/structures.
 
 **Deliverables**
 
-* `TerrainPipeline` (progress controller), `ModelOrchestrator` (five-model runner), `TensorPacker` (strict shapes), `FeatureCache` (LRU + optional disk sidecar)
+* `LodGenerationService` (progress controller + spiral ordering), `ProgressiveModelRunner` (four-model inference chain), `VoxyBlockMapper` + `VoxySectionWriter` (post-process + write), `AnchorSampler` / `NoiseTap` (feature capture)
 
 ---
 
@@ -53,16 +51,14 @@ Render plausible terrain for far chunks via a progressive LOD pipeline driven by
 
 * **NoiseTap** (runtime sampler):
 
-  * Heightmaps: 16×16 (WG types); derive slope/curv
-  * Biomes: 4×4×4 quart lattice (compact features)
-  * NoiseRouter slices: 16×16 @ one Y (Router-6 + optional barrier/aquifer)
-  * *(Optional)* Coarse 3D cave prior: 4×4×4 (or 8×8×8)
-  * Chunk coords `(x,z)`; world height limits; sea level (scalar)
+  * Heightmaps: 16×16 (surface, ocean\_floor, slope\_x, slope\_z, curvature) → `x_height_planes [1,5,16,16]` float32
+  * Biomes: 16×16 vanilla biome indices → `x_biome [1,16,16]` int64
+  * Vertical slab index → `x_y_index [1]` int64 [0,23]
 * **FeatureCache**:
 
   * In-memory LRU keyed by `ChunkPos`
   * Optional sidecar: `lod_cache/<dim>/<region>/c.<x>.<z>.nf.bin` (or `.npz`)
-  * Strict immutability (except `x_parent_prev`)
+  * Strict immutability (except `x_parent` from prev stage)
 
 **Testing**
 
@@ -73,22 +69,22 @@ Render plausible terrain for far chunks via a progressive LOD pipeline driven by
 
 ### **PHASE 3 — DJL Inference & Model Lifecycle (🆕 Planned)**
 
-**Goal:** Robust, fast, memory-safe inference for five models.
+**Goal:** Robust, fast, memory-safe inference for four models.
 
 **Tasks**
 
 * **ONNX loader (DJL ONNX Runtime)**: shared `ModelZoo`, lazy load per model
-* **TensorPacker**: map `FeatureCache` → exact ONNX input names/shapes (no resize)
+* **`ProgressiveModelRunner`**: map `AnchorSampler` output → exact ONNX input names/shapes, chain four stages
 * **Refinement loop**:
 
-  1. `Init` (D=1) → `x_parent_prev(1³)`
-  2. `1→2` → `2→4` → `4→8` → `8→16` (propagate `x_parent_prev`)
-  3. Write 16³ to chunk; call **vanilla `carve()`**
+  1. `init_to_lod4` (D=1) → `x_parent` for next stage
+  2. `refine_lod4_to_lod3` (D=2) → `refine_lod3_to_lod2` (D=4) → `refine_lod2_to_lod1` (D=8)
+  3. Upsample 8³ → 16³ (`ProgressiveModelRunner`); write to Voxy via `VoxySectionWriter`
 * **Perf controls**: per-stage timers, pool NDArrays, cap memory/threads
 
 **Acceptance**
 
-* All 5 models pass numeric parity with VoxelTree’s `test_vectors.npz`
+* All 4 models pass numeric parity with VoxelTree's `*_test_vectors.npz`
 * Total per-chunk inference time < 100ms on target CPU
 
 ---
@@ -102,7 +98,7 @@ Render plausible terrain for far chunks via a progressive LOD pipeline driven by
 * `LODManagerCompat`: query DH LOD for a chunk
 * **Work policy**:
 
-  * LOD4/3/2: prepare `x_parent_prev` progressively
+  * LOD4/3/2: build `x_parent` progressively from each stage output
   * LOD1→0 promotion: run final model (16³) + **vanilla carve()**
 * **Edge blending**: use `air_mask` for smooth borders; respect DH tile boundaries
 * **Switches**: vanilla vs AI, per-LOD enable/disable, overlay debug
@@ -119,7 +115,7 @@ Render plausible terrain for far chunks via a progressive LOD pipeline driven by
 
 ### **PHASE 6 — Packaging & Distribution (🆕 Planned)**
 
-* Bundle: `model.onnx` ×5, `model_config.json` ×5, `test_vectors.npz`, model hash
+* Bundle: 4 × `.onnx` (`init_to_lod4`, `refine_lod4_to_lod3`, `refine_lod3_to_lod2`, `refine_lod2_to_lod1`), 4 × `_config.json`, `pipeline_manifest.json`, 4 × `_test_vectors.npz`
 * Settings: JSON/TOML for toggles + paths
 * Releases: Modrinth/CurseForge artifacts; version gate on Fabric/Yarn
 
@@ -144,43 +140,48 @@ Render plausible terrain for far chunks via a progressive LOD pipeline driven by
 
 ## 🔗 **Interface with VoxelTree (Exact Contract)**
 
-**VoxelTree delivers:**
+**VoxelTree delivers (contract `lodiffusion.v3.progressive`):**
 
-1. `model.onnx` (static shapes, opset ≥ 17)
-2. `model_config.json`
+1. Four ONNX model files (opset 17, static shapes):
+   - `init_to_lod4.onnx`
+   - `refine_lod4_to_lod3.onnx`
+   - `refine_lod3_to_lod2.onnx`
+   - `refine_lod2_to_lod1.onnx`
+2. Four sidecar configs: `init_to_lod4_config.json`, `refine_lod4_to_lod3_config.json`, `refine_lod3_to_lod2_config.json`, `refine_lod2_to_lod1_config.json`
+   * Each contains: input/output names, block vocabulary (`block_mapping`), normalization specs
+3. `pipeline_manifest.json` — lists all required files; validated at startup
+4. Four test-vector files: `*_test_vectors.npz` (golden inputs → outputs per model)
 
-   * Input names & shapes (v2 anchor-conditioned contract):
-     - `x_parent` **[1,1,8,8,8]** float32 — binary occupancy (Mipper-derived)
-     - `x_height_planes` **[1,5,16,16]** float32 — surface, ocean_floor, slope_x, slope_z, curvature
-     - `x_router6` **[1,6,16,16]** float32 — temperature, vegetation, continents, erosion, depth, ridges
-     - `x_biome` **[1,16,16]** int64 — vanilla biome index per (x,z)
-     - `x_y_index` **[1]** int64 — vertical slab index
-     - `x_lod` **[1]** int64 — coarseness token
-   * Outputs: `block_logits` **[1,1102,16,16,16]**, `air_mask` **[1,1,16,16,16]**
-   * `block_mapping`: Voxy-native canonical vocabulary (1102 entries from `config/voxy_vocab.json`)
-   * `block_id_to_name`: reverse mapping for debugging
-   * Normalization specs per input
-3. `test_vectors.npz` (golden: inputs → outputs)
+**Per-model tensor contract:**
+
+| Model | `x_height_planes` | `x_biome` | `x_y_index` | `x_parent` | Output `block_logits` | Output `air_mask` |
+|---|---|---|---|---|---|---|
+| `init_to_lod4` | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | — | [1,N,1,1,1] | [1,1,1,1,1] |
+| `refine_lod4_to_lod3` | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | [1,1,1,1,1] float32 | [1,N,2,2,2] | [1,1,2,2,2] |
+| `refine_lod3_to_lod2` | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | [1,1,2,2,2] float32 | [1,N,4,4,4] | [1,1,4,4,4] |
+| `refine_lod2_to_lod1` | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | [1,1,4,4,4] float32 | [1,N,8,8,8] | [1,1,8,8,8] |
 
 **LODiffusion guarantees:**
 
-* `VoxyBlockMapper` reads `block_mapping` from `model_config.json` and maps model indices → Voxy block IDs at startup
-* `AnchorSampler` provides height planes + router6 matching the model contract
+* `ProgressiveModelRunner` chains the four models, builds exact tensor shapes, and upsamples the final 8³ output 2× to 16³
+* `VoxyBlockMapper` reads `block_mapping` from `*_config.json` and maps model indices → Voxy block IDs at startup
 * `VoxySectionWriter` pushes argmax results into Voxy via reflection (VoxyCompat)
-* Validate against `test_vectors.npz` during startup (smoke parity)
+* `pipeline_manifest.json` validated at startup; load fails if any required file is missing or hash-mismatched
 * Respect static shapes (fail fast on mismatch)
 
 **Data flow (per chunk):**
 
 ```
-NoiseTap.capture() → FeatureCache
-   ↓ (no resize)
-TensorPacker → ONNX (Init) → parent(1³)
-   → ONNX (2³) → parent(2³)
-   → ONNX (4³) → parent(4³)
-   → ONNX (8³) → parent(8³)
-   → ONNX (16³) → write blocks
-   → vanilla carve() at LOD0
+AnchorSampler.capture() → x_height_planes [1,5,16,16], x_biome [1,16,16], x_y_index [1]
+   ↓
+ProgressiveModelRunner:
+   init_to_lod4              → block_logits/air_mask [D=1]
+   refine_lod4_to_lod3  (x_parent from prev) → [D=2]
+   refine_lod3_to_lod2  (x_parent from prev) → [D=4]
+   refine_lod2_to_lod1  (x_parent from prev) → [D=8]
+   upsample 2× → InferenceResult [16³]
+   ↓
+VoxySectionWriter → Voxy (LOD1–LOD4 only; LOD0 = vanilla)
 ```
 
 ---
@@ -197,4 +198,4 @@ TensorPacker → ONNX (Init) → parent(1³)
 ## ✅ **What We’re Keeping / Dropping**
 
 * ✅ Keep vanilla **carve()**; only run at **LOD0**
-* ✅ Keep cache-at-source (16×16 planes, 4×4×4 biomes, 16×16 Router-6 slice)
+* ✅ Cache at source: 16×16 height planes (`x_height_planes`), 16×16 biome IDs (`x_biome`), y-slab index (`x_y_index`)
