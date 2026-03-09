@@ -13,8 +13,8 @@ import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import com.rhythmatician.lodiffusion.onnx.ModelConfig;
 import com.rhythmatician.lodiffusion.onnx.BlockVocabulary;
+import com.rhythmatician.lodiffusion.onnx.InferenceResult;
 import com.rhythmatician.lodiffusion.onnx.ProgressiveModelRunner;
-import com.rhythmatician.lodiffusion.onnx.UnifiedModelRunner.InferenceResult;
 
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.math.BlockPos;

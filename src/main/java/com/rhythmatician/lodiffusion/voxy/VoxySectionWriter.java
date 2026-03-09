@@ -3,7 +3,7 @@ package com.rhythmatician.lodiffusion.voxy;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import com.rhythmatician.lodiffusion.onnx.UnifiedModelRunner.InferenceResult;
+import com.rhythmatician.lodiffusion.onnx.InferenceResult;
 
 /**
  * Converts model inference output into Voxy {@code VoxelizedSection} objects

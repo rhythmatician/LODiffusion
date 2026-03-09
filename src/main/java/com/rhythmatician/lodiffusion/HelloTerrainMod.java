@@ -5,7 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import com.rhythmatician.lodiffusion.command.LodiffusionCommand;
 import com.rhythmatician.lodiffusion.command.NoiseDumperCommand;
-import com.rhythmatician.lodiffusion.terrain.OnnxTerrainGenerator;
+import java.nio.file.Files;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 
 import net.fabricmc.api.ModInitializer;
@@ -37,11 +37,14 @@ public class HelloTerrainMod implements ModInitializer {
 			LOGGER.info("[LODiffusion] Voxy reflection bindings OK — LOD injection path available");
 		}
 
-		// Check if model files are present (don't load yet — lazy on first chunk)
-		if (OnnxTerrainGenerator.isReady()) {
-			LOGGER.info("[LODiffusion] ONNX model + config found at {}", Config.modelPath());
+		// Check if progressive model files are present in the model dir
+		java.nio.file.Path modelDir = Config.modelDir();
+		boolean modelsPresent = Files.isRegularFile(modelDir.resolve("init_to_lod4.onnx"))
+				&& Files.isRegularFile(modelDir.resolve("refine_lod2_to_lod1.onnx"));
+		if (modelsPresent) {
+			LOGGER.info("[LODiffusion] Progressive ONNX models found in {}", modelDir);
 		} else {
-			LOGGER.warn("[LODiffusion] Model files not found at {} — terrain generation will fail until model is placed", Config.modelPath());
+			LOGGER.warn("[LODiffusion] Progressive model files not found in {} — LOD generation will fail until models are placed", modelDir);
 		}
 
 		LOGGER.info("[LODiffusion] Mod initialization complete!");

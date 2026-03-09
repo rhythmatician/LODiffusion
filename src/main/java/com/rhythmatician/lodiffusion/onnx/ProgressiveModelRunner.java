@@ -4,8 +4,6 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.logging.Logger;
 
-import com.rhythmatician.lodiffusion.onnx.UnifiedModelRunner.InferenceResult;
-
 import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.NDManager;

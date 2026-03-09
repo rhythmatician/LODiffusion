@@ -3,7 +3,7 @@ package com.rhythmatician.lodiffusion.command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.context.CommandContext;
 import com.rhythmatician.lodiffusion.Config;
-import com.rhythmatician.lodiffusion.terrain.OnnxTerrainGenerator;
+import java.nio.file.Files;
 import com.rhythmatician.lodiffusion.util.DebugUtils;
 import com.rhythmatician.lodiffusion.util.PerformanceMonitor;
 
@@ -59,8 +59,11 @@ public final class LodiffusionCommand {
         status.append("§6=== LODiffusion Status ===§r\n");
         status.append("§7ONNX Terrain: §").append(Config.useOnnxTerrain() ? "aEnabled" : "cDisabled").append("§r\n");
         status.append("§7Current Adapter: §f").append(Config.adapter()).append("§r\n");
-        status.append("§7Model Available: §").append(OnnxTerrainGenerator.isReady() ? "aYes" : "cNo").append("§r\n");
-        status.append("§7System Ready: §").append(OnnxTerrainGenerator.isReady() ? "aYes" : "cNo").append("§r\n");
+        java.nio.file.Path modelDir = Config.modelDir();
+        boolean modelsPresent = Files.isRegularFile(modelDir.resolve("init_to_lod4.onnx"))
+                && Files.isRegularFile(modelDir.resolve("refine_lod2_to_lod1.onnx"));
+        status.append("§7Models Present: §").append(modelsPresent ? "aYes" : "cNo").append("§r\n");
+        status.append("§7Model Dir: §f").append(modelDir).append("§r\n");
         
         long chunksGenerated = PerformanceMonitor.getCounter(PerformanceMonitor.CHUNKS_GENERATED);
         long onnxInferences = PerformanceMonitor.getCounter(PerformanceMonitor.ONNX_INFERENCES);
@@ -150,22 +153,16 @@ public final class LodiffusionCommand {
     
     private static int executeReload(CommandContext<ServerCommandSource> context) {
         ServerCommandSource source = context.getSource();
-        
-        try {
-            OnnxTerrainGenerator.reload();
-            source.sendFeedback(() -> Text.literal("§6Model unloaded.§r"), false);
-            
-            if (OnnxTerrainGenerator.isReady()) {
-                source.sendFeedback(() -> Text.literal("§aModel file found, will reload on next chunk.§r"), true);
-            } else {
-                source.sendFeedback(() -> Text.literal("§cModel file not found at configured path.§r"), true);
-            }
-            
-        } catch (Exception e) {
-            source.sendFeedback(() -> Text.literal("§cError reloading model: " + e.getMessage() + "§r"), true);
-            return 0;
+        // Models are managed by LodGenerationService lifecycle — stop/restart the
+        // service to pick up new ONNX files.  For now we just validate the files exist.
+        java.nio.file.Path modelDir = Config.modelDir();
+        boolean modelsPresent = Files.isRegularFile(modelDir.resolve("init_to_lod4.onnx"))
+                && Files.isRegularFile(modelDir.resolve("refine_lod2_to_lod1.onnx"));
+        if (modelsPresent) {
+            source.sendFeedback(() -> Text.literal("§aProgressive model files found in " + modelDir + ". Restart the world to reload.§r"), true);
+        } else {
+            source.sendFeedback(() -> Text.literal("§cModel files not found in " + modelDir + "§r"), true);
         }
-        
         return 1;
     }
     
