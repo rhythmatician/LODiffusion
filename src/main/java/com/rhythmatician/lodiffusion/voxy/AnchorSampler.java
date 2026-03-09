@@ -196,51 +196,72 @@ public final class AnchorSampler {
     static float[][] computeHeightPlanes(float[][] hm) {
         float[][] planes = new float[5][256];
 
-        float[] surfaceFlat   = planes[0];
-        float[] oceanFloorFlat = planes[1];
-        float[] slopeXFlat    = planes[2];
-        float[] slopeZFlat    = planes[3];
-        float[] curvatureFlat = planes[4];
-
-        // ---- surface & ocean_floor ----
+        // Step 1: Normalise surface (matches Python: surf = height / 320.0)
+        float[][] surfNorm = new float[16][16];
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
                 float h = hm[lx][lz];
-                surfaceFlat  [lx * 16 + lz] = h / HEIGHT_RANGE;
-                oceanFloorFlat[lx * 16 + lz] = Math.min(h, SEA_LEVEL) / HEIGHT_RANGE;
+                surfNorm[lx][lz] = h / HEIGHT_RANGE;
+                planes[0][lx * 16 + lz] = surfNorm[lx][lz];                // surface
+                planes[1][lx * 16 + lz] = Math.min(h, SEA_LEVEL) / HEIGHT_RANGE; // ocean_floor
             }
         }
 
-        // ---- slope_x (∂H/∂x) ----
+        // Step 2: slope_x = np.gradient(surfNorm, axis=x)
+        // Matches Python: central differences on NORMALISED surface,
+        // forward/backward one-sided at boundaries (np.gradient edge_order=1).
+        float[][] slopeX = new float[16][16];
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
-                int xl = Math.max(0, lx - 1);
-                int xr = Math.min(15, lx + 1);
-                float dx = (hm[xr][lz] - hm[xl][lz]) / (2f * (xr - xl == 0 ? 1 : (xr - xl)));
-                slopeXFlat[lx * 16 + lz] = clampSlope(dx);
+                if (lx == 0) {
+                    slopeX[lx][lz] = surfNorm[1][lz] - surfNorm[0][lz];
+                } else if (lx == 15) {
+                    slopeX[lx][lz] = surfNorm[15][lz] - surfNorm[14][lz];
+                } else {
+                    slopeX[lx][lz] = (surfNorm[lx + 1][lz] - surfNorm[lx - 1][lz]) / 2f;
+                }
+                planes[2][lx * 16 + lz] = slopeX[lx][lz];
             }
         }
 
-        // ---- slope_z (∂H/∂z) ----
+        // Step 3: slope_z = np.gradient(surfNorm, axis=z)
+        float[][] slopeZ = new float[16][16];
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
-                int zl = Math.max(0, lz - 1);
-                int zr = Math.min(15, lz + 1);
-                float dz = (hm[lx][zr] - hm[lx][zl]) / (2f * (zr - zl == 0 ? 1 : (zr - zl)));
-                slopeZFlat[lx * 16 + lz] = clampSlope(dz);
+                if (lz == 0) {
+                    slopeZ[lx][lz] = surfNorm[lx][1] - surfNorm[lx][0];
+                } else if (lz == 15) {
+                    slopeZ[lx][lz] = surfNorm[lx][15] - surfNorm[lx][14];
+                } else {
+                    slopeZ[lx][lz] = (surfNorm[lx][lz + 1] - surfNorm[lx][lz - 1]) / 2f;
+                }
+                planes[3][lx * 16 + lz] = slopeZ[lx][lz];
             }
         }
 
-        // ---- curvature (Laplacian) ----
+        // Step 4: curvature = np.gradient(slope_x, axis=x) + np.gradient(slope_z, axis=z)
+        // This is the Laplacian computed as gradient-of-gradient, matching Python exactly.
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
-                float center = hm[lx][lz];
-                float left   = hm[Math.max(0, lx - 1)][lz];
-                float right  = hm[Math.min(15, lx + 1)][lz];
-                float down   = hm[lx][Math.max(0, lz - 1)];
-                float up     = hm[lx][Math.min(15, lz + 1)];
-                float laplacian = left + right + down + up - 4f * center;
-                curvatureFlat[lx * 16 + lz] = clampCurvature(laplacian);
+                // d(slope_x)/dx
+                float dsx;
+                if (lx == 0) {
+                    dsx = slopeX[1][lz] - slopeX[0][lz];
+                } else if (lx == 15) {
+                    dsx = slopeX[15][lz] - slopeX[14][lz];
+                } else {
+                    dsx = (slopeX[lx + 1][lz] - slopeX[lx - 1][lz]) / 2f;
+                }
+                // d(slope_z)/dz
+                float dsz;
+                if (lz == 0) {
+                    dsz = slopeZ[lx][1] - slopeZ[lx][0];
+                } else if (lz == 15) {
+                    dsz = slopeZ[lx][15] - slopeZ[lx][14];
+                } else {
+                    dsz = (slopeZ[lx][lz + 1] - slopeZ[lx][lz - 1]) / 2f;
+                }
+                planes[4][lx * 16 + lz] = dsx + dsz;
             }
         }
 
@@ -302,16 +323,6 @@ public final class AnchorSampler {
     // ------------------------------------------------------------------
     // Helpers
     // ------------------------------------------------------------------
-
-    private static float clampSlope(float v) {
-        // Slopes in the range ±1.0 are typical; normalise and clip
-        return Math.max(-1f, Math.min(1f, v / 4f)) * 0.5f + 0.5f;
-    }
-
-    private static float clampCurvature(float v) {
-        // Laplacian values up to ±16 are typical
-        return Math.max(-1f, Math.min(1f, v / 16f)) * 0.5f + 0.5f;
-    }
 
     private static float clampRouter(float v) {
         return Math.max(0f, Math.min(1f, v));

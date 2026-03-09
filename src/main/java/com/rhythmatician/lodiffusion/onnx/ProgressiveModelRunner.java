@@ -7,7 +7,6 @@ import java.util.logging.Logger;
 import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.NDManager;
-import ai.djl.ndarray.types.DataType;
 import ai.djl.ndarray.types.Shape;
 import ai.djl.repository.zoo.Criteria;
 import ai.djl.repository.zoo.ZooModel;
@@ -227,9 +226,18 @@ public final class ProgressiveModelRunner implements AutoCloseable {
     /**
      * Convert raw air-mask logits to a binary solid-occupancy parent tensor.
      * Model convention: positive logit = solid; negative = air.
+     *
+     * <p>Note: DJL's {@code OrtNDArray.gt()} triggers infinite recursion in
+     * {@code NDArrayAdapter.gt()} (StackOverflowError), so we threshold
+     * manually via the raw float array.
      */
     private static NDArray toSolidParent(NDArray airLogits) {
-        return airLogits.gt(0).toType(DataType.FLOAT32, false);
+        float[] src = airLogits.toFloatArray();
+        float[] dst = new float[src.length];
+        for (int i = 0; i < src.length; i++) {
+            dst[i] = src[i] > 0f ? 1f : 0f;
+        }
+        return airLogits.getManager().create(dst, airLogits.getShape());
     }
 
     /** Extract the air-mask output (channel dim == 1). */

@@ -130,7 +130,15 @@ public class ProgressiveLODPipeline implements AutoCloseable {
                 // The air_mask has shape [1, 1, D, D, D] with positive values = solid.
                 // Threshold at 0 to get binary occupancy matching the Python model's
                 // expected x_parent format: [1, 1, P, P, P] float32 in {0, 1}.
-                parent = airMask.gt(0).toType(ai.djl.ndarray.types.DataType.FLOAT32, false);
+                //
+                // Note: DJL's OrtNDArray.gt() triggers infinite recursion in
+                // NDArrayAdapter.gt() (StackOverflowError), so we threshold manually.
+                float[] raw = airMask.toFloatArray();
+                float[] bin = new float[raw.length];
+                for (int i = 0; i < raw.length; i++) {
+                    bin[i] = raw[i] > 0f ? 1f : 0f;
+                }
+                parent = airMask.getManager().create(bin, airMask.getShape());
             }
 
             times[stage] = System.currentTimeMillis() - t0;
