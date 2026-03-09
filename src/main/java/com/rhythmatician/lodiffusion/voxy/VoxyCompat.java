@@ -55,7 +55,14 @@ public final class VoxyCompat {
     private static Method ofEngineMethod;           // WorldIdentifier.ofEngine(World)
     private static Method ofEngineNullableMethod;   // WorldIdentifier.ofEngineNullable(World)
     private static Method acquireIfExistsMethod;    // WorldEngine.acquireIfExists(int, int, int, int)
+    private static Method acquireMethod;            // WorldEngine.acquire(int, int, int, int)
     private static Method worldSectionReleaseMethod; // WorldSection.release()
+    private static Method markDirtyMethod;          // WorldEngine.markDirty(WorldSection)
+
+    // Reflected fields for WorldSection direct access
+    private static java.lang.reflect.Field worldSectionDataField;   // WorldSection.data (long[])
+    private static java.lang.reflect.Field worldSectionNonEmptyChildrenField; // WorldSection.nonEmptyChildren (volatile byte)
+    private static Class<?> worldSectionClass;
 
     private VoxyCompat() {}
 
@@ -139,13 +146,21 @@ public final class VoxyCompat {
 
                 acquireIfExistsMethod = worldEngineClass.getMethod("acquireIfExists",
                         int.class, int.class, int.class, int.class);
-                Class<?> worldSectionClass = Class.forName(
+                acquireMethod = worldEngineClass.getMethod("acquire",
+                        int.class, int.class, int.class, int.class);
+                worldSectionClass = Class.forName(
                         "me.cortex.voxy.common.world.WorldSection");
                 worldSectionReleaseMethod = worldSectionClass.getMethod("release");
+                markDirtyMethod = worldEngineClass.getMethod("markDirty",
+                        worldSectionClass);
+                worldSectionDataField = worldSectionClass.getDeclaredField("data");
+                worldSectionDataField.setAccessible(true);
+                worldSectionNonEmptyChildrenField = worldSectionClass.getDeclaredField("nonEmptyChildren");
+                worldSectionNonEmptyChildrenField.setAccessible(true);
 
                 engineBindingsReady = true;
                 LOGGER.info("Voxy engine bindings resolved");
-            } catch (ClassNotFoundException | NoSuchMethodException e) {
+            } catch (ClassNotFoundException | NoSuchMethodException | NoSuchFieldException e) {
                 throw new IllegalStateException(
                         "Voxy engine classes not available: " + e.getMessage(), e);
             } catch (LinkageError e) {
@@ -358,6 +373,197 @@ public final class VoxyCompat {
     /** L0 index into VoxelizedSection.section[] for (x, y, z) in [0,15]. */
     public static int l0Index(int x, int y, int z) {
         return (y << 8) | (z << 4) | x;
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Direct WorldSection level writes (bypass insertUpdate)
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Write voxel data directly into a Voxy {@code WorldSection} at a specific
+     * LOD level, bypassing the {@code insertUpdate()} path that always starts
+     * at L0.
+     *
+     * <p>This is the core primitive for progressive LOD generation.  Each model
+     * stage outputs block predictions at a specific resolution that maps 1:1
+     * to a Voxy storage level.  We acquire the target-level WorldSection,
+     * write voxels at the correct sub-position within the 32³ grid, mark it
+     * dirty, and release.
+     *
+     * <h4>Coordinate math (from WorldUpdater.java):</h4>
+     * <pre>
+     *   WorldSection coords: (lvl, sectionX >> (lvl+1), sectionY >> (lvl+1), sectionZ >> (lvl+1))
+     *   Sub-position:        bx = (sectionX & mask) << (4 - lvl)   where mask = (1 << (lvl+1)) - 1
+     *   World section index: bx | (bz << 5) | (by << 10)
+     * </pre>
+     *
+     * @param worldEngine the Voxy WorldEngine instance
+     * @param lvl         Voxy storage level (1=LOD1 8³, 2=LOD2 4³, 3=LOD3 2³, 4=LOD4 1³)
+     * @param sectionX    L0 section X (blockX / 16)
+     * @param sectionY    L0 section Y (blockY / 16)
+     * @param sectionZ    L0 section Z (blockZ / 16)
+     * @param voxels      packed 64-bit voxel data to write, sized (16>>lvl)³,
+     *                    indexed in YZX order: {@code voxels[(ly << (2*(4-lvl))) | (lz << (4-lvl)) | lx]}
+     * @return number of non-air voxels written
+     */
+    public static int writeAtLevel(Object worldEngine, int lvl,
+                                    int sectionX, int sectionY, int sectionZ,
+                                    long[] voxels) {
+        // Validate parameters before trying to load engine bindings
+        if (lvl < 1 || lvl > 4) {
+            throw new IllegalArgumentException("writeAtLevel: lvl must be 1-4, got " + lvl);
+        }
+
+        int cellsPerAxis = 16 >> lvl;  // 8,4,2,1 for lvl 1,2,3,4
+        int expectedSize = cellsPerAxis * cellsPerAxis * cellsPerAxis;
+        if (voxels.length != expectedSize) {
+            throw new IllegalArgumentException("writeAtLevel: expected " + expectedSize
+                    + " voxels for lvl " + lvl + ", got " + voxels.length);
+        }
+
+        ensureEngineBindings();
+
+        // WorldSection coords at this level
+        int wsX = sectionX >> (lvl + 1);
+        int wsY = sectionY >> (lvl + 1);
+        int wsZ = sectionZ >> (lvl + 1);
+
+        try {
+            // Acquire (or create) the WorldSection at the target level
+            Object worldSection = acquireMethod.invoke(worldEngine, lvl, wsX, wsY, wsZ);
+
+            // Get the raw 32³ data array
+            long[] data = (long[]) worldSectionDataField.get(worldSection);
+
+            // Compute base offset within the 32³ grid
+            int mask = (1 << (lvl + 1)) - 1;
+            int bx = (sectionX & mask) << (4 - lvl);
+            int by = (sectionY & mask) << (4 - lvl);
+            int bz = (sectionZ & mask) << (4 - lvl);
+
+            // Write voxels into the correct sub-region
+            int nonAir = 0;
+            int srcIdx = 0;
+            for (int ly = 0; ly < cellsPerAxis; ly++) {
+                for (int lz = 0; lz < cellsPerAxis; lz++) {
+                    for (int lx = 0; lx < cellsPerAxis; lx++) {
+                        int dstIdx = (bx + lx) | ((bz + lz) << 5) | ((by + ly) << 10);
+                        data[dstIdx] = voxels[srcIdx];
+                        if (!isAir(voxels[srcIdx])) {
+                            nonAir++;
+                        }
+                        srcIdx++;
+                    }
+                }
+            }
+
+            // Mark dirty → triggers save + mesh rebuild
+            markDirtyMethod.invoke(worldEngine, worldSection);
+
+            // Release the section
+            worldSectionReleaseMethod.invoke(worldSection);
+
+            return nonAir;
+
+        } catch (Exception e) {
+            throw new RuntimeException("writeAtLevel failed at lvl=" + lvl
+                    + " section=(" + sectionX + "," + sectionY + "," + sectionZ + ")", e);
+        }
+    }
+
+    /**
+     * Propagate child existence bits from the written level up to LOD4.
+     *
+     * <p>After writing voxels at {@code writtenLvl}, each ancestor WorldSection
+     * needs its {@code nonEmptyChildren} byte updated so Voxy's GPU octree
+     * traversal can navigate down to the written data.  Without this, the
+     * shader sees {@code hasChildren(node) == false} and either skips the
+     * subtree or renders only the coarsest fallback.
+     *
+     * <p>For each parent level from {@code writtenLvl + 1} to 4:
+     * <ol>
+     *   <li>Compute the child's octant index:  {@code (wsX&1) | ((wsZ&1)<<1) | ((wsY&1)<<2)}</li>
+     *   <li>Acquire the parent WorldSection</li>
+     *   <li>OR the child's bit into the parent's {@code nonEmptyChildren}</li>
+     *   <li>{@code markDirty()} the parent so the render tree picks up the change</li>
+     * </ol>
+     *
+     * @param worldEngine the Voxy WorldEngine instance
+     * @param writtenLvl  the level we just wrote data to (1-4)
+     * @param sectionX    L0 section X coordinate
+     * @param sectionY    L0 section Y coordinate
+     * @param sectionZ    L0 section Z coordinate
+     */
+    private static void propagateChildExistence(Object worldEngine,
+                                                 int writtenLvl,
+                                                 int sectionX, int sectionY,
+                                                 int sectionZ) {
+        try {
+            for (int parentLvl = writtenLvl + 1; parentLvl <= 4; parentLvl++) {
+                int childLvl = parentLvl - 1;
+
+                // Child's WorldSection coords at childLvl
+                int childWsX = sectionX >> (childLvl + 1);
+                int childWsY = sectionY >> (childLvl + 1);
+                int childWsZ = sectionZ >> (childLvl + 1);
+
+                // Octant index matches WorldSection.getChildIndex(x, y, z)
+                int childIdx = (childWsX & 1)
+                             | ((childWsZ & 1) << 1)
+                             | ((childWsY & 1) << 2);
+                byte childBit = (byte) (1 << childIdx);
+
+                // Parent's WorldSection coords at parentLvl
+                int parentWsX = sectionX >> (parentLvl + 1);
+                int parentWsY = sectionY >> (parentLvl + 1);
+                int parentWsZ = sectionZ >> (parentLvl + 1);
+
+                Object parentSection = acquireMethod.invoke(
+                        worldEngine, parentLvl, parentWsX, parentWsY, parentWsZ);
+
+                // Read current nonEmptyChildren, OR in the child bit
+                byte current = worldSectionNonEmptyChildrenField.getByte(parentSection);
+                byte updated = (byte) (current | childBit);
+                if (updated != current) {
+                    worldSectionNonEmptyChildrenField.setByte(parentSection, updated);
+                    // Mark dirty → triggers mesh rebuild + child existence
+                    // propagation to the GPU octree via processChildChange()
+                    markDirtyMethod.invoke(worldEngine, parentSection);
+                }
+
+                worldSectionReleaseMethod.invoke(parentSection);
+            }
+        } catch (Exception e) {
+            LOGGER.warning("propagateChildExistence failed at writtenLvl="
+                    + writtenLvl + ": " + e.getMessage());
+        }
+    }
+
+    /**
+     * Check whether a Voxy WorldSection exists at a specific level and
+     * WorldSection coordinate.
+     *
+     * @param worldEngine the Voxy WorldEngine
+     * @param lvl         storage level (0-4)
+     * @param wsX         WorldSection X at this level
+     * @param wsY         WorldSection Y at this level
+     * @param wsZ         WorldSection Z at this level
+     * @return true if Voxy already holds data at this level/position
+     */
+    public static boolean sectionExistsAtLevel(Object worldEngine, int lvl,
+                                                int wsX, int wsY, int wsZ) {
+        ensureEngineBindings();
+        try {
+            Object section = acquireIfExistsMethod.invoke(worldEngine, lvl, wsX, wsY, wsZ);
+            if (section != null) {
+                worldSectionReleaseMethod.invoke(section);
+                return true;
+            }
+            return false;
+        } catch (Exception e) {
+            LOGGER.warning("sectionExistsAtLevel check failed: " + e.getMessage());
+            return false;
+        }
     }
 
     // ------------------------------------------------------------------ //

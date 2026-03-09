@@ -480,11 +480,17 @@ public final class LodGenerationService {
     /**
      * Process a single section task at a given pipeline stage.
      *
+     * <p><b>Progressive LOD write path:</b> Every stage writes its block
+     * predictions directly to the corresponding Voxy storage level via
+     * {@link VoxySectionWriter#writeLodSection}.  Stages 0-2 also propagate
+     * binary solid parent data to the next stage.
+     *
      * <ul>
-     *   <li><b>Stages 0-2:</b> run inference, promote task to next stage
-     *       with the binary solid parent.</li>
-     *   <li><b>Stage 3:</b> run inference, apply heightmap clipping,
-     *       write result to Voxy, mark task as ready.</li>
+     *   <li><b>Stage 0</b> (Init→LOD4, 1³) → write to Voxy lvl 4, promote</li>
+     *   <li><b>Stage 1</b> (LOD4→LOD3, 2³) → write to Voxy lvl 3, promote</li>
+     *   <li><b>Stage 2</b> (LOD3→LOD2, 4³) → write to Voxy lvl 2, promote</li>
+     *   <li><b>Stage 3</b> (LOD2→LOD1, 8³) → write to Voxy lvl 1, also
+     *       writes 2×-upsampled 16³ via legacy path for completeness</li>
      * </ul>
      */
     private void processStageTask(int stage, SectionTask task,
@@ -499,17 +505,36 @@ public final class LodGenerationService {
         ProgressiveModelRunner.StageOutput output = model.generateStage(
                 stage, ctx.hp5(), ctx.biomeIdx(), yIndex, task.parentFlat);
 
+        // Map stage → Voxy level: stage 0 → lvl4, stage 1 → lvl3, etc.
+        int voxyLvl = COARSEST_LOD - stage;  // 4, 3, 2, 1
+
+        // Translate canonical biome IDs → Voxy biome IDs
+        int[][] biomeVoxyIds = buildBiomeVoxyIds(ctx.biomeIdx(), blockMapper);
+
+        // Write this stage's output to Voxy via insertUpdate (upsampled to 16³).
+        // This properly propagates nonEmptyChildren through the octree, making
+        // each LOD level visible immediately as it completes.
+        float[][][][][] nativeLogits = output.blockLogits();
+        if (nativeLogits != null) {
+            // Apply heightmap clip at the native resolution
+            if (HEIGHTMAP_CLIP && ctx.rawHm() != null) {
+                applyHeightmapClipScaled(nativeLogits, ctx.rawHm(),
+                        task.sectionY, voxyLvl);
+            }
+
+            writer.writeUpsampledSection(nativeLogits,
+                    model.config().effectiveBlockVocabSize(),
+                    voxyLvl, task.sectionX, task.sectionY, task.sectionZ,
+                    biomeVoxyIds);
+        }
+
         if (stage < 3) {
             // Intermediate stage: promote to next stage with solid parent
             task.promoteToNextStage(output.solidParentFlat());
             activeQueue.promoteToNextStage(task);
         } else {
-            // Final stage: heightmap clip → diagnostics → write to Voxy
+            // Final stage — diagnostics only (insertUpdate above handles the write)
             InferenceResult result = output.finalResult();
-
-            if (HEIGHTMAP_CLIP && ctx.rawHm() != null) {
-                applyHeightmapClip(result.blockLogits(), ctx.rawHm(), task.sectionY);
-            }
 
             // Diagnostics for first few sections
             if (diagnosticCount.get() < 10) {
@@ -519,13 +544,6 @@ public final class LodGenerationService {
                         yIndex, 0);
                 diagnosticCount.incrementAndGet();
             }
-
-            // Translate canonical biome IDs → Voxy biome IDs
-            int[][] biomeVoxyIds = buildBiomeVoxyIds(ctx.biomeIdx(), blockMapper);
-
-            // Write to Voxy
-            writer.writeSection(result, model.config().effectiveBlockVocabSize(),
-                    task.sectionX, task.sectionY, task.sectionZ, biomeVoxyIds);
 
             task.markReady();
             generatedSections.add(task.key);
@@ -547,6 +565,42 @@ public final class LodGenerationService {
                     if (worldY >= surfaceY) {
                         // Set air logit (channel 0) to a large value so it
                         // wins the argmax over any solid-block logit.
+                        logits[0][0][ly][lz][lx] = 100f;
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Heightmap clip for native-resolution logits at a specific LOD level.
+     *
+     * <p>At LOD level {@code voxyLvl}, each voxel covers {@code 2^voxyLvl}
+     * blocks along each axis.  A voxel is clipped to air if its <em>lowest</em>
+     * block Y is at or above the surface height for the center of its XZ
+     * footprint.
+     *
+     * @param logits    [1][N][D][D][D] where D = 16 >> voxyLvl
+     * @param rawHm     [16][16] surface heightmap in [x][z] order
+     * @param sectionY  L0 section Y coordinate
+     * @param voxyLvl   Voxy storage level (1-4)
+     */
+    private static void applyHeightmapClipScaled(float[][][][][] logits, float[][] rawHm,
+                                                   int sectionY, int voxyLvl) {
+        int cellsPerAxis = 16 >> voxyLvl;  // 8,4,2,1
+        int blocksPerVoxel = 1 << voxyLvl; // 2,4,8,16
+
+        for (int lx = 0; lx < cellsPerAxis; lx++) {
+            for (int lz = 0; lz < cellsPerAxis; lz++) {
+                // Sample heightmap at the center of this voxel's XZ footprint
+                int hmX = Math.min(lx * blocksPerVoxel + blocksPerVoxel / 2, 15);
+                int hmZ = Math.min(lz * blocksPerVoxel + blocksPerVoxel / 2, 15);
+                float surfaceY = rawHm[hmX][hmZ];
+
+                for (int ly = 0; ly < cellsPerAxis; ly++) {
+                    // Lowest block Y covered by this voxel
+                    int worldY = sectionY * 16 + ly * blocksPerVoxel;
+                    if (worldY >= surfaceY) {
                         logits[0][0][ly][lz][lx] = 100f;
                     }
                 }

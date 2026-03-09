@@ -83,11 +83,15 @@ public final class ProgressiveModelRunner implements AutoCloseable {
      *
      * @param solidParentFlat  binary solid parent for the next stage (stages 0-2);
      *                         {@code null} for the final stage
+     * @param blockLogits      native-resolution block logits [1][N][D][D][D] for
+     *                         writing to the corresponding Voxy level;
+     *                         {@code null} when not needed (e.g. old pipeline)
      * @param finalResult      full inference result (stage 3 only); {@code null}
      *                         for intermediate stages
      * @param elapsedMs        wall time for this stage
      */
     public record StageOutput(float[] solidParentFlat,
+                              float[][][][][] blockLogits,
                               InferenceResult finalResult,
                               long elapsedMs) {
         /** True if this is from the final stage (3). */
@@ -414,15 +418,17 @@ public final class ProgressiveModelRunner implements AutoCloseable {
             long elapsed = System.currentTimeMillis() - t0;
 
             if (stage < 3) {
-                // Intermediate: derive binary solid parent from block logits
+                // Intermediate: extract full logits + derive binary solid parent
                 NDArray logits = extractBlockLogits(outputs);
                 float[] solidFlat = toSolidParentFlatFromLogits(logits);
-                return new StageOutput(solidFlat, null, elapsed);
+                float[][][][][] nativeLogits = extract5D(logits);
+                return new StageOutput(solidFlat, nativeLogits, null, elapsed);
             } else {
-                // Final: extract + 2× upsample into pooled 16³ buffer
+                // Final: extract native 8³ logits + 2× upsample for legacy path
                 NDArray logits8 = extractBlockLogits(outputs);
+                float[][][][][] nativeLogits = extract5D(logits8);
                 extractAndUpsample5D(logits8, buf.logits16);
-                return new StageOutput(null,
+                return new StageOutput(null, nativeLogits,
                         new InferenceResult(buf.logits16, elapsed),
                         elapsed);
             }
@@ -510,6 +516,29 @@ public final class ProgressiveModelRunner implements AutoCloseable {
         }
         throw new IllegalStateException(
                 "[ProgressiveModelRunner] block_logits not found in outputs");
+    }
+
+    /**
+     * Extract a 5D NDArray into a Java array at native resolution (no
+     * upsampling).  Used to capture intermediate stage block logits for
+     * direct-level writes.
+     *
+     * @param t  NDArray with shape [b, c, d, h, w]
+     * @return freshly allocated float[b][c][d][h][w]
+     */
+    private static float[][][][][] extract5D(NDArray t) {
+        long[] s = t.getShape().getShape();
+        int b = (int) s[0], c = (int) s[1], d = (int) s[2], h = (int) s[3], w = (int) s[4];
+        float[] flat = t.toFloatArray();
+        float[][][][][] out = new float[b][c][d][h][w];
+        int idx = 0;
+        for (int bi = 0; bi < b; bi++)
+            for (int ci = 0; ci < c; ci++)
+                for (int di = 0; di < d; di++)
+                    for (int hi = 0; hi < h; hi++)
+                        for (int wi = 0; wi < w; wi++)
+                            out[bi][ci][di][hi][wi] = flat[idx++];
+        return out;
     }
 
     // ------------------------------------------------------------------

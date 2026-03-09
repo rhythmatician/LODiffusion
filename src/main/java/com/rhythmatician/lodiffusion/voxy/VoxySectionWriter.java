@@ -252,6 +252,106 @@ public final class VoxySectionWriter {
         writeSection(result, vocabSize, sectionX, sectionY, sectionZ, biomeVoxyIds);
     }
 
+    // ------------------------------------------------------------------ //
+    //  Progressive LOD: upsampled insertUpdate
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Upsample native-resolution block logits to 16³ and write via
+     * {@code insertUpdate()}.  This properly propagates
+     * {@code nonEmptyChildren} through Voxy's octree, making the data
+     * immediately visible to the GPU traversal shader.
+     *
+     * <p>Each native-resolution voxel is replicated to fill its
+     * {@code (scale)³} block region in the 16³ grid, where
+     * {@code scale = 2^voxyLvl}.  The resulting section is then mipmapped
+     * and inserted via the standard {@code insertUpdate()} path.
+     *
+     * <p>Unlike {@link #writeSection}, this method has <em>no</em>
+     * {@code sectionExists} guard — progressive stages intentionally
+     * overwrite earlier coarser predictions with finer ones.
+     *
+     * @param nativeLogits  model logits [1][N][D][D][D] where D = 16 >> voxyLvl
+     * @param vocabSize     block vocabulary size
+     * @param voxyLvl       source Voxy level (1-4), determines upsample factor
+     * @param sectionX      L0 section X (blockX / 16)
+     * @param sectionY      L0 section Y (blockY / 16)
+     * @param sectionZ      L0 section Z (blockZ / 16)
+     * @param biomeVoxyIds  per-column Voxy biome IDs [16][16], indexed [x][z]
+     */
+    public void writeUpsampledSection(float[][][][][] nativeLogits, int vocabSize,
+                                      int voxyLvl, int sectionX, int sectionY,
+                                      int sectionZ, int[][] biomeVoxyIds) {
+        if (worldEngine == null) {
+            throw new IllegalStateException(
+                    "writeUpsampledSection requires a live WorldEngine");
+        }
+
+        int nativeRes = 16 >> voxyLvl;  // 1,2,4,8 for lvl 4,3,2,1
+        int scale = 1 << voxyLvl;       // 16,8,4,2
+
+        Object section = VoxyCompat.createEmptySection();
+        VoxyCompat.setSectionPosition(section, sectionX, sectionY, sectionZ);
+        long[] data = VoxyCompat.getSectionData(section);
+
+        int nonAirCount = 0;
+
+        // For each 16³ L0 position, find the native-resolution source voxel
+        for (int x = 0; x < 16; x++) {
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    int nx = Math.min(x / scale, nativeRes - 1);
+                    int ny = Math.min(y / scale, nativeRes - 1);
+                    int nz = Math.min(z / scale, nativeRes - 1);
+
+                    // Argmax: model d0=Y, d1=Z, d2=X
+                    int bestIdx = 0;
+                    float bestVal = nativeLogits[0][0][ny][nz][nx];
+                    for (int b = 1; b < vocabSize; b++) {
+                        float v = nativeLogits[0][b][ny][nz][nx];
+                        if (v > bestVal) {
+                            bestVal = v;
+                            bestIdx = b;
+                        }
+                    }
+
+                    int biome = biomeVoxyIds[x][z];
+                    long voxel;
+                    if (bestIdx == 0) {
+                        voxel = VoxyCompat.composeVoxel(0, biome, DEFAULT_LIGHT);
+                    } else {
+                        int voxyBlockId = blockMapper.getVoxyBlockId(bestIdx);
+                        if (voxyBlockId == 0) {
+                            voxel = VoxyCompat.composeVoxel(0, biome, DEFAULT_LIGHT);
+                        } else {
+                            voxel = VoxyCompat.composeVoxel(
+                                    voxyBlockId, biome, DEFAULT_LIGHT);
+                            nonAirCount++;
+                        }
+                    }
+
+                    data[VoxyCompat.l0Index(x, y, z)] = voxel;
+                }
+            }
+        }
+
+        if (nonAirCount == 0) {
+            return;
+        }
+
+        VoxyCompat.setNonAirCount(section, nonAirCount);
+        VoxyCompat.mipSection(section, voxyMapper);
+        VoxyCompat.insertUpdate(worldEngine, section);
+
+        int written = sectionsWritten.incrementAndGet();
+        if (written < 5 || written % 500 == 0) {
+            LOGGER.info(
+                "[VoxySectionWriter] Wrote upsampled LOD{} section ({},{},{}) "
+                + "— {} solid voxels [total: {}]",
+                voxyLvl, sectionX, sectionY, sectionZ, nonAirCount, written);
+        }
+    }
+
     /**
      * Clear is a no-op with insert-only semantics.
      *
@@ -266,5 +366,101 @@ public final class VoxySectionWriter {
      */
     public void forgetColumn(int sectionX, int sectionZ, int baseY, int numY) {
         // no-op: insert-only guard handles all protection
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Progressive LOD: direct level writes
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Write model block logits directly to a specific Voxy storage level,
+     * bypassing the L0-first {@code insertUpdate()} path.
+     *
+     * <p>This is the progressive LOD write path.  Each model stage produces
+     * block logits at its native resolution (1³, 2³, 4³, or 8³) and this
+     * method writes them to the corresponding Voxy WorldSection level (4, 3,
+     * 2, or 1 respectively).
+     *
+     * <p>Coordinate convention: {@code sectionX/Y/Z} are always L0 section
+     * coordinates (blockX/16, etc.).  The WorldSection coordinatesfor the
+     * target level are derived internally using Voxy's coordinate math.
+     *
+     * @param blockLogits   model logits shaped [1][N][D][D][D] where D = 16 >> voxyLvl
+     * @param vocabSize     block vocabulary size
+     * @param voxyLvl       target Voxy storage level (1-4)
+     * @param sectionX      L0 section X (blockX / 16)
+     * @param sectionY      L0 section Y (blockY / 16)
+     * @param sectionZ      L0 section Z (blockZ / 16)
+     * @param biomeVoxyIds  per-column Voxy biome IDs [16][16], indexed [x][z]
+     * @return number of non-air voxels written
+     */
+    public int writeLodSection(float[][][][][] blockLogits, int vocabSize,
+                                int voxyLvl, int sectionX, int sectionY, int sectionZ,
+                                int[][] biomeVoxyIds) {
+
+        if (worldEngine == null) {
+            throw new IllegalStateException("writeLodSection requires a live WorldEngine");
+        }
+
+        int cellsPerAxis = 16 >> voxyLvl;  // 8,4,2,1 for lvl 1,2,3,4
+        int numCells = cellsPerAxis * cellsPerAxis * cellsPerAxis;
+
+        // Validate logits shape: [1][N][D][D][D]
+        if (blockLogits[0][0].length != cellsPerAxis) {
+            throw new IllegalArgumentException(
+                    "writeLodSection: logits spatial dim " + blockLogits[0][0].length
+                    + " doesn't match expected " + cellsPerAxis + " for lvl " + voxyLvl);
+        }
+
+        boolean detailed = sectionsWritten.get() < 5;
+
+        // Build packed voxel array in YZX order (matching writeAtLevel expectations)
+        long[] voxels = new long[numCells];
+        int idx = 0;
+
+        for (int ly = 0; ly < cellsPerAxis; ly++) {
+            for (int lz = 0; lz < cellsPerAxis; lz++) {
+                for (int lx = 0; lx < cellsPerAxis; lx++) {
+                    // Argmax over channels — model axis convention: d0=Y, d1=Z, d2=X
+                    int bestIdx = 0;
+                    float bestVal = blockLogits[0][0][ly][lz][lx];
+                    for (int b = 1; b < vocabSize; b++) {
+                        float v = blockLogits[0][b][ly][lz][lx];
+                        if (v > bestVal) {
+                            bestVal = v;
+                            bestIdx = b;
+                        }
+                    }
+
+                    // Map biome — at coarse levels, pick the center biome
+                    //   LOD1 covers 2 blocks/voxel, LOD4 covers 16 blocks/voxel
+                    //   Use weighted center of the sub-region
+                    int bx = Math.min(lx * (1 << voxyLvl) + ((1 << voxyLvl) >> 1), 15);
+                    int bz = Math.min(lz * (1 << voxyLvl) + ((1 << voxyLvl) >> 1), 15);
+                    int biome = biomeVoxyIds[bx][bz];
+
+                    long voxel;
+                    if (bestIdx == 0) {
+                        voxel = VoxyCompat.composeVoxel(0, biome, VoxySectionWriter.DEFAULT_LIGHT);
+                    } else {
+                        int voxyBlockId = blockMapper.getVoxyBlockId(bestIdx);
+                        voxel = VoxyCompat.composeVoxel(voxyBlockId, biome, VoxySectionWriter.DEFAULT_LIGHT);
+                    }
+                    voxels[idx++] = voxel;
+                }
+            }
+        }
+
+        // Write directly to the target Voxy level
+        int nonAir = VoxyCompat.writeAtLevel(worldEngine, voxyLvl,
+                sectionX, sectionY, sectionZ, voxels);
+
+        int written = sectionsWritten.incrementAndGet();
+        if (detailed || written % 500 == 0) {
+            LOGGER.info("[VoxySectionWriter] Wrote LOD{} section ({},{},{}) — {} solid voxels [total: {}]",
+                    voxyLvl, sectionX, sectionY, sectionZ, nonAir, written);
+        }
+
+        return nonAir;
     }
 }
