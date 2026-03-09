@@ -3,6 +3,12 @@ package com.rhythmatician.lodiffusion.command;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.logging.Logger;
 
 import com.mojang.brigadier.CommandDispatcher;
@@ -17,7 +23,6 @@ import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
-import net.minecraft.world.Heightmap;
 
 /**
  * Server command {@code /dumpnoise <radius>} that extracts vanilla noise
@@ -115,43 +120,78 @@ public final class NoiseDumperCommand {
                         centerCx, centerCz, outDir.toAbsolutePath())),
                 false);
 
-        // Worker thread — sampling many chunks can take a while
-        Thread worker = new Thread(() -> {
-            int dumped = 0;
-            int failed = 0;
+        // Parallel worker pool — limited to avoid starving the server tick loop.
+        // ChunkStatus.NOISE generation runs on the server's own worker executor
+        // internally, so each task here just blocks waiting for that result.
+        // 4 threads is a good balance: enough to keep the pipeline full without
+        // hammering the CPU the way 31 threads did.
+        int threadCount = 4;
+        source.sendFeedback(
+                () -> Text.literal(String.format(
+                        "[NoiseDumper] Using %d worker threads", threadCount)),
+                false);
 
-            for (int dx = -radius; dx <= radius; dx++) {
-                for (int dz = -radius; dz <= radius; dz++) {
-                    int cx = centerCx + dx;
-                    int cz = centerCz + dz;
+        ExecutorService pool = Executors.newFixedThreadPool(threadCount, r -> {
+            Thread t = new Thread(r, "NoiseDumper-Worker");
+            t.setDaemon(true);
+            return t;
+        });
 
+        AtomicInteger dumped = new AtomicInteger();
+        AtomicInteger failed = new AtomicInteger();
+        long startTime = System.currentTimeMillis();
+        List<Future<?>> futures = new ArrayList<>(totalChunks);
+
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                final int cx = centerCx + dx;
+                final int cz = centerCz + dz;
+                futures.add(pool.submit(() -> {
                     try {
                         dumpChunkNoise(noise, cx, cz, seed, outDir);
-                        dumped++;
+                        dumped.incrementAndGet();
                     } catch (Exception e) {
                         LOG.warning("[NoiseDumper] Failed chunk (" + cx + "," + cz + "): " + e);
-                        failed++;
+                        failed.incrementAndGet();
                     }
-                }
 
-                // Progress feedback every row
-                final int row = dx + radius + 1;
-                final int rows = 2 * radius + 1;
-                source.sendFeedback(
-                        () -> Text.literal(String.format(
-                                "[NoiseDumper] Progress: row %d/%d", row, rows)),
-                        false);
+                    // Throttled progress: every 100 chunks or on the last one
+                    int done = dumped.get() + failed.get();
+                    if (done % 100 == 0 || done == totalChunks) {
+                        double elapsed = (System.currentTimeMillis() - startTime) / 1000.0;
+                        double rate = elapsed > 0 ? done / elapsed : 0;
+                        double eta = rate > 0 ? (totalChunks - done) / rate : 0;
+                        source.sendFeedback(
+                                () -> Text.literal(String.format(
+                                        "[NoiseDumper] %d/%d (%.1f/s, ETA %.0fs)",
+                                        done, totalChunks, rate, eta)),
+                                false);
+                    }
+                }));
             }
+        }
 
-            final int d = dumped;
-            final int f = failed;
+        // Coordinator thread waits for all futures, then shuts down the pool
+        Thread coordinator = new Thread(() -> {
+            for (Future<?> f : futures) {
+                try {
+                    f.get();
+                } catch (Exception e) {
+                    LOG.warning("[NoiseDumper] Future error: " + e);
+                }
+            }
+            pool.shutdown();
+            double totalSec = (System.currentTimeMillis() - startTime) / 1000.0;
+            final int d = dumped.get();
+            final int fl = failed.get();
             source.sendFeedback(
                     () -> Text.literal(String.format(
-                            "[NoiseDumper] Done. Dumped %d chunks, %d failed.", d, f)),
+                            "[NoiseDumper] Done. %d dumped, %d failed in %.1fs (%.1f chunks/s)",
+                            d, fl, totalSec, d / totalSec)),
                     false);
-        }, "NoiseDumper-Worker");
-        worker.setDaemon(true);
-        worker.start();
+        }, "NoiseDumper-Coordinator");
+        coordinator.setDaemon(true);
+        coordinator.start();
 
         return 1;
     }
@@ -178,11 +218,12 @@ public final class NoiseDumperCommand {
         String filename = String.format("chunk_%d_%d.json", cx, cz);
         Path file = outDir.resolve(filename);
 
-        // Sample heightmaps (chunk-free via ChunkGenerator.getHeight())
-        float[][] surfaceHm = noise.sampleHeightmap(cx, cz,
-                Heightmap.Type.WORLD_SURFACE_WG);
-        float[][] oceanHm = noise.sampleHeightmap(cx, cz,
-                Heightmap.Type.OCEAN_FLOOR_WG);
+        // Sample both heightmaps in one populateNoise() pass via ChunkStatus.NOISE.
+        // This is ~64× cheaper than calling getHeight() 512 times (256 cols × 2 types)
+        // because ChunkNoiseSampler reuses noise evaluations across the 4×4 cell grid.
+        float[][][] heightmaps = noise.sampleBothHeightmaps(cx, cz);
+        float[][] surfaceHm   = heightmaps[0];  // WORLD_SURFACE_WG
+        float[][] oceanHm     = heightmaps[1];  // OCEAN_FLOOR_WG
 
         // Sample biomes at surface level (chunk-free via BiomeSource.getBiome())
         String[][] biomeNames = noise.sampleBiomeNames(cx, cz, surfaceHm);

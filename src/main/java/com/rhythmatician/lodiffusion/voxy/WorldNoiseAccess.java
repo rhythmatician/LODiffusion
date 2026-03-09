@@ -10,6 +10,8 @@ import net.minecraft.world.Heightmap;
 import net.minecraft.world.World;
 import net.minecraft.world.biome.Biome;
 import net.minecraft.world.biome.source.BiomeSource;
+import net.minecraft.world.chunk.Chunk;
+import net.minecraft.world.chunk.ChunkStatus;
 import net.minecraft.world.gen.chunk.ChunkGenerator;
 import net.minecraft.world.gen.densityfunction.DensityFunction;
 import net.minecraft.world.gen.noise.NoiseConfig;
@@ -153,6 +155,49 @@ public final class WorldNoiseAccess {
      */
     public float[][] sampleHeightmap(int sectionX, int sectionZ) {
         return sampleHeightmap(sectionX, sectionZ, Heightmap.Type.WORLD_SURFACE_WG);
+    }
+
+    /**
+     * Sample BOTH heightmaps (WORLD_SURFACE_WG and OCEAN_FLOOR_WG) for a chunk
+     * in a single pass using the chunk generation pipeline.
+     *
+     * <p>Requests the chunk at {@link ChunkStatus#NOISE} status, which runs
+     * {@code NoiseChunkGenerator.populateNoise()} once using a full 4×4 cell
+     * {@code ChunkNoiseSampler}. This is ~64× cheaper than calling
+     * {@code getHeight()} 512 times (once per column per heightmap type), since
+     * the cell noise is computed once and interpolated across all 256 columns.
+     *
+     * <p>This method must be safe to call from any thread — the server's chunk
+     * pipeline handles its own threading internally.
+     *
+     * @param sectionX section X coordinate (chunk X)
+     * @param sectionZ section Z coordinate (chunk Z)
+     * @return float[2][16][16] — index 0 = WORLD_SURFACE_WG, index 1 = OCEAN_FLOOR_WG
+     */
+    public float[][][] sampleBothHeightmaps(int sectionX, int sectionZ) {
+        // Ask the server pipeline to generate this chunk up to NOISE status.
+        // populateNoise() runs internally and fills both WORLD_SURFACE_WG and
+        // OCEAN_FLOOR_WG heightmaps on the ProtoChunk. Much faster than 512
+        // independent getHeight() calls because ChunkNoiseSampler reuses noise
+        // evaluations across the 4×4 interpolation cells.
+        Chunk chunk = serverWorld.getChunk(sectionX, sectionZ, ChunkStatus.NOISE, true);
+        if (chunk == null) {
+            // Fallback to getHeight() if chunk pipeline unavailable
+            float[][] surface = sampleHeightmap(sectionX, sectionZ, Heightmap.Type.WORLD_SURFACE_WG);
+            float[][] oceanFloor = sampleHeightmap(sectionX, sectionZ, Heightmap.Type.OCEAN_FLOOR_WG);
+            return new float[][][] { surface, oceanFloor };
+        }
+
+        float[][] surface = new float[16][16];
+        float[][] oceanFloor = new float[16][16];
+
+        for (int lx = 0; lx < 16; lx++) {
+            for (int lz = 0; lz < 16; lz++) {
+                surface[lx][lz]    = chunk.sampleHeightmap(Heightmap.Type.WORLD_SURFACE_WG, lx, lz);
+                oceanFloor[lx][lz] = chunk.sampleHeightmap(Heightmap.Type.OCEAN_FLOOR_WG,   lx, lz);
+            }
+        }
+        return new float[][][] { surface, oceanFloor };
     }
 
     /**
