@@ -68,7 +68,9 @@ dependencies {
 	testImplementation 'org.mockito:mockito-core:5.1.1'
 	testImplementation 'org.mockito:mockito-junit-jupiter:5.1.1'
 
-	// Voxy jar for test classpath (allows VoxyCompat.isAvailable() to return true in tests)
+	// Voxy jar on the test classpath.  VoxelizedSection (the only class used by
+	// encoding tests) has no transitive Minecraft class references, so no Loom
+	// remapping is required — the raw intermediary jar loads fine in the yarn JVM.
 	testRuntimeOnly files('mods/voxy-0.2.11-alpha.jar')
 
 	// NBT and MCA library for parsing Minecraft region files (1.18+ compatible)
@@ -117,6 +119,9 @@ jar {
 
 test {
 	useJUnitPlatform()
+	// Byte Buddy (used by Mockito inline mock-maker) requires this flag on Java 21+
+	// since Mockito 5.1.1 bundles an older Byte Buddy that only officially supports Java 20.
+	jvmArgs '-Dnet.bytebuddy.experimental=true'
 	finalizedBy jacocoTestReport
 }
 

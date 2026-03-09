@@ -166,9 +166,12 @@ public final class VoxySectionWriter {
                         int best = 0;
                         float bestVal = logits[0][0][d0][d1][d2];
                         for (int b = 1; b < vocabSize; b++) {
-                            float v = logits[0][b][d0][d1][d2];
-                            if (v > bestVal) { bestVal = v; best = b; }
-                        }
+                                float v = logits[0][b][d0][d1][d2];
+                                if (v > bestVal) {
+                                    bestVal = v;
+                                    best = b;
+                                }
+                            }
                         if (best == 0) airCount++;
                     }
             LOGGER.info("[VoxySectionWriter] Section ({},{},{}) argmax stats: air={}/4096, solid={}/4096",

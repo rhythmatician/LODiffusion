@@ -1,8 +1,12 @@
 package integration.voxy;
 
-import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.fail;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
-import static org.mockito.Mockito.*;
+import static org.mockito.ArgumentMatchers.anyInt;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -187,7 +191,7 @@ class VoxySectionLodWriteTest {
             for (int z = 0; z < 16; z++) {
                 for (int x = 0; x < 16; x++) {
                     // Checkerboard: solid when (x+y+z) is even
-                    boolean solid = ((x + y + z) % 2 == 0);
+                    boolean solid = (x + y + z) % 2 == 0;
                     if (solid) {
                         logits[0][0][y][z][x] = 0.0f;  // air class: low
                         logits[0][1][y][z][x] = 1.0f;  // solid class: high

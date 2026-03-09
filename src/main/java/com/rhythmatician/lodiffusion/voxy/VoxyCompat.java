@@ -29,6 +29,15 @@ public final class VoxyCompat {
     /** Cached availability flag — computed once at first access. */
     private static volatile Boolean available;
 
+    /**
+     * Whether the full engine bindings (WorldEngine, WorldUpdater, Mapper, etc.)
+     * have been resolved.  Separate from {@link #available} because those classes
+     * have transitive Minecraft class references (e.g. class_2841) that fail to
+     * load in the yarn-mapped test environment.  Tests only need {@code available}
+     * to be {@code true} (VoxelizedSection is MC-free).
+     */
+    private static volatile boolean engineBindingsReady;
+
     /** Whether the MC-dependent WorldIdentifier bindings have been resolved. */
     private static volatile boolean worldBindingsReady;
 
@@ -55,14 +64,20 @@ public final class VoxyCompat {
     // ------------------------------------------------------------------ //
 
     /**
-     * True if the core Voxy section API is available on the classpath.
+     * True if the core Voxy voxelization API ({@code VoxelizedSection}) is on
+     * the classpath.
      *
-     * <p>Only binds the MC-independent methods (section creation, mip, insert).
-     * The {@code WorldIdentifier} bindings that require {@code net.minecraft.world.World}
-     * are deferred to {@link #ensureWorldBindings()}, which is called lazily from
-     * {@link #getWorldEngine} / {@link #getOrCreateWorldEngine}.  This allows the
-     * availability check (and the tests that use it) to succeed without Minecraft
-     * classes on the classpath.
+     * <p>{@code VoxelizedSection} has <em>no</em> transitive Minecraft class
+     * references, so this check succeeds even in the yarn-mapped JUnit environment
+     * where Voxy's engine classes (which reference intermediary MC names like
+     * {@code class_2841}) would fail to load.
+     *
+     * <p>The engine bindings (WorldEngine, WorldUpdater, Mapper, etc.) are
+     * deferred to {@link #ensureEngineBindings()}, called lazily from the write
+     * path ({@link #mipSection}, {@link #insertUpdate}, {@link #sectionExists}).
+     * The {@code WorldIdentifier} bindings that require a live
+     * {@code net.minecraft.world.World} are deferred further to
+     * {@link #ensureWorldBindings()}.
      */
     public static boolean isAvailable() {
         Boolean cached = available;
@@ -71,33 +86,16 @@ public final class VoxyCompat {
         synchronized (VoxyCompat.class) {
             if (available != null) return available;
             try {
-                worldEngineClass      = Class.forName("me.cortex.voxy.common.world.WorldEngine");
-                worldUpdaterClass     = Class.forName("me.cortex.voxy.common.world.WorldUpdater");
-                voxelizedSectionClass = Class.forName("me.cortex.voxy.common.voxelization.VoxelizedSection");
-                mapperClass           = Class.forName("me.cortex.voxy.common.world.other.Mapper");
+                // VoxelizedSection has NO transitive MC class references:
+                // fields are long[], int primitives only.  Safe to load in tests.
+                voxelizedSectionClass = Class.forName(
+                        "me.cortex.voxy.common.voxelization.VoxelizedSection");
+                createEmptyMethod = voxelizedSectionClass.getMethod("createEmpty");
 
-                // Resolve MC-independent methods
-                insertUpdateMethod = worldUpdaterClass.getMethod("insertUpdate",
-                        worldEngineClass, voxelizedSectionClass);
-                createEmptyMethod  = voxelizedSectionClass.getMethod("createEmpty");
-                getMapperMethod    = worldEngineClass.getMethod("getMapper");
-
-                Class<?> convFactoryClass = Class.forName(
-                        "me.cortex.voxy.common.voxelization.WorldConversionFactory");
-                mipSectionMethod = convFactoryClass.getMethod("mipSection",
-                        voxelizedSectionClass, mapperClass);
-
-                // Section existence check — for overwrite protection
-                acquireIfExistsMethod = worldEngineClass.getMethod("acquireIfExists",
-                        int.class, int.class, int.class, int.class);
-                Class<?> worldSectionClass = Class.forName(
-                        "me.cortex.voxy.common.world.WorldSection");
-                worldSectionReleaseMethod = worldSectionClass.getMethod("release");
-
-                // WorldIdentifier methods (need net.minecraft.world.World) are bound lazily.
+                // WorldEngine / Mapper / etc. have MC refs — deferred to ensureEngineBindings().
 
                 available = true;
-                LOGGER.info("Voxy detected — core reflection bindings resolved");
+                LOGGER.info("Voxy detected — VoxelizedSection bindings resolved");
             } catch (ClassNotFoundException | NoSuchMethodException e) {
                 available = false;
                 LOGGER.info("Voxy not found: " + e.getMessage());
@@ -106,6 +104,55 @@ public final class VoxyCompat {
                 LOGGER.info("Voxy class loading failed: " + e.getMessage());
             }
             return available;
+        }
+    }
+
+    /**
+     * Lazily bind the engine classes (WorldEngine, WorldUpdater, Mapper,
+     * WorldConversionFactory, WorldSection) that have transitive Minecraft
+     * class references.
+     *
+     * <p>Called from the write path ({@link #getMapper}, {@link #mipSection},
+     * {@link #insertUpdate}, {@link #sectionExists}).  Unit tests never reach
+     * the write path, so they only need {@link #isAvailable()} to return true.
+     *
+     * @throws IllegalStateException if the engine classes cannot be loaded
+     */
+    private static void ensureEngineBindings() {
+        ensureAvailable();
+        if (engineBindingsReady) return;
+        synchronized (VoxyCompat.class) {
+            if (engineBindingsReady) return;
+            try {
+                worldEngineClass  = Class.forName("me.cortex.voxy.common.world.WorldEngine");
+                worldUpdaterClass = Class.forName("me.cortex.voxy.common.world.WorldUpdater");
+                mapperClass       = Class.forName("me.cortex.voxy.common.world.other.Mapper");
+
+                insertUpdateMethod = worldUpdaterClass.getMethod("insertUpdate",
+                        worldEngineClass, voxelizedSectionClass);
+                getMapperMethod    = worldEngineClass.getMethod("getMapper");
+
+                Class<?> convFactoryClass = Class.forName(
+                        "me.cortex.voxy.common.voxelization.WorldConversionFactory");
+                mipSectionMethod = convFactoryClass.getMethod("mipSection",
+                        voxelizedSectionClass, mapperClass);
+
+                acquireIfExistsMethod = worldEngineClass.getMethod("acquireIfExists",
+                        int.class, int.class, int.class, int.class);
+                Class<?> worldSectionClass = Class.forName(
+                        "me.cortex.voxy.common.world.WorldSection");
+                worldSectionReleaseMethod = worldSectionClass.getMethod("release");
+
+                engineBindingsReady = true;
+                LOGGER.info("Voxy engine bindings resolved");
+            } catch (ClassNotFoundException | NoSuchMethodException e) {
+                throw new IllegalStateException(
+                        "Voxy engine classes not available: " + e.getMessage(), e);
+            } catch (LinkageError e) {
+                throw new IllegalStateException(
+                        "Voxy engine class loading failed (MC remapping needed?): "
+                        + e.getMessage(), e);
+            }
         }
     }
 
@@ -125,7 +172,7 @@ public final class VoxyCompat {
 
     /** Get the Mapper from a WorldEngine instance. */
     public static Object getMapper(Object worldEngine) {
-        ensureAvailable();
+        ensureEngineBindings();
         try {
             return getMapperMethod.invoke(worldEngine);
         } catch (Exception e) {
@@ -135,7 +182,7 @@ public final class VoxyCompat {
 
     /** Compute the mip pyramid for a VoxelizedSection. */
     public static void mipSection(Object section, Object mapper) {
-        ensureAvailable();
+        ensureEngineBindings();
         try {
             mipSectionMethod.invoke(null, section, mapper);
         } catch (Exception e) {
@@ -145,7 +192,7 @@ public final class VoxyCompat {
 
     /** Insert a VoxelizedSection into a WorldEngine (blocking). */
     public static void insertUpdate(Object worldEngine, Object section) {
-        ensureAvailable();
+        ensureEngineBindings();
         try {
             insertUpdateMethod.invoke(null, worldEngine, section);
         } catch (Exception e) {
@@ -165,7 +212,7 @@ public final class VoxyCompat {
      */
     public static boolean sectionExists(Object worldEngine,
                                          int sectionX, int sectionY, int sectionZ) {
-        ensureAvailable();
+        ensureEngineBindings();
         try {
             // acquireIfExists(lvl=0, x, y, z) returns null if no data
             Object section = acquireIfExistsMethod.invoke(
