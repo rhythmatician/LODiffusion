@@ -62,19 +62,6 @@ public class ProgressiveLODInputBuilder {
         inputs.put("x_chunk_pos", createChunkPosTensor(cache));
         inputs.put("x_lod", createLodTensor(lodLevel));
 
-        // Optional inputs (include if available in cache and config)
-        if (config.isOptionalInput("x_barrier") && hasBarrierData(cache)) {
-            inputs.put("x_barrier", createBarrierTensor(cache));
-        }
-
-        if (config.isOptionalInput("x_aquifer3") && hasAquiferData(cache)) {
-            inputs.put("x_aquifer3", createAquiferTensor(cache));
-        }
-
-        if (config.isOptionalInput("x_cave_prior4") && hasCaveData(cache)) {
-            inputs.put("x_cave_prior4", createCavePriorTensor(cache));
-        }
-
         return inputs;
     }
     
@@ -243,83 +230,6 @@ public class ProgressiveLODInputBuilder {
         return manager.create(lod);
     }
 
-    /**
-     * Create barrier tensor: [1,1,1,16,16] (optional)
-     */
-    private NDArray createBarrierTensor(NoiseTap.Cache cache) {
-        float[][][][][] barrier = new float[1][1][1][16][16];
-        
-        float[][][] barrierData = cache.getRouterField(NoiseTap.RouterField.BARRIER);
-        for (int x = 0; x < 16; x++) {
-            for (int z = 0; z < 16; z++) {
-                barrier[0][0][0][x][z] = barrierData[x][z][0]; // Use Y=0 slice
-            }
-        }
-        
-        // Flatten and create NDArray with correct shape
-        float[] flatData = flattenArray5D(barrier);
-        return manager.create(flatData, new Shape(1, 1, 1, 16, 16));
-    }
-    
-    /**
-     * Create aquifer tensor: [1,3,1,16,16] (optional)
-     * Channels: fluidLevelFloodednessNoise, fluidLevelSpreadNoise, lavaNoise
-     */
-    private NDArray createAquiferTensor(NoiseTap.Cache cache) {
-        float[][][][][] aquifer = new float[1][3][1][16][16];
-        
-        NoiseTap.RouterField[] aquiferFields = {
-            NoiseTap.RouterField.FLUID_FLOODEDNESS,
-            NoiseTap.RouterField.FLUID_SPREAD,
-            NoiseTap.RouterField.LAVA
-        };
-
-        for (int channel = 0; channel < 3; channel++) {
-            float[][][] fieldData = cache.getRouterField(aquiferFields[channel]);
-            for (int x = 0; x < 16; x++) {
-                for (int z = 0; z < 16; z++) {
-                    aquifer[0][channel][0][x][z] = fieldData[x][z][0]; // Use Y=0 slice
-                }
-            }
-        }
-        
-        // Flatten and create NDArray with correct shape
-        float[] flatData = flattenArray5D(aquifer);
-        return manager.create(flatData, new Shape(1, 3, 1, 16, 16));
-    }
-    
-    /**
-     * Create cave prior tensor: [1,1,4,4,4] (optional)
-     */
-    private NDArray createCavePriorTensor(NoiseTap.Cache cache) {
-        float[][][][][] cavePrior = new float[1][1][4][4][4];
-
-        // Try finalDensity first, fallback to initialDensityWithoutJaggedness
-        float[][][] caveData;
-        try {
-            caveData = cache.getRouterField(NoiseTap.RouterField.FINAL_DENSITY);
-        } catch (IllegalArgumentException e) {
-            caveData = cache.getRouterField(NoiseTap.RouterField.INITIAL_DENSITY_NO_JAG);
-        }
-
-        // Downsample from 16×16×16 to 4×4×4
-        for (int x = 0; x < 4; x++) {
-            for (int z = 0; z < 4; z++) {
-                for (int y = 0; y < 4; y++) {
-                    // Sample at 4×4×4 grid points
-                    int srcX = x * 4;
-                    int srcZ = z * 4;
-                    int srcY = y * 4;
-                    cavePrior[0][0][x][z][y] = caveData[srcX][srcZ][srcY];
-                }
-            }
-        }
-
-        // Flatten and create NDArray with correct shape
-        float[] flatData = flattenArray5D(cavePrior);
-        return manager.create(flatData, new Shape(1, 1, 4, 4, 4));
-    }
-    
     // Helper methods for feature computation
 
     private float computeSlopeX(short[][] surface, int x, int z) {
@@ -355,42 +265,6 @@ public class ProgressiveLODInputBuilder {
         return count > 0 ? (sum / (float)count - center) : 0.0f;
     }
 
-    // Helper methods to check data availability
-
-    private boolean hasBarrierData(NoiseTap.Cache cache) {
-        try {
-            cache.getRouterField(NoiseTap.RouterField.BARRIER);
-            return true;
-        } catch (IllegalArgumentException e) {
-            return false;
-        }
-    }
-
-    private boolean hasAquiferData(NoiseTap.Cache cache) {
-        try {
-            cache.getRouterField(NoiseTap.RouterField.FLUID_FLOODEDNESS);
-            cache.getRouterField(NoiseTap.RouterField.FLUID_SPREAD);
-            cache.getRouterField(NoiseTap.RouterField.LAVA);
-            return true;
-        } catch (IllegalArgumentException e) {
-            return false;
-        }
-    }
-
-    private boolean hasCaveData(NoiseTap.Cache cache) {
-        try {
-            cache.getRouterField(NoiseTap.RouterField.FINAL_DENSITY);
-            return true;
-        } catch (IllegalArgumentException e) {
-            try {
-                cache.getRouterField(NoiseTap.RouterField.INITIAL_DENSITY_NO_JAG);
-                return true;
-            } catch (IllegalArgumentException e2) {
-                return false;
-            }
-        }
-    }
-    
     /**
      * Flatten a 5D array to 1D array for DJL NDArray creation.
      * Order: [batch][channel][depth][height][width]
@@ -414,25 +288,6 @@ public class ProgressiveLODInputBuilder {
                         }
                     }
                 }
-            }
-        }
-        
-        return flattened;
-    }
-    
-    /**
-     * Flatten a 2D array to 1D array for DJL NDArray creation.
-     */
-    private float[] flattenArray2D(float[][] array) {
-        int height = array.length;
-        int width = array[0].length;
-        
-        float[] flattened = new float[height * width];
-        int idx = 0;
-        
-        for (int h = 0; h < height; h++) {
-            for (int w = 0; w < width; w++) {
-                flattened[idx++] = array[h][w];
             }
         }
         
