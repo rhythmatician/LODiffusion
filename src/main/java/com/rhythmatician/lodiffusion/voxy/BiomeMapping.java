@@ -128,4 +128,15 @@ public final class BiomeMapping {
     public static int size() {
         return OVERWORLD_BIOMES.length;
     }
+
+    /**
+     * Get the registry-key name for a canonical biome ID.
+     *
+     * @param id canonical ID (0–53)
+     * @return the biome name (e.g. {@code "minecraft:plains"}), or {@code null} if out of range
+     */
+    public static String getCanonicalName(int id) {
+        if (id < 0 || id >= OVERWORLD_BIOMES.length) return null;
+        return OVERWORLD_BIOMES[id];
+    }
 }

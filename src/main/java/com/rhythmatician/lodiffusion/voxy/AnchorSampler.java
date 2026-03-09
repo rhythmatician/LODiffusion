@@ -83,7 +83,7 @@ public final class AnchorSampler {
                 + "quality will be degraded.  Use sampleFromNoise() for real data.");
         int[][] biomeIdx  = sampleBiomes(chunk);
         float[][] hmap    = sampleHeightmap(chunk);
-        float[][] heightPlanes = computeHeightPlanes(hmap);
+        float[][] heightPlanes = computeHeightPlanes(hmap, null);  // no ocean floor available from chunk path
         float[][] router6 = approximateRouter6(biomeIdx, hmap);
         return new AnchorInputs(heightPlanes, router6, biomeIdx);
     }
@@ -103,10 +103,12 @@ public final class AnchorSampler {
      */
     public static AnchorInputs sampleFromNoise(WorldNoiseAccess noiseAccess,
                                                 int sectionX, int sectionZ) {
-        // 1. Real heightmap — uses ChunkNoiseSampler internally (~64× faster than
-        //    256 individual getHeight() calls).  We keep hmap so callers can
-        //    retrieve it via AnchorInputs.rawHm() without a second sampling pass.
-        float[][] hmap = noiseAccess.sampleHeightmap(sectionX, sectionZ);
+        // 1. Real heightmaps — single ChunkNoiseSampler pass yields both
+        //    WORLD_SURFACE_WG and OCEAN_FLOOR_WG (~64× faster than 256
+        //    individual getHeight() calls).
+        float[][][] bothHmaps = noiseAccess.sampleBothHeightmaps(sectionX, sectionZ);
+        float[][] hmap         = bothHmaps[0];  // WORLD_SURFACE_WG
+        float[][] oceanFloorHm = bothHmaps[1];  // OCEAN_FLOOR_WG
 
         // 2. Real biomes from BiomeSource → canonical IDs
         String[][] biomeNames = noiseAccess.sampleBiomeNames(sectionX, sectionZ, hmap);
@@ -117,8 +119,8 @@ public final class AnchorSampler {
             }
         }
 
-        // 3. Height-planes are derived from the heightmap (pure math — same either way)
-        float[][] heightPlanes = computeHeightPlanes(hmap);
+        // 3. Height-planes use BOTH surface and ocean-floor heightmaps (matches Python)
+        float[][] heightPlanes = computeHeightPlanes(hmap, oceanFloorHm);
 
         // 4. Real router6 from NoiseRouter density functions
         float[][] router6 = noiseAccess.sampleRouter6(sectionX, sectionZ, hmap);
@@ -185,15 +187,18 @@ public final class AnchorSampler {
      * <p>Planes:
      * <ol>
      *   <li>surface         — normalised block-Y / 320</li>
-     *   <li>ocean_floor     — approx from below-sea portion (surface when &lt;= sea)</li>
+     *   <li>ocean_floor     — real OCEAN_FLOOR_WG / 320 (or clamped approx if unavailable)</li>
      *   <li>slope_x         — finite difference dH/dx normalised</li>
      *   <li>slope_z         — finite difference dH/dz normalised</li>
      *   <li>curvature       — Laplacian (d²H/dx² + d²H/dz²), normalised</li>
      * </ol>
      *
+     * @param hm           surface heightmap [16][16] in block-Y
+     * @param oceanFloorHm ocean floor heightmap [16][16] in block-Y, or {@code null}
+     *                     to fall back to {@code min(surface, SEA_LEVEL)} approximation
      * @return float[5][256] in row-major order (channel, lx*16+lz)
      */
-    static float[][] computeHeightPlanes(float[][] hm) {
+    static float[][] computeHeightPlanes(float[][] hm, float[][] oceanFloorHm) {
         float[][] planes = new float[5][256];
 
         // Step 1: Normalise surface (matches Python: surf = height / 320.0)
@@ -203,7 +208,12 @@ public final class AnchorSampler {
                 float h = hm[lx][lz];
                 surfNorm[lx][lz] = h / HEIGHT_RANGE;
                 planes[0][lx * 16 + lz] = surfNorm[lx][lz];                // surface
-                planes[1][lx * 16 + lz] = Math.min(h, SEA_LEVEL) / HEIGHT_RANGE; // ocean_floor
+                // Ocean floor: use real OCEAN_FLOOR_WG data when available,
+                // otherwise fall back to the min(surface, SEA_LEVEL) approximation.
+                float of = (oceanFloorHm != null)
+                        ? oceanFloorHm[lx][lz]
+                        : Math.min(h, SEA_LEVEL);
+                planes[1][lx * 16 + lz] = of / HEIGHT_RANGE;              // ocean_floor
             }
         }
 

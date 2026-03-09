@@ -441,7 +441,7 @@ public final class LodGenerationService {
                             sectionX, sectionZ);
                 }
             }
-            hp5 = AnchorSampler.computeHeightPlanes(rawHm);
+            hp5 = AnchorSampler.computeHeightPlanes(rawHm, null);  // no ocean floor in synthetic path
             @SuppressWarnings("deprecation")
             float[][] approxR6 = AnchorSampler.approximateRouter6(biomeIdx, rawHm);
             r6 = approxR6;
@@ -505,9 +505,15 @@ public final class LodGenerationService {
         }
 
         // Push to Voxy immediately — terrain appears progressively
-        int biomeVoxyId = blockMapper.defaultBiomeVoxyId();
+        // Translate canonical biome IDs → Voxy biome IDs (per-column)
+        int[][] biomeVoxyIds = new int[16][16];
+        for (int lx = 0; lx < 16; lx++) {
+            for (int lz = 0; lz < 16; lz++) {
+                biomeVoxyIds[lx][lz] = blockMapper.getVoxyBiomeId(biomeIdx[lx][lz]);
+            }
+        }
         writer.writeSection(result, model.config().effectiveBlockVocabSize(),
-                sectionX, sectionY, sectionZ, biomeVoxyId);
+                sectionX, sectionY, sectionZ, biomeVoxyIds);
     }
 
     // ------------------------------------------------------------------ //

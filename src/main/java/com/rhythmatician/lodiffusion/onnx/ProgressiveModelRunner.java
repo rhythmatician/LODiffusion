@@ -1,7 +1,10 @@
 package com.rhythmatician.lodiffusion.onnx;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.logging.Logger;
 
 import ai.djl.ndarray.NDArray;
@@ -82,12 +85,22 @@ public final class ProgressiveModelRunner implements AutoCloseable {
     /**
      * Load all 4 progressive ONNX models from {@code modelDir}.
      *
+     * <p>Before loading, validates that every required file listed in
+     * {@code pipeline_manifest.json}'s {@code required_files} array is
+     * present.  This catches incomplete deployments (e.g. forgetting to
+     * copy the {@code _config.json} sidecars) with a clear error message
+     * listing exactly which files are missing.
+     *
      * @param modelDir directory containing the {@code .onnx} files and their
      *                 {@code _config.json} sidecars (produced by export_lod.py)
      * @throws IOException if any model or config cannot be loaded
      */
     @SuppressWarnings({"unchecked", "rawtypes"})
     public static ProgressiveModelRunner loadAll(Path modelDir) throws IOException {
+
+        // ---- Up-front deployment validation ----
+        validateRequiredFiles(modelDir);
+
         ZooModel<NDList, NDList>[] models = new ZooModel[4];
         ModelConfig[] configs = new ModelConfig[4];
 
@@ -126,6 +139,91 @@ public final class ProgressiveModelRunner implements AutoCloseable {
                 + "vocab=" + vocab.size() + "  dir=" + modelDir);
 
         return new ProgressiveModelRunner(manager, models, configs, vocab);
+    }
+
+    /**
+     * Validate that all files listed in the manifest's {@code required_files}
+     * array actually exist in {@code modelDir}.  Fails fast with a clear
+     * error listing every missing file so partial deployments are obvious.
+     *
+     * <p>If the manifest doesn't contain a {@code required_files} key
+     * (older exports), falls back to checking the hardcoded STEMS/CONFIG_NAMES.
+     */
+    private static void validateRequiredFiles(Path modelDir) throws IOException {
+        Path manifestPath = modelDir.resolve("pipeline_manifest.json");
+        if (!Files.exists(manifestPath)) {
+            throw new IOException("pipeline_manifest.json not found in " + modelDir
+                    + " — did you forget to deploy it from the export directory?");
+        }
+
+        // Parse required_files from the manifest
+        String manifestJson = Files.readString(manifestPath);
+        List<String> requiredFiles = parseRequiredFiles(manifestJson);
+
+        // Fall back to hardcoded list if manifest predates required_files
+        if (requiredFiles.isEmpty()) {
+            LOGGER.warning("[ProgressiveModelRunner] Manifest has no 'required_files' — "
+                    + "using hardcoded file list (re-export to get automatic validation)");
+            requiredFiles = new ArrayList<>();
+            for (String stem : STEMS) {
+                requiredFiles.add(stem + ".onnx");
+            }
+            for (String cfg : CONFIG_NAMES) {
+                requiredFiles.add(cfg);
+            }
+        }
+
+        // Check each file
+        List<String> missing = new ArrayList<>();
+        for (String name : requiredFiles) {
+            if (!Files.exists(modelDir.resolve(name))) {
+                missing.add(name);
+            }
+        }
+
+        if (!missing.isEmpty()) {
+            StringBuilder sb = new StringBuilder();
+            sb.append("Incomplete model deployment in ").append(modelDir).append("!\n");
+            sb.append("Missing ").append(missing.size()).append(" required file(s):\n");
+            for (String m : missing) {
+                sb.append("  - ").append(m).append('\n');
+            }
+            sb.append("Copy ALL files from the export directory (production/vN/) ");
+            sb.append("into ").append(modelDir);
+            throw new IOException(sb.toString());
+        }
+
+        LOGGER.info("[ProgressiveModelRunner] Deployment validated — "
+                + requiredFiles.size() + " required files present in " + modelDir);
+    }
+
+    /**
+     * Extract the {@code required_files} string array from manifest JSON.
+     * Uses simple string parsing to avoid pulling in a JSON library dependency
+     * beyond what ConfigLoader already uses.
+     */
+    private static List<String> parseRequiredFiles(String json) {
+        List<String> result = new ArrayList<>();
+        int idx = json.indexOf("\"required_files\"");
+        if (idx < 0) return result;
+
+        int arrStart = json.indexOf('[', idx);
+        if (arrStart < 0) return result;
+        int arrEnd = json.indexOf(']', arrStart);
+        if (arrEnd < 0) return result;
+
+        String arrContent = json.substring(arrStart + 1, arrEnd);
+        // Match quoted strings
+        int pos = 0;
+        while (pos < arrContent.length()) {
+            int q1 = arrContent.indexOf('"', pos);
+            if (q1 < 0) break;
+            int q2 = arrContent.indexOf('"', q1 + 1);
+            if (q2 < 0) break;
+            result.add(arrContent.substring(q1 + 1, q2));
+            pos = q2 + 1;
+        }
+        return result;
     }
 
     // ------------------------------------------------------------------

@@ -51,16 +51,16 @@ public final class VoxySectionWriter {
      * Decode model output and inject it as a Voxy section at the given
      * chunk-section coordinate.
      *
-     * @param result      the model's InferenceResult
-     * @param vocabSize   number of block types in the model vocabulary
-     * @param sectionX    Voxy chunk-section X (block X / 16)
-     * @param sectionY    Voxy chunk-section Y (block Y / 16)
-     * @param sectionZ    Voxy chunk-section Z (block Z / 16)
-     * @param biomeVoxyId Voxy biome ID to use for all voxels in this section
+     * @param result        the model's InferenceResult
+     * @param vocabSize     number of block types in the model vocabulary
+     * @param sectionX      Voxy chunk-section X (block X / 16)
+     * @param sectionY      Voxy chunk-section Y (block Y / 16)
+     * @param sectionZ      Voxy chunk-section Z (block Z / 16)
+     * @param biomeVoxyIds  per-column Voxy biome IDs [16][16], indexed [x][z]
      */
     public void writeSection(InferenceResult result, int vocabSize,
                              int sectionX, int sectionY, int sectionZ,
-                             int biomeVoxyId) {
+                             int[][] biomeVoxyIds) {
 
         // ---- Insert-only guard ----
         // Never overwrite any existing section data.  Each progressive LOD
@@ -111,11 +111,12 @@ public final class VoxySectionWriter {
             for (int y = 0; y < 16; y++) {
                 for (int z = 0; z < 16; z++) {
                     long voxel;
+                    int biome = biomeVoxyIds[x][z]; // per-column biome
 
                     // Access model output at [batch=0][chan][d0=Y][d1=Z][d2=X]
                     if (mask[0][0][y][z][x] <= 0f) {
                         // Air — use air with default light
-                        voxel = VoxyCompat.composeVoxel(0, biomeVoxyId, DEFAULT_LIGHT);
+                        voxel = VoxyCompat.composeVoxel(0, biome, DEFAULT_LIGHT);
                     } else {
                         // Solid — argmax over block logits
                         int bestIdx = 0;
@@ -131,9 +132,9 @@ public final class VoxySectionWriter {
                         int voxyBlockId = blockMapper.getVoxyBlockId(bestIdx);
                         if (voxyBlockId == 0) {
                             // Mapped to air despite solid mask — keep as air
-                            voxel = VoxyCompat.composeVoxel(0, biomeVoxyId, DEFAULT_LIGHT);
+                            voxel = VoxyCompat.composeVoxel(0, biome, DEFAULT_LIGHT);
                         } else {
-                            voxel = VoxyCompat.composeVoxel(voxyBlockId, biomeVoxyId, DEFAULT_LIGHT);
+                            voxel = VoxyCompat.composeVoxel(voxyBlockId, biome, DEFAULT_LIGHT);
                             nonAirCount++;
                         }
                     }
@@ -183,17 +184,17 @@ public final class VoxySectionWriter {
      * @param chunkX         Minecraft chunk X coordinate
      * @param baseY          world Y of the bottom of the 16³ volume
      * @param chunkZ         Minecraft chunk Z coordinate
-     * @param biomeVoxyId    Voxy biome ID
+     * @param biomeVoxyIds   per-column Voxy biome IDs [16][16]
      */
     public void writeChunkSlice(InferenceResult result, int vocabSize,
                                 int chunkX, int baseY, int chunkZ,
-                                int biomeVoxyId) {
+                                int[][] biomeVoxyIds) {
         // Voxy section coordinates = block / 16 for x,z; block Y / 16 for y
         int sectionX = chunkX;
         int sectionY = baseY / 16;
         int sectionZ = chunkZ;
 
-        writeSection(result, vocabSize, sectionX, sectionY, sectionZ, biomeVoxyId);
+        writeSection(result, vocabSize, sectionX, sectionY, sectionZ, biomeVoxyIds);
     }
 
     /**
