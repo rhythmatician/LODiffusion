@@ -3,11 +3,15 @@ package com.rhythmatician.lodiffusion.voxy;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
@@ -69,6 +73,14 @@ public final class LodGenerationService {
      */
     private static final int SURFACE_MARGIN = 1;  // 1 section = 16 blocks
 
+    /**
+     * Number of parallel worker threads for the coarsest LOD pass.
+     * Higher values speed up initial terrain generation at the cost of
+     * more CPU usage.  Capped at 4 to avoid starving the game thread.
+     */
+    private static final int LOD4_PARALLELISM =
+            Math.min(Runtime.getRuntime().availableProcessors(), 4);
+
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
     private final AtomicBoolean positionReady = new AtomicBoolean(false);
@@ -78,17 +90,17 @@ public final class LodGenerationService {
     private volatile int playerSectionX;
     private volatile int playerSectionZ;
 
-    /** Tracks which (section, lod) combos we've already generated. */
-    private final Set<Long> generatedSections = new HashSet<>();
+    /** Tracks which (section, lod) combos we've already generated. Thread-safe. */
+    private final Set<Long> generatedSections = ConcurrentHashMap.newKeySet();
 
     /** Coarsened parent cache: posKey → float[8][8][8] from previous LOD pass. */
     private final Map<Long, float[][][]> parentCache = new HashMap<>();
 
-    /** Stats: how many sections used real vs synthetic conditioning data. */
-    private int realDataSections = 0;
-    private int syntheticDataSections = 0;
-    private int noiseAccessSections = 0;
-    private int skippedAirSections = 0;
+    /** Stats: how many sections used real vs synthetic conditioning data. Thread-safe. */
+    private final AtomicInteger realDataSections = new AtomicInteger();
+    private final AtomicInteger syntheticDataSections = new AtomicInteger();
+    private final AtomicInteger noiseAccessSections = new AtomicInteger();
+    private final AtomicInteger skippedAirSections = new AtomicInteger();
 
     /** Server-side noise access — null if unavailable (dedicated server). */
     private volatile WorldNoiseAccess noiseAccess;
@@ -117,10 +129,10 @@ public final class LodGenerationService {
         positionReady.set(false);
         generatedSections.clear();
         parentCache.clear();
-        realDataSections = 0;
-        syntheticDataSections = 0;
-        noiseAccessSections = 0;
-        skippedAirSections = 0;
+        realDataSections.set(0);
+        syntheticDataSections.set(0);
+        noiseAccessSections.set(0);
+        skippedAirSections.set(0);
         noiseAccess = null;
         this.server = server;
 
@@ -248,25 +260,20 @@ public final class LodGenerationService {
 
         HelloTerrainMod.LOGGER.info(
                 "[LodGen] Starting progressive generation — " +
-                "{} passes (LOD {}→{}) around ({}, {})  contract={}",
+                "{} passes (LOD {}→{}) around ({}, {})  contract={}  parallelism={}",
                 COARSEST_LOD - FINEST_LOD + 1,
                 COARSEST_LOD, FINEST_LOD, centerX, centerZ,
-                "v3.progressive");
+                "v3.progressive", LOD4_PARALLELISM);
 
         for (int lod = COARSEST_LOD; lod >= FINEST_LOD; lod--) {
             if (stopRequested.get()) return;
 
             int radius = PASS_RADIUS[lod];
-
-            // Always generate center-first: the player sees terrain near
-            // them first and it gets progressively refined.  Finer LOD passes
-            // overwrite our coarser data.  Voxy-native data (from real chunk
-            // loading) is never overwritten.
             boolean distantFirst = false;
             List<int[]> columns = buildSpiralSections(
                     centerX, centerZ, radius, distantFirst);
-            int passCount = 0;
-            diagnosticCount = 0;  // reset per pass
+            AtomicInteger passCount = new AtomicInteger();
+            diagnosticCount.set(0);
 
             HelloTerrainMod.LOGGER.info(
                     "[LodGen] LOD {} pass — radius={}, ~{} columns, " +
@@ -275,95 +282,73 @@ public final class LodGenerationService {
                     distantFirst, Y_SECTIONS,
                     columns.size() * Y_SECTIONS);
 
-            for (int[] col : columns) {
-                if (stopRequested.get()) return;
-                int sx = col[0], sz = col[1];
+            boolean useParallel = lod == COARSEST_LOD && LOD4_PARALLELISM > 1;
 
-                // ---- Skip columns where vanilla has loaded real chunks ----
-                // Real chunk data is always better than our model output.
-                // Also clear our ownership claims so that if the chunk later
-                // unloads, VoxySectionWriter won't overwrite the native data.
-                if (tryGetLoadedChunk(world, sx, sz) != null) {
-                    writer.forgetColumn(sx, sz, Y_BASE_SECTION, Y_SECTIONS);
-                    continue;
+            if (useParallel) {
+                // ── Multi-threaded pass for coarsest LOD ─────────────
+                // LOD 4 covers the widest radius with the cheapest model.
+                // Parallelising column processing fills the horizon faster.
+                ExecutorService executor = Executors.newFixedThreadPool(
+                        LOD4_PARALLELISM, r -> {
+                            Thread t = new Thread(r, "LODiffusion-LOD4");
+                            t.setDaemon(true);
+                            return t;
+                        });
+
+                final int lodFinal = lod;
+                List<Future<Integer>> futures = new ArrayList<>();
+                for (int[] col : columns) {
+                    final int sx = col[0], sz = col[1];
+                    futures.add(executor.submit(() ->
+                            processColumn(world, model, writer, blockMapper,
+                                    sx, sz, lodFinal)));
                 }
 
-                // ---- Sample conditioning data ONCE per column ----
-                ColumnContext ctx = buildColumnContext(world, sx, sz);
-
-                // ---- Compute Y range from surface heightmap ----
-                // Only generate sections that intersect the surface ± margin.
-                // Sections entirely above the surface would produce garbage
-                // (random blocks in the sky), and sections far underground
-                // are just solid stone — both are wasted inference time.
-                float minH = Float.MAX_VALUE, maxH = -Float.MAX_VALUE;
-                for (int lx = 0; lx < 16; lx++) {
-                    for (int lz = 0; lz < 16; lz++) {
-                        float h = ctx.rawHm[lx][lz];
-                        if (h < minH) minH = h;
-                        if (h > maxH) maxH = h;
-                    }
-                }
-
-                // Convert block Y to section Y, then add margin.
-                // Use Math.floorDiv for correct behavior with negative heights
-                // (Java's / truncates toward zero, floorDiv rounds toward -∞).
-                int minSectionY = Math.floorDiv((int) Math.floor(minH), 16) - SURFACE_MARGIN;
-                int maxSectionY = Math.floorDiv((int) Math.ceil(maxH), 16) + SURFACE_MARGIN;
-
-                // Log heightmap range for first 3 columns
-                if (diagnosticCount < 3) {
-                    HelloTerrainMod.LOGGER.info(
-                            "[LodGen] Column ({},{}) heightmap: min={} max={} → "
-                            + "sectionY=[{},{}] (blocks [{},{}])",
-                            sx, sz, minH, maxH,
-                            Math.max(minSectionY, Y_BASE_SECTION),
-                            Math.min(maxSectionY, Y_BASE_SECTION + Y_SECTIONS - 1),
-                            Math.max(minSectionY, Y_BASE_SECTION) * 16,
-                            (Math.min(maxSectionY, Y_BASE_SECTION + Y_SECTIONS - 1) + 1) * 16 - 1);
-                }
-
-                // Clamp to the valid Y range
-                minSectionY = Math.max(minSectionY, Y_BASE_SECTION);
-                maxSectionY = Math.min(maxSectionY, Y_BASE_SECTION + Y_SECTIONS - 1);
-
-                for (int sy = minSectionY; sy <= maxSectionY; sy++) {
-                    long lodKey = sectionKey(sx, sy, sz, lod);
-                    if (generatedSections.contains(lodKey)) continue;
-
+                // Collect results as they complete (futures are ordered
+                // center-first from the spiral, so progress is natural)
+                for (Future<Integer> f : futures) {
+                    if (stopRequested.get()) break;
                     try {
-                        inferAndPushSection(world, model, writer, blockMapper,
-                                ctx, sx, sy, sz, lod);
-                        generatedSections.add(lodKey);
-                        passCount++;
-
-                        if (passCount % 200 == 0) {
+                        int count = f.get();
+                        int total = passCount.addAndGet(count);
+                        if (count > 0 && total % 200 < count) {
                             HelloTerrainMod.LOGGER.info(
                                     "[LodGen] LOD {} progress: {} sections " +
                                     "(skipped {} air)",
-                                    lod, passCount, skippedAirSections);
+                                    lodFinal, total, skippedAirSections.get());
                         }
                     } catch (Exception e) {
-                        HelloTerrainMod.LOGGER.warn(
-                                "[LodGen] Failed ({},{},{}) LOD {}: {}",
-                                sx, sy, sz, lod, e.getMessage());
+                        if (!stopRequested.get()) {
+                            HelloTerrainMod.LOGGER.warn(
+                                    "[LodGen] Column task failed: {}",
+                                    e.getMessage());
+                        }
                     }
-
-                    try { Thread.sleep(5); }
-                    catch (InterruptedException e) { return; }
                 }
 
-                // Count sections we skipped (above/below surface)
-                int fullRange = Y_SECTIONS;
-                int generatedRange = maxSectionY - minSectionY + 1;
-                skippedAirSections += fullRange - generatedRange;
+                executor.shutdownNow();
+            } else {
+                // ── Single-threaded pass for finer LODs ──────────────
+                for (int[] col : columns) {
+                    if (stopRequested.get()) return;
+                    int count = processColumn(world, model, writer, blockMapper,
+                            col[0], col[1], lod);
+                    int total = passCount.addAndGet(count);
+                    if (count > 0 && total % 200 < count) {
+                        HelloTerrainMod.LOGGER.info(
+                                "[LodGen] LOD {} progress: {} sections " +
+                                "(skipped {} air)",
+                                lod, total, skippedAirSections.get());
+                    }
+                }
             }
 
             HelloTerrainMod.LOGGER.info(
                     "[LodGen] LOD {} pass complete — {} sections generated, {} skipped " +
                     "(noise={}, real={}, synthetic={})",
-                    lod, passCount, skippedAirSections,
-                    noiseAccessSections, realDataSections, syntheticDataSections);
+                    lod, passCount.get(), skippedAirSections.get(),
+                    noiseAccessSections.get(), realDataSections.get(),
+                    syntheticDataSections.get());
 
             // Free cached parents outside the next pass's radius
             if (lod > FINEST_LOD) {
@@ -376,8 +361,94 @@ public final class LodGenerationService {
         HelloTerrainMod.LOGGER.info("[LodGen] All LOD passes complete");
     }
 
-    /** Counter for detailed diagnostics (reset per LOD pass). */
-    private int diagnosticCount = 0;
+    /**
+     * Process all Y sections for a single column.
+     *
+     * <p>Thread-safe — multiple columns can be processed concurrently.
+     * Each column samples its own conditioning data and writes results
+     * independently to Voxy.
+     *
+     * @return the number of sections actually generated
+     */
+    private int processColumn(World world, ProgressiveModelRunner model,
+                               VoxySectionWriter writer,
+                               VoxyBlockMapper blockMapper,
+                               int sx, int sz, int lod) {
+        if (stopRequested.get()) return 0;
+
+        // Skip columns where vanilla has loaded real chunks
+        if (tryGetLoadedChunk(world, sx, sz) != null) {
+            writer.forgetColumn(sx, sz, Y_BASE_SECTION, Y_SECTIONS);
+            return 0;
+        }
+
+        // Sample conditioning data ONCE per column
+        ColumnContext ctx = buildColumnContext(world, sx, sz);
+
+        // Compute Y range from surface heightmap
+        float minH = Float.MAX_VALUE, maxH = -Float.MAX_VALUE;
+        for (int lx = 0; lx < 16; lx++) {
+            for (int lz = 0; lz < 16; lz++) {
+                float h = ctx.rawHm[lx][lz];
+                if (h < minH) minH = h;
+                if (h > maxH) maxH = h;
+            }
+        }
+
+        int minSectionY = Math.floorDiv((int) Math.floor(minH), 16) - SURFACE_MARGIN;
+        int maxSectionY = Math.floorDiv((int) Math.ceil(maxH), 16) + SURFACE_MARGIN;
+
+        // Log heightmap range for first few columns
+        if (diagnosticCount.get() < 3) {
+            diagnosticCount.incrementAndGet();
+            HelloTerrainMod.LOGGER.info(
+                    "[LodGen] Column ({},{}) heightmap: min={} max={} → "
+                    + "sectionY=[{},{}] (blocks [{},{}])",
+                    sx, sz, minH, maxH,
+                    Math.max(minSectionY, Y_BASE_SECTION),
+                    Math.min(maxSectionY, Y_BASE_SECTION + Y_SECTIONS - 1),
+                    Math.max(minSectionY, Y_BASE_SECTION) * 16,
+                    (Math.min(maxSectionY, Y_BASE_SECTION + Y_SECTIONS - 1) + 1) * 16 - 1);
+        }
+
+        // Clamp to the valid Y range
+        minSectionY = Math.max(minSectionY, Y_BASE_SECTION);
+        maxSectionY = Math.min(maxSectionY, Y_BASE_SECTION + Y_SECTIONS - 1);
+
+        int generated = 0;
+        for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+            if (stopRequested.get()) break;
+
+            long lodKey = sectionKey(sx, sy, sz, lod);
+            if (generatedSections.contains(lodKey)) continue;
+
+            try {
+                inferAndPushSection(world, model, writer, blockMapper,
+                        ctx, sx, sy, sz, lod);
+                generatedSections.add(lodKey);
+                generated++;
+            } catch (Exception e) {
+                HelloTerrainMod.LOGGER.warn(
+                        "[LodGen] Failed ({},{},{}) LOD {}: {}",
+                        sx, sy, sz, lod, e.getMessage());
+            }
+
+            // Cooperatively yield instead of hard-sleeping 5ms per section.
+            // The old Thread.sleep(5) added 15+ seconds of pure sleeping
+            // per LOD pass (~3000 sections × 5ms each).
+            Thread.yield();
+            if (stopRequested.get()) break;
+        }
+
+        // Count sections we skipped (above/below surface)
+        int generatedRange = maxSectionY - minSectionY + 1;
+        skippedAirSections.addAndGet(Y_SECTIONS - generatedRange);
+
+        return generated;
+    }
+
+    /** Counter for detailed diagnostics (reset per LOD pass). Thread-safe. */
+    private final AtomicInteger diagnosticCount = new AtomicInteger();
 
     // ------------------------------------------------------------------ //
     //  Per-column conditioning context
@@ -422,8 +493,8 @@ public final class LodGenerationService {
             biomeIdx = anchor.biomeIdx();
             hp5      = anchor.heightPlanes5();
             r6       = anchor.router6();
-            noiseAccessSections++;
-            if (diagnosticCount < 3) {
+            noiseAccessSections.incrementAndGet();
+            if (diagnosticCount.get() < 3) {
                 HelloTerrainMod.LOGGER.info(
                         "[LodGen] Using NOISE ACCESS data for column ({},{}) — " +
                         "real heightmap + router6 + biome",
@@ -434,8 +505,8 @@ public final class LodGenerationService {
             if (chunk != null) {
                 rawHm    = AnchorSampler.sampleHeightmap(chunk);
                 biomeIdx = AnchorSampler.sampleBiomes(chunk);
-                realDataSections++;
-                if (diagnosticCount < 3) {
+                realDataSections.incrementAndGet();
+                if (diagnosticCount.get() < 3) {
                     HelloTerrainMod.LOGGER.info(
                             "[LodGen] Using REAL chunk data for column ({},{})"
                             + " — WARNING: router6 is APPROXIMATE (no noise access)",
@@ -446,8 +517,8 @@ public final class LodGenerationService {
                 rawHm    = buildHeightmap(sectionX, sectionZ);
                 biomeIdx = new int[16][16];
                 for (int[] row : biomeIdx) java.util.Arrays.fill(row, 1);
-                syntheticDataSections++;
-                if (diagnosticCount < 3) {
+                syntheticDataSections.incrementAndGet();
+                if (diagnosticCount.get() < 3) {
                     HelloTerrainMod.LOGGER.info(
                             "[LodGen] Using SYNTHETIC data for column ({},{}) — " +
                             "chunk not loaded, no noise access.  " +
@@ -504,10 +575,10 @@ public final class LodGenerationService {
 
         // Diagnostics: sample different Y levels to compare underground vs sky
         boolean shouldDiag = false;
-        if (diagnosticCount < 3) {
+        if (diagnosticCount.get() < 3) {
             // Always log first 3 sections (from first column)
             shouldDiag = true;
-        } else if (diagnosticCount < 10) {
+        } else if (diagnosticCount.get() < 10) {
             // After first 3, only log extreme Y levels to see above-ground behavior
             // Log Y near surface (sectionY 3-4) and well above (sectionY 8+)
             shouldDiag = sectionY == 4 || sectionY == 8 || sectionY == 11;
@@ -518,7 +589,7 @@ public final class LodGenerationService {
                     sectionX, sectionY, sectionZ,
                     result.elapsedMs(), lod,
                     yIndex, 0 /* parent not tracked by ProgressiveModelRunner */);
-            diagnosticCount++;
+            diagnosticCount.incrementAndGet();
         }
 
         // Push to Voxy immediately — terrain appears progressively

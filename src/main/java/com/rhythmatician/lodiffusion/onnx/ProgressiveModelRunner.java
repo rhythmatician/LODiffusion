@@ -67,6 +67,12 @@ public final class ProgressiveModelRunner implements AutoCloseable {
     private final ModelConfig[]              configs;
     private final BlockVocabulary            vocabulary;
 
+    /**
+     * Thread-local reusable buffers for inference.  Eliminates ~2.5 MB of
+     * allocation per section call (the main GC pressure source).
+     */
+    private final ThreadLocal<InferenceBuffers> threadBuffers = new ThreadLocal<>();
+
     @SuppressWarnings("unchecked")
     private ProgressiveModelRunner(NDManager manager,
                                    ZooModel<NDList, NDList>[] models,
@@ -252,18 +258,16 @@ public final class ProgressiveModelRunner implements AutoCloseable {
             throws TranslateException {
 
         long t0 = System.currentTimeMillis();
+        InferenceBuffers buf = getOrCreateBuffers();
 
         try (NDManager sub = manager.newSubManager()) {
 
-            // ── Shared conditioning tensors ──────────────────────────────
+            // ── Shared conditioning tensors (reuse pooled arrays) ────────
             // hp5: [5][256] x-major  →  [1, 5, 16, 16]  z-major (transpose)
-            // Training used (z, x) layout (produced by parse_heightmap().T in Python)
-            float[] hpFlat = new float[5 * 16 * 16];
+            float[] hpFlat = buf.hpFlat;
             for (int ch = 0; ch < 5; ch++) {
                 for (int lx = 0; lx < 16; lx++) {
                     for (int lz = 0; lz < 16; lz++) {
-                        // src: x-major ch*256 + lx*16+lz
-                        // dst: z-major ch*256 + lz*16+lx
                         hpFlat[ch * 256 + lz * 16 + lx] = hp5Row[ch][lx * 16 + lz];
                     }
                 }
@@ -271,7 +275,7 @@ public final class ProgressiveModelRunner implements AutoCloseable {
             NDArray xHp = sub.create(hpFlat, new Shape(1, 5, 16, 16));
 
             // biome: [16][16] (x,z)  →  [1, 16, 16]  z-major (transpose)
-            long[] bioFlat = new long[256];
+            long[] bioFlat = buf.bioFlat;
             for (int lx = 0; lx < 16; lx++) {
                 for (int lz = 0; lz < 16; lz++) {
                     bioFlat[lz * 16 + lx] = biomeIdx[lx][lz];
@@ -301,14 +305,15 @@ public final class ProgressiveModelRunner implements AutoCloseable {
             NDArray logits8 = extractBlockLogits(s3out);  // [1,N,8,8,8]
             NDArray air8    = extractAirMask(s3out);      // [1,1,8,8,8]
 
-            // ── 2× nearest-neighbor upsample: 8³ → 16³ ──────────────────
-            float[][][][][] bl8  = extract5D(logits8);
-            float[][][][][] am8  = extract5D(air8);
-            float[][][][][] bl16 = upsample2x(bl8);
-            float[][][][][] am16 = upsample2x(am8);
+            // ── Fused extract + 2× upsample into pooled 16³ buffers ─────
+            // Reads NDArray flat data and writes directly into pre-allocated
+            // 16³ arrays, skipping the intermediate 8³ allocation entirely.
+            // Saves ~2.5 MB of heap allocation per inference call.
+            extractAndUpsample5D(logits8, buf.logits16);
+            extractAndUpsample5D(air8, buf.air16);
 
             long elapsed = System.currentTimeMillis() - t0;
-            return new InferenceResult(bl16, am16, elapsed);
+            return new InferenceResult(buf.logits16, buf.air16, elapsed);
         }
     }
 
@@ -359,42 +364,85 @@ public final class ProgressiveModelRunner implements AutoCloseable {
                 "[ProgressiveModelRunner] block_logits (ch>1, rank=5) not found in outputs");
     }
 
-    /** Copy a rank-5 NDArray into a Java {@code float[][][][][]}. */
-    private static float[][][][][] extract5D(NDArray t) {
-        long[] s    = t.getShape().getShape();
-        float[] src = t.toFloatArray();
-        int b = (int) s[0], c = (int) s[1], d = (int) s[2],
-            h = (int) s[3], w = (int) s[4];
-        float[][][][][] out = new float[b][c][d][h][w];
+    // ------------------------------------------------------------------
+    // Thread-local buffer pool (GC pressure reduction)
+    // ------------------------------------------------------------------
+
+    /**
+     * Pre-allocated arrays for one inference call.  One instance per thread.
+     * Eliminates the major GC-pressure sources:
+     * <ul>
+     *   <li>{@code logits16} — {@code float[1][vocabSize][16][16][16]} (~2.2 MB)</li>
+     *   <li>{@code air16} — {@code float[1][1][16][16][16]} (16 KB)</li>
+     *   <li>{@code hpFlat} / {@code bioFlat} — conditioning scratch arrays</li>
+     * </ul>
+     *
+     * <p><b>Important:</b> The caller must fully consume the returned
+     * {@link InferenceResult} before the next {@code generate()} call on
+     * the same thread, because the result references these pooled arrays.
+     */
+    private static final class InferenceBuffers {
+        final int vocabSize;
+        final float[] hpFlat  = new float[5 * 16 * 16];
+        final long[]  bioFlat = new long[256];
+        final float[][][][][] logits16;  // [1][vocabSize][16][16][16]
+        final float[][][][][] air16;     // [1][1][16][16][16]
+
+        InferenceBuffers(int vocabSize) {
+            this.vocabSize = vocabSize;
+            this.logits16  = new float[1][vocabSize][16][16][16];
+            this.air16     = new float[1][1][16][16][16];
+        }
+    }
+
+    /** Get or create the thread-local inference buffers. */
+    private InferenceBuffers getOrCreateBuffers() {
+        InferenceBuffers buf = threadBuffers.get();
+        int vocabSize = configs[3].effectiveBlockVocabSize();
+        if (buf == null || buf.vocabSize != vocabSize) {
+            buf = new InferenceBuffers(vocabSize);
+            threadBuffers.set(buf);
+            LOGGER.info("[ProgressiveModelRunner] Allocated inference buffers "
+                    + "for thread " + Thread.currentThread().getName()
+                    + " (vocab=" + vocabSize + ", ~"
+                    + (vocabSize * 4096 * 4 / 1024 / 1024) + " MB)");
+        }
+        return buf;
+    }
+
+    /**
+     * Fused extract + 2× nearest-neighbor upsample.
+     *
+     * <p>Reads the NDArray's flat data once and writes directly into a
+     * pre-allocated {@code [b][c][D*2][D*2][D*2]} output array, performing
+     * 2×2×2 replication on the fly.  This eliminates both:
+     * <ol>
+     *   <li>The intermediate {@code [b][c][D][D][D]} array from extract5D</li>
+     *   <li>The second {@code [b][c][D*2][D*2][D*2]} array from upsample2x</li>
+     * </ol>
+     * saving ~2.5 MB of allocation per call for the logits tensor.
+     *
+     * @param src  NDArray with shape {@code [b, c, D, D, D]}
+     * @param dst  pre-allocated output with shape {@code [b, c, 2D, 2D, 2D]}
+     */
+    private static void extractAndUpsample5D(NDArray src, float[][][][][] dst) {
+        long[] s   = src.getShape().getShape();
+        float[] flat = src.toFloatArray();  // only temp allocation (~278 KB for logits)
+        int b = (int) s[0], c = (int) s[1];
+        int d = (int) s[2], h = (int) s[3], w = (int) s[4];
         int idx = 0;
         for (int bi = 0; bi < b; bi++)
             for (int ci = 0; ci < c; ci++)
                 for (int di = 0; di < d; di++)
                     for (int hi = 0; hi < h; hi++)
-                        for (int wi = 0; wi < w; wi++)
-                            out[bi][ci][di][hi][wi] = src[idx++];
-        return out;
-    }
-
-    /**
-     * 2× nearest-neighbor upsample along the spatial dimensions [d, h, w].
-     * Each voxel is replicated into a 2×2×2 block.
-     */
-    private static float[][][][][] upsample2x(float[][][][][] t) {
-        int b = t.length, c = t[0].length, D = t[0][0].length;
-        float[][][][][] out = new float[b][c][D * 2][D * 2][D * 2];
-        for (int bi = 0; bi < b; bi++)
-            for (int ci = 0; ci < c; ci++)
-                for (int di = 0; di < D; di++)
-                    for (int hi = 0; hi < D; hi++)
-                        for (int wi = 0; wi < D; wi++) {
-                            float v = t[bi][ci][di][hi][wi];
+                        for (int wi = 0; wi < w; wi++) {
+                            float v = flat[idx++];
+                            // 2×2×2 nearest-neighbor replication
                             for (int dd = 0; dd < 2; dd++)
                                 for (int dh = 0; dh < 2; dh++)
                                     for (int dw = 0; dw < 2; dw++)
-                                        out[bi][ci][di*2+dd][hi*2+dh][wi*2+dw] = v;
+                                        dst[bi][ci][di*2+dd][hi*2+dh][wi*2+dw] = v;
                         }
-        return out;
     }
 
     // ------------------------------------------------------------------
