@@ -1,6 +1,7 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 import java.lang.reflect.Method;
+import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -8,6 +9,10 @@ import org.slf4j.LoggerFactory;
 import com.rhythmatician.lodiffusion.onnx.BlockVocabulary;
 
 import net.minecraft.block.BlockState;
+import net.minecraft.registry.Registry;
+import net.minecraft.registry.entry.RegistryEntry;
+import net.minecraft.util.Identifier;
+import net.minecraft.world.biome.Biome;
 
 /**
  * Translates model vocabulary indices → Voxy internal block IDs,
@@ -36,10 +41,13 @@ public final class VoxyBlockMapper {
      * Build the mapping by registering every BlockState with Voxy's Mapper,
      * and resolving canonical biome IDs to Voxy biome IDs.
      *
-     * @param vocab       our model's BlockVocabulary
-     * @param voxyMapper  the Voxy Mapper object (obtained via {@link VoxyCompat#getMapper})
+     * @param vocab          our model's BlockVocabulary
+     * @param voxyMapper     the Voxy Mapper object (obtained via {@link VoxyCompat#getMapper})
+     * @param biomeRegistry  the game's biome registry, used to proactively register
+     *                       all overworld biomes with Voxy so grass/water tinting is correct
      */
-    public static VoxyBlockMapper build(BlockVocabulary vocab, Object voxyMapper) {
+    public static VoxyBlockMapper build(BlockVocabulary vocab, Object voxyMapper,
+                                         Registry<Biome> biomeRegistry) {
         try {
             Method getIdMethod = voxyMapper.getClass().getMethod("getIdForBlockState",
                     BlockState.class);
@@ -71,8 +79,9 @@ public final class VoxyBlockMapper {
                         i, vocab.getName(i), mapping[i]);
             }
 
-            // Resolve canonical biome IDs → Voxy biome IDs via getBiomeEntries()
-            int[] biomeMappings = resolveBiomeMappings(voxyMapper);
+            // Resolve canonical biome IDs → Voxy biome IDs, proactively registering
+            // any biomes Voxy hasn't encountered yet from real chunks
+            int[] biomeMappings = resolveBiomeMappings(voxyMapper, biomeRegistry);
             int plainsCanonical = BiomeMapping.toCanonicalId("minecraft:plains");
             int defaultBiome = biomeMappings[plainsCanonical];
 
@@ -86,18 +95,72 @@ public final class VoxyBlockMapper {
     /**
      * Resolve canonical biome IDs to Voxy internal biome IDs.
      *
-     * <p>Queries Voxy's {@code Mapper.getBiomeEntries()} which returns all
-     * biomes that Voxy has already registered.  Each entry has a string name
-     * (e.g. {@code "minecraft:plains"}) and an integer ID.  We match these
-     * against our canonical biome names to build the translation table.
+     * <p>For each of the 54 canonical overworld biomes, looks up the
+     * {@link RegistryEntry} from the game's biome registry and calls Voxy's
+     * {@code Mapper.getIdForBiome(RegistryEntry)} via reflection.  This
+     * <em>proactively registers</em> any biome Voxy hasn't seen yet from
+     * real vanilla chunks — fixing the bug where all distant LOD terrain
+     * was tinted with the spawn biome's grass/water colour.
      *
-     * <p>Biomes not yet registered in Voxy will map to 0 (the first biome
-     * Voxy registered, usually the biome at spawn).
+     * @param voxyMapper     the Voxy Mapper object
+     * @param biomeRegistry  the game's biome registry ({@code world.getRegistryManager()
+     *                       .getOrThrow(RegistryKeys.BIOME)})
      */
-    private static int[] resolveBiomeMappings(Object voxyMapper) {
+    private static int[] resolveBiomeMappings(Object voxyMapper,
+                                               Registry<Biome> biomeRegistry) {
         int[] map = new int[BiomeMapping.size()];
         try {
-            // Reflect Mapper.getBiomeEntries() → BiomeEntry[]
+            // Find Mapper.getIdForBiome(RegistryEntry) via reflection.
+            // Voxy's Mojmap name is Holder<Biome>; at runtime both Yarn's
+            // RegistryEntry and Mojmap's Holder map to the same intermediary class.
+            Method getIdForBiome = null;
+            for (Method m : voxyMapper.getClass().getMethods()) {
+                if (m.getName().equals("getIdForBiome") && m.getParameterCount() == 1) {
+                    getIdForBiome = m;
+                    break;
+                }
+            }
+
+            if (getIdForBiome == null) {
+                LOGGER.warn("[VoxyBlockMapper] Mapper.getIdForBiome not found — " +
+                        "falling back to getBiomeEntries (biome tints may be wrong)");
+                return resolveBiomeMappingsLegacy(voxyMapper);
+            }
+
+            int resolved = 0;
+            for (int i = 0; i < BiomeMapping.size(); i++) {
+                String name = BiomeMapping.getCanonicalName(i);
+                if (name == null) continue;
+
+                Optional<RegistryEntry.Reference<Biome>> entry =
+                        biomeRegistry.getEntry(Identifier.of(name));
+                if (entry.isPresent()) {
+                    int voxyId = (int) getIdForBiome.invoke(voxyMapper, entry.get());
+                    map[i] = voxyId;
+                    resolved++;
+                } else {
+                    LOGGER.debug("[VoxyBlockMapper] Biome '{}' not in game registry", name);
+                }
+            }
+
+            LOGGER.info("[VoxyBlockMapper] Proactively registered {}/{} canonical biomes with Voxy",
+                    resolved, BiomeMapping.size());
+
+        } catch (Exception e) {
+            LOGGER.warn("[VoxyBlockMapper] getIdForBiome failed: {} — " +
+                    "falling back to getBiomeEntries", e.getMessage());
+            return resolveBiomeMappingsLegacy(voxyMapper);
+        }
+        return map;
+    }
+
+    /**
+     * Legacy biome resolution via {@code getBiomeEntries()}.  Only returns IDs
+     * for biomes Voxy has already seen — unregistered biomes map to 0.
+     */
+    private static int[] resolveBiomeMappingsLegacy(Object voxyMapper) {
+        int[] map = new int[BiomeMapping.size()];
+        try {
             Method getBiomeEntries = voxyMapper.getClass().getMethod("getBiomeEntries");
             Object[] entries = (Object[]) getBiomeEntries.invoke(voxyMapper);
 
@@ -106,7 +169,6 @@ public final class VoxyBlockMapper {
                 return map;
             }
 
-            // For each Voxy BiomeEntry, match to our canonical ID
             int resolved = 0;
             for (Object entry : entries) {
                 String biomeName = (String) entry.getClass().getField("biome").get(entry);
@@ -119,12 +181,10 @@ public final class VoxyBlockMapper {
                 }
             }
 
-            LOGGER.info("[VoxyBlockMapper] Resolved {}/{} canonical biomes from {} Voxy entries",
+            LOGGER.info("[VoxyBlockMapper] Legacy: resolved {}/{} canonical biomes from {} Voxy entries",
                     resolved, BiomeMapping.size(), entries.length);
-
         } catch (Exception e) {
-            LOGGER.warn("[VoxyBlockMapper] Failed to resolve biome mappings: {} — " +
-                    "all biomes will use default", e.getMessage());
+            LOGGER.warn("[VoxyBlockMapper] Legacy biome resolution also failed: {}", e.getMessage());
         }
         return map;
     }

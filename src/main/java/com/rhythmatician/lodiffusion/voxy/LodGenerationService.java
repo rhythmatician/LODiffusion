@@ -16,9 +16,12 @@ import com.rhythmatician.lodiffusion.onnx.BlockVocabulary;
 import com.rhythmatician.lodiffusion.onnx.InferenceResult;
 import com.rhythmatician.lodiffusion.onnx.ProgressiveModelRunner;
 
+import net.minecraft.registry.Registry;
+import net.minecraft.registry.RegistryKeys;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.world.World;
+import net.minecraft.world.biome.Biome;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraft.world.chunk.ChunkStatus;
 
@@ -269,10 +272,12 @@ public final class LodGenerationService {
                         "[LodGen] No ONNX models found — using heightmap fallback generator");
 
                 Object voxyMapper = VoxyCompat.getMapper(worldEngine);
+                Registry<Biome> biomeRegistry =
+                        world.getRegistryManager().getOrThrow(RegistryKeys.BIOME);
                 HeightmapFallbackGenerator.FallbackBlockIds fallbackBlocks =
                         HeightmapFallbackGenerator.resolveBlockIds(voxyMapper);
                 int[] fallbackBiomeMappings =
-                        HeightmapFallbackGenerator.resolveBiomeMappings(voxyMapper);
+                        HeightmapFallbackGenerator.resolveBiomeMappings(voxyMapper, biomeRegistry);
 
                 waitForPlayerPosition();
                 if (stopRequested.get()) return;
@@ -289,7 +294,9 @@ public final class LodGenerationService {
             // ── Normal ONNX pipeline path ────────────────────────────────
             // Build Voxy block mapper
             Object voxyMapper = VoxyCompat.getMapper(worldEngine);
-            VoxyBlockMapper blockMapper = VoxyBlockMapper.build(model.vocabulary(), voxyMapper);
+            Registry<Biome> biomeRegistry =
+                    world.getRegistryManager().getOrThrow(RegistryKeys.BIOME);
+            VoxyBlockMapper blockMapper = VoxyBlockMapper.build(model.vocabulary(), voxyMapper, biomeRegistry);
             VoxySectionWriter writer = new VoxySectionWriter(worldEngine, blockMapper);
 
             HelloTerrainMod.LOGGER.info("[LodGen] Ready — waiting for player position " +

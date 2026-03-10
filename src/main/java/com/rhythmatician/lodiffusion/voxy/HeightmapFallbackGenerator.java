@@ -1,11 +1,16 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 import java.lang.reflect.Method;
+import java.util.Optional;
 import java.util.logging.Logger;
 
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
+import net.minecraft.registry.Registry;
+import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.state.property.Properties;
+import net.minecraft.util.Identifier;
+import net.minecraft.world.biome.Biome;
 
 /**
  * Ultra-fast fallback terrain generator for when no ONNX models are available.
@@ -134,14 +139,64 @@ public final class HeightmapFallbackGenerator {
     /**
      * Resolve canonical biome IDs → Voxy biome IDs.
      *
-     * <p>Same reflection-based approach as {@link VoxyBlockMapper}, but
-     * usable without a model vocabulary.  Maps all 54 canonical overworld
-     * biomes to their Voxy internal IDs.
+     * <p>For each of the 54 canonical overworld biomes, looks up the
+     * {@link RegistryEntry} from the game's biome registry and calls Voxy's
+     * {@code Mapper.getIdForBiome(RegistryEntry)} via reflection.  This
+     * proactively registers any biome Voxy hasn't seen yet.
      *
-     * @param voxyMapper the Voxy Mapper object
+     * @param voxyMapper     the Voxy Mapper object
+     * @param biomeRegistry  the game's biome registry
      * @return int[54] mapping canonical biome index → Voxy biome ID
      */
-    public static int[] resolveBiomeMappings(Object voxyMapper) {
+    public static int[] resolveBiomeMappings(Object voxyMapper,
+                                              Registry<Biome> biomeRegistry) {
+        int[] map = new int[BiomeMapping.size()];
+        try {
+            // Find Mapper.getIdForBiome via reflection (generic-erased signature)
+            Method getIdForBiome = null;
+            for (Method m : voxyMapper.getClass().getMethods()) {
+                if (m.getName().equals("getIdForBiome") && m.getParameterCount() == 1) {
+                    getIdForBiome = m;
+                    break;
+                }
+            }
+
+            if (getIdForBiome == null) {
+                LOGGER.warning("Mapper.getIdForBiome not found — " +
+                        "falling back to getBiomeEntries (biome tints may be wrong)");
+                return resolveBiomeMappingsLegacy(voxyMapper);
+            }
+
+            int resolved = 0;
+            for (int i = 0; i < BiomeMapping.size(); i++) {
+                String name = BiomeMapping.getCanonicalName(i);
+                if (name == null) continue;
+
+                Optional<RegistryEntry.Reference<Biome>> entry =
+                        biomeRegistry.getEntry(Identifier.of(name));
+                if (entry.isPresent()) {
+                    int voxyId = (int) getIdForBiome.invoke(voxyMapper, entry.get());
+                    map[i] = voxyId;
+                    resolved++;
+                }
+            }
+
+            LOGGER.info("Fallback biome mappings: proactively registered " + resolved
+                    + "/" + BiomeMapping.size() + " canonical biomes with Voxy");
+
+        } catch (Exception e) {
+            LOGGER.warning("getIdForBiome failed: " + e.getMessage()
+                    + " — falling back to getBiomeEntries");
+            return resolveBiomeMappingsLegacy(voxyMapper);
+        }
+        return map;
+    }
+
+    /**
+     * Legacy biome resolution via {@code getBiomeEntries()}.  Only returns IDs
+     * for biomes Voxy has already seen.
+     */
+    private static int[] resolveBiomeMappingsLegacy(Object voxyMapper) {
         int[] map = new int[BiomeMapping.size()];
         try {
             Method getBiomeEntries = voxyMapper.getClass().getMethod("getBiomeEntries");
@@ -164,12 +219,11 @@ public final class HeightmapFallbackGenerator {
                 }
             }
 
-            LOGGER.info("Fallback biome mappings: resolved " + resolved + "/"
+            LOGGER.info("Fallback biome mappings (legacy): resolved " + resolved + "/"
                     + BiomeMapping.size() + " from " + entries.length + " Voxy entries");
 
         } catch (Exception e) {
-            LOGGER.warning("Failed to resolve biome mappings: " + e.getMessage()
-                    + " — all biomes will use default (0)");
+            LOGGER.warning("Legacy biome resolution also failed: " + e.getMessage());
         }
         return map;
     }
