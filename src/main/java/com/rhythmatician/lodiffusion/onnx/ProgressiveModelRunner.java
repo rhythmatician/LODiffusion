@@ -373,7 +373,7 @@ public final class ProgressiveModelRunner implements AutoCloseable {
      *   <li><b>Stages 0-2</b> — returns a deep-copied flat binary parent
      *       array safe for cross-thread handoff.</li>
      *   <li><b>Stage 3</b> — returns the full {@link InferenceResult} with
-     *       16³ block logits and air mask (referencing thread-local buffers;
+     *       16³ block logits (referencing thread-local buffers;
      *       must be consumed before the next call on the same thread).</li>
      * </ul>
      *

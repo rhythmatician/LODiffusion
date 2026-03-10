@@ -13,8 +13,7 @@ import com.rhythmatician.lodiffusion.onnx.InferenceResult;
  *
  * <p><b>Pipeline:</b>
  * <ol>
- *   <li>Argmax the block logits → per-voxel model index</li>
- *   <li>Apply air mask (positive logit → solid)</li>
+ *   <li>Argmax the block logits → per-voxel model index (class 0 = air)</li>
  *   <li>Translate model indices to Voxy block IDs via {@link VoxyBlockMapper}</li>
  *   <li>Pack into 64-bit Voxy voxels and fill a {@code VoxelizedSection}</li>
  *   <li>Compute mip pyramid via {@code WorldConversionFactory.mipSection()}</li>
@@ -147,7 +146,7 @@ public final class VoxySectionWriter {
      * @param sectionY        Voxy chunk-section Y (block Y / 16)
      * @param sectionZ        Voxy chunk-section Z (block Z / 16)
      * @param biomeVoxyIds    per-column Voxy biome IDs [16][16], indexed [x][z]
-     * @param logDiagnostics  if true, log air mask statistics
+     * @param logDiagnostics  if true, log argmax distribution statistics
      * @return the filled section and non-air count
      */
     public FilledSectionResult buildFilledSection(InferenceResult result, int vocabSize,

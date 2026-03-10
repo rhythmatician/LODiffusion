@@ -37,7 +37,7 @@ import net.minecraft.world.chunk.ChunkStatus;
  *   <li><b>Stage 0</b> (init → LOD4) — a pool of workers processes sections
  *       with no parent dependency.</li>
  *   <li><b>Stage 1</b> (LOD4 → LOD3) — single worker thread, takes the
- *       binary air mask from stage 0 as parent input.</li>
+ *       binary occupancy (argmax ≠ 0) from stage 0 as parent input.</li>
  *   <li><b>Stage 2</b> (LOD3 → LOD2) — single worker thread.</li>
  *   <li><b>Stage 3</b> (LOD2 → LOD1) — single worker thread, produces the
  *       final 16³ output and writes it to Voxy.</li>
@@ -70,7 +70,7 @@ public final class LodGenerationService {
     private static final int SURFACE_MARGIN = 1;  // 1 section = 16 blocks
 
     /**
-     * When true, force the air mask to predict air for voxels above the
+     * When true, force argmax to air (class 0) for voxels above the
      * surface heightmap.  This compensates for undertrained models that
      * predict all-solid, preventing terrain from extending above the
      * real surface.  Can be disabled once the model learns air boundaries.

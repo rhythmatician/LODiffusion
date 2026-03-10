@@ -9,10 +9,10 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <h3>Stage pipeline</h3>
  * <pre>
- *   Stage 0 (init → LOD4):   no parent needed      → produces 1×1×1 air mask
- *   Stage 1 (LOD4 → LOD3):   parent from stage 0   → produces 2×2×2 air mask
- *   Stage 2 (LOD3 → LOD2):   parent from stage 1   → produces 4×4×4 air mask
- *   Stage 3 (LOD2 → LOD1):   parent from stage 2   → produces final 16³ result
+ *   Stage 0 (init → LOD4):   no parent needed      → produces 1×1×1 block logits
+ *   Stage 1 (LOD4 → LOD3):   parent from stage 0   → produces 2×2×2 block logits
+ *   Stage 2 (LOD3 → LOD2):   parent from stage 1   → produces 4×4×4 block logits
+ *   Stage 3 (LOD2 → LOD1):   parent from stage 2   → produces final 16³ block logits
  * </pre>
  *
  * <p>Thread safety: the {@link #state} field uses an {@link AtomicReference}
@@ -68,7 +68,7 @@ public final class SectionTask implements Comparable<SectionTask> {
     volatile LodGenerationService.ColumnContext columnContext;
 
     /**
-     * Binary solid-occupancy parent from the previous stage's air mask.
+     * Binary solid-occupancy parent derived from the previous stage's argmax (class 0 = air).
      * <ul>
      *   <li>Stage 0: null (no parent)</li>
      *   <li>Stage 1: {@code float[1][1][1]} from stage 0</li>

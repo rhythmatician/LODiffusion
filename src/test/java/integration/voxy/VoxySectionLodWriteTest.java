@@ -51,7 +51,7 @@ class VoxySectionLodWriteTest {
     @ParameterizedTest(name = "LOD {0}: can build section with all-solid voxels")
     @ValueSource(ints = {1, 2, 3, 4})
     void canBuildSectionAtLodLevel(int lod) {
-        // All-solid: air mask all positive
+        // All-solid: argmax produces non-zero (non-air) block indices
         InferenceResult result = createSyntheticResult(true);
 
         // Use lod as sectionY just to differentiate (doesn't affect encoding logic)
@@ -68,7 +68,7 @@ class VoxySectionLodWriteTest {
 
     @Test
     void buildSection_allAir_producesZeroNonAirCount() {
-        // All-air: air mask all <= 0
+        // All-air: argmax produces class 0 (air) everywhere
         InferenceResult result = createSyntheticResult(false);
 
         FilledSectionResult filled = writer.buildFilledSection(
@@ -80,7 +80,7 @@ class VoxySectionLodWriteTest {
 
     @Test
     void buildSection_halfSolid_producesCorrectNonAirCount() {
-        // Half solid: checkerboard pattern in air mask
+        // Half solid: checkerboard pattern — alternating air (class 0) and solid
         InferenceResult result = createCheckerboardResult();
 
         FilledSectionResult filled = writer.buildFilledSection(
