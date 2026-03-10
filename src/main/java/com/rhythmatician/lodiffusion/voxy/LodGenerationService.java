@@ -766,10 +766,11 @@ public final class LodGenerationService {
      * Sampled once per column and reused for all Y sections in that column.
      */
     record ColumnContext(
-        float[][] rawHm,       // [16][16] surface heightmap in block Y
-        int[][]   biomeIdx,    // [16][16] biome indices
-        float[][] hp5,         // [5][256] height-planes (row-major)
-        float[][] r6           // [6][256] router6 values (row-major)
+        float[][] rawHm,          // [16][16] surface heightmap in block Y
+        int[][]   biomeIdx,       // [16][16] biome indices
+        float[][] hp5,            // [5][256] height-planes (row-major)
+        float[][] r6,             // [6][256] router6 values (row-major)
+        float[][] oceanFloorHm    // [16][16] ocean/river floor block-Y (may be null)
     ) {}
 
     /**
@@ -789,6 +790,7 @@ public final class LodGenerationService {
         int[][]   biomeIdx;
         float[][] hp5;
         float[][] r6;
+        float[][] oceanFloorHm = null;
 
         if (noiseAccess != null) {
             // *** PRIMARY PATH: Real noise data at any coordinate ***
@@ -796,10 +798,11 @@ public final class LodGenerationService {
             // sampleHeightmap() call needed (eliminates 256 duplicate getHeight() calls).
             AnchorSampler.AnchorInputs anchor =
                     AnchorSampler.sampleFromNoise(noiseAccess, sectionX, sectionZ);
-            rawHm    = anchor.rawHm();
-            biomeIdx = anchor.biomeIdx();
-            hp5      = anchor.heightPlanes5();
-            r6       = anchor.router6();
+            rawHm        = anchor.rawHm();
+            biomeIdx     = anchor.biomeIdx();
+            hp5          = anchor.heightPlanes5();
+            r6           = anchor.router6();
+            oceanFloorHm = anchor.oceanFloorHm();
             noiseAccessSections.incrementAndGet();
             if (diagnosticCount.get() < 3) {
                 HelloTerrainMod.LOGGER.info(
@@ -839,7 +842,7 @@ public final class LodGenerationService {
             r6 = approxR6;
         }
 
-        return new ColumnContext(rawHm, biomeIdx, hp5, r6);
+        return new ColumnContext(rawHm, biomeIdx, hp5, r6, oceanFloorHm);
     }
 
     /**
@@ -1193,8 +1196,8 @@ public final class LodGenerationService {
                 }
 
                 Object section = HeightmapFallbackGenerator.generateSection(
-                        sx, sy, sz, ctx.rawHm(), ctx.biomeIdx(),
-                        biomeVoxyIds, blockIds, voxyMapper);
+                        sx, sy, sz, ctx.rawHm(), ctx.oceanFloorHm(),
+                        ctx.biomeIdx(), biomeVoxyIds, blockIds, voxyMapper);
 
                 if (section == null) {
                     skippedAir++;

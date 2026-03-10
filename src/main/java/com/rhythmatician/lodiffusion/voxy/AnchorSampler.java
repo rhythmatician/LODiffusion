@@ -57,11 +57,18 @@ public final class AnchorSampler {
         float[][]  heightPlanes5,  // [5][256] row-major (will be reshaped to [5,16,16])
         float[][]  router6,        // [6][256] row-major (will be reshaped to [6,16,16])
         int[][]    biomeIdx,       // [16][16]
-        float[][]  rawHm           // [16][16] surface block-Y (may be null for chunk/synth path)
+        float[][]  rawHm,          // [16][16] surface block-Y (may be null for chunk/synth path)
+        float[][]  oceanFloorHm    // [16][16] ocean/river floor block-Y (may be null)
     ) {
-        /** Backwards-compat constructor (rawHm not available). */
+        /** Backwards-compat constructor (rawHm and oceanFloorHm not available). */
         public AnchorInputs(float[][] heightPlanes5, float[][] router6, int[][] biomeIdx) {
-            this(heightPlanes5, router6, biomeIdx, null);
+            this(heightPlanes5, router6, biomeIdx, null, null);
+        }
+
+        /** Backwards-compat constructor (oceanFloorHm not available). */
+        public AnchorInputs(float[][] heightPlanes5, float[][] router6,
+                            int[][] biomeIdx, float[][] rawHm) {
+            this(heightPlanes5, router6, biomeIdx, rawHm, null);
         }
     }
 
@@ -125,7 +132,7 @@ public final class AnchorSampler {
         // 4. Real router6 from NoiseRouter density functions
         float[][] router6 = noiseAccess.sampleRouter6(sectionX, sectionZ, hmap);
 
-        return new AnchorInputs(heightPlanes, router6, biomeIdx, hmap);
+        return new AnchorInputs(heightPlanes, router6, biomeIdx, hmap, oceanFloorHm);
     }
 
     // ------------------------------------------------------------------

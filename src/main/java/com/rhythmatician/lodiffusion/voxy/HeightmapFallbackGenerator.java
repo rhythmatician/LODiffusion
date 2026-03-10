@@ -151,10 +151,17 @@ public final class HeightmapFallbackGenerator {
      * <p>This method creates a {@code VoxelizedSection}, fills its L0 data,
      * computes the mip pyramid, and is ready for {@link VoxyCompat#insertUpdate}.
      *
+     * <p>When {@code oceanFloorHm} is provided (non-null), it is used as the
+     * real solid ground surface for columns where water is present.  Water is
+     * placed between the ocean/river floor and the water surface ({@code rawHm}).
+     * The top 3 solid blocks are placed relative to the floor, not the water
+     * surface, so riverbeds get sand/dirt/grass correctly.
+     *
      * @param sectionX      section X coordinate (blockX / 16)
      * @param sectionY      section Y coordinate (blockY / 16)
      * @param sectionZ      section Z coordinate (blockZ / 16)
-     * @param rawHm         [16][16] surface heightmap in block Y, indexed [x][z]
+     * @param rawHm         [16][16] surface heightmap (water surface) in block Y, indexed [x][z]
+     * @param oceanFloorHm  [16][16] ocean/river floor heightmap in block Y, or null
      * @param biomeIdx      [16][16] canonical biome indices, indexed [x][z]
      * @param biomeVoxyIds  [16][16] Voxy biome IDs, indexed [x][z]
      * @param blockIds      pre-resolved Voxy block IDs
@@ -163,7 +170,8 @@ public final class HeightmapFallbackGenerator {
      *         if the section is entirely air (skip insertion)
      */
     public static Object generateSection(int sectionX, int sectionY, int sectionZ,
-                                          float[][] rawHm, int[][] biomeIdx,
+                                          float[][] rawHm, float[][] oceanFloorHm,
+                                          int[][] biomeIdx,
                                           int[][] biomeVoxyIds,
                                           FallbackBlockIds blockIds,
                                           Object voxyMapper) {
@@ -191,8 +199,13 @@ public final class HeightmapFallbackGenerator {
 
         for (int lx = 0; lx < 16; lx++) {
             for (int lz = 0; lz < 16; lz++) {
-                float surfaceY = rawHm[lx][lz];
-                int surfaceBlockY = (int) Math.floor(surfaceY);
+                float waterSurfaceY = rawHm[lx][lz];
+                // If ocean floor data is available, use it as the solid ground.
+                // Otherwise, fall back to the surface heightmap (no water distinction).
+                float groundY = oceanFloorHm != null ? oceanFloorHm[lx][lz] : waterSurfaceY;
+                int waterSurfaceBlockY = (int) Math.floor(waterSurfaceY);
+                int groundBlockY = (int) Math.floor(groundY);
+
                 int canonBiome = biomeIdx[lx][lz];
                 int voxyBiome = biomeVoxyIds[lx][lz];
 
@@ -202,31 +215,8 @@ public final class HeightmapFallbackGenerator {
                     int worldY = baseY + ly;
                     int idx = VoxyCompat.l0Index(lx, ly, lz);
 
-                    int blockId;
-                    if (worldY >= surfaceBlockY) {
-                        // Above surface
-                        if (worldY < SEA_LEVEL) {
-                            blockId = blockIds.water();
-                        } else {
-                            blockId = blockIds.air();
-                        }
-                    } else if (worldY >= surfaceBlockY - 3) {
-                        // Top 3 solid blocks (surfaceBlockY-1, -2, -3)
-                        if (isSandy) {
-                            blockId = blockIds.sand();
-                        } else {
-                            int depth = surfaceBlockY - 1 - worldY; // 0=top, 1=mid, 2=bottom
-                            if (depth == 0) {
-                                blockId = blockIds.grassBlock();
-                            } else {
-                                blockId = blockIds.dirt();
-                            }
-                        }
-                    } else if (worldY < 0) {
-                        blockId = blockIds.deepslate();
-                    } else {
-                        blockId = blockIds.stone();
-                    }
+                    int blockId = pickBlockId(worldY, groundBlockY,
+                            waterSurfaceBlockY, isSandy, blockIds);
 
                     data[idx] = VoxyCompat.composeVoxel(blockId, voxyBiome, DEFAULT_LIGHT);
 
@@ -256,24 +246,38 @@ public final class HeightmapFallbackGenerator {
     }
 
     /**
-     * Determine the Voxy block ID for a voxel at a given world Y, given the
-     * surface height and biome.  Package-private for testing.
+     * Determine the Voxy block ID for a voxel at a given world Y, considering
+     * both the solid ground surface and the water surface.
      *
-     * @param worldY          absolute block Y coordinate
-     * @param surfaceBlockY   the surface height (floor of heightmap)
-     * @param isSandy         true if the biome uses sand
-     * @param blockIds        pre-resolved block IDs
+     * <p>When {@code groundBlockY < waterSurfaceBlockY}, water exists in that
+     * column (river, ocean, lake).  Voxels between the ground and the water
+     * surface are filled with water.
+     *
+     * <p>Package-private for testing.
+     *
+     * @param worldY              absolute block Y coordinate
+     * @param groundBlockY        the solid ground height (floor of ocean floor or surface heightmap)
+     * @param waterSurfaceBlockY  the water surface height (floor of WORLD_SURFACE_WG heightmap)
+     * @param isSandy             true if the biome uses sand
+     * @param blockIds            pre-resolved block IDs
      * @return the Voxy block ID to use
      */
-    static int pickBlockId(int worldY, int surfaceBlockY, boolean isSandy,
-                            FallbackBlockIds blockIds) {
-        if (worldY >= surfaceBlockY) {
+    static int pickBlockId(int worldY, int groundBlockY, int waterSurfaceBlockY,
+                            boolean isSandy, FallbackBlockIds blockIds) {
+        if (worldY >= groundBlockY) {
+            // Above solid ground — could be water or air
+            if (worldY < waterSurfaceBlockY) {
+                // Between ground and water surface — water
+                return blockIds.water();
+            }
+            // Above both ground and water surface
             return (worldY < SEA_LEVEL) ? blockIds.water() : blockIds.air();
-        } else if (worldY >= surfaceBlockY - 3) {
+        } else if (worldY >= groundBlockY - 3) {
+            // Top 3 solid blocks
             if (isSandy) {
                 return blockIds.sand();
             }
-            int depth = surfaceBlockY - 1 - worldY;
+            int depth = groundBlockY - 1 - worldY;
             return (depth == 0) ? blockIds.grassBlock() : blockIds.dirt();
         } else if (worldY < 0) {
             return blockIds.deepslate();

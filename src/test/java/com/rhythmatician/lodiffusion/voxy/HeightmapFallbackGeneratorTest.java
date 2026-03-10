@@ -55,78 +55,77 @@ class HeightmapFallbackGeneratorTest {
 
     // ------------------------------------------------------------------ //
     //  Block selection — normal (non-sandy) biome, surface at y=70
+    //  No water: groundBlockY == waterSurfaceBlockY == 70
     // ------------------------------------------------------------------ //
 
     @Test
     @DisplayName("y=69 (surface-1) → grass_block (top solid block)")
     void topBlockIsGrass() {
         assertEquals(IDS.grassBlock(),
-                HeightmapFallbackGenerator.pickBlockId(69, 70, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(69, 70, 70, false, IDS));
     }
 
     @Test
     @DisplayName("y=68 (surface-2) → dirt")
     void secondBlockIsDirt() {
         assertEquals(IDS.dirt(),
-                HeightmapFallbackGenerator.pickBlockId(68, 70, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(68, 70, 70, false, IDS));
     }
 
     @Test
     @DisplayName("y=67 (surface-3) → dirt")
     void thirdBlockIsDirt() {
         assertEquals(IDS.dirt(),
-                HeightmapFallbackGenerator.pickBlockId(67, 70, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(67, 70, 70, false, IDS));
     }
 
     @Test
     @DisplayName("y=66 (below top 3, above y=0) → stone")
     void belowDirtIsStone() {
         assertEquals(IDS.stone(),
-                HeightmapFallbackGenerator.pickBlockId(66, 70, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(66, 70, 70, false, IDS));
     }
 
     @Test
     @DisplayName("y=1 (above y=0) → stone")
     void justAboveZeroIsStone() {
         assertEquals(IDS.stone(),
-                HeightmapFallbackGenerator.pickBlockId(1, 70, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(1, 70, 70, false, IDS));
     }
 
     @Test
     @DisplayName("y=0 (within top 3 check range if surface is 3, otherwise stone)")
     void yZeroWithHighSurface() {
-        // surface=70, so y=0 is well below the top 3 (67,68,69)
-        // and y=0 >= 0, so it's stone
         assertEquals(IDS.stone(),
-                HeightmapFallbackGenerator.pickBlockId(0, 70, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(0, 70, 70, false, IDS));
     }
 
     @Test
     @DisplayName("y=-1 (below y=0) → deepslate")
     void belowZeroIsDeepslate() {
         assertEquals(IDS.deepslate(),
-                HeightmapFallbackGenerator.pickBlockId(-1, 70, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(-1, 70, 70, false, IDS));
     }
 
     @Test
     @DisplayName("y=-64 (deep underground) → deepslate")
     void deepUndergroundIsDeepslate() {
         assertEquals(IDS.deepslate(),
-                HeightmapFallbackGenerator.pickBlockId(-64, 70, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(-64, 70, 70, false, IDS));
     }
 
     @Test
     @DisplayName("y=70 (at surface, above sea level) → air")
     void atSurfaceAboveSeaLevelIsAir() {
         assertEquals(IDS.air(),
-                HeightmapFallbackGenerator.pickBlockId(70, 70, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(70, 70, 70, false, IDS));
     }
 
     @Test
     @DisplayName("y=100 (well above surface, above sea level) → air")
     void highAboveSurfaceIsAir() {
         assertEquals(IDS.air(),
-                HeightmapFallbackGenerator.pickBlockId(100, 70, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(100, 70, 70, false, IDS));
     }
 
     // ------------------------------------------------------------------ //
@@ -137,67 +136,191 @@ class HeightmapFallbackGeneratorTest {
     @DisplayName("Sandy biome: top block (y=69) → sand")
     void sandyTopBlockIsSand() {
         assertEquals(IDS.sand(),
-                HeightmapFallbackGenerator.pickBlockId(69, 70, true, IDS));
+                HeightmapFallbackGenerator.pickBlockId(69, 70, 70, true, IDS));
     }
 
     @Test
     @DisplayName("Sandy biome: second block (y=68) → sand")
     void sandySecondBlockIsSand() {
         assertEquals(IDS.sand(),
-                HeightmapFallbackGenerator.pickBlockId(68, 70, true, IDS));
+                HeightmapFallbackGenerator.pickBlockId(68, 70, 70, true, IDS));
     }
 
     @Test
     @DisplayName("Sandy biome: third block (y=67) → sand")
     void sandyThirdBlockIsSand() {
         assertEquals(IDS.sand(),
-                HeightmapFallbackGenerator.pickBlockId(67, 70, true, IDS));
+                HeightmapFallbackGenerator.pickBlockId(67, 70, 70, true, IDS));
     }
 
     @Test
     @DisplayName("Sandy biome: below top 3 (y=66) → stone (not sand)")
     void sandyBelowTopThreeIsStone() {
         assertEquals(IDS.stone(),
-                HeightmapFallbackGenerator.pickBlockId(66, 70, true, IDS));
+                HeightmapFallbackGenerator.pickBlockId(66, 70, 70, true, IDS));
     }
 
     // ------------------------------------------------------------------ //
-    //  Block selection — underwater columns (surface below sea level)
+    //  Block selection — ocean/deep underwater (no ocean floor data)
+    //  groundBlockY == waterSurfaceBlockY because ocean floor matches
+    //  surface heightmap when there's no separate floor data
     // ------------------------------------------------------------------ //
 
     @Test
     @DisplayName("Underwater: y=60 (at surface, below sea level) → water")
     void underwaterAtSurface() {
         assertEquals(IDS.water(),
-                HeightmapFallbackGenerator.pickBlockId(60, 60, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(60, 60, 60, false, IDS));
     }
 
     @Test
     @DisplayName("Underwater: y=62 (above surface 55, below sea level 63) → water")
     void underwaterAboveSurfaceBelowSea() {
         assertEquals(IDS.water(),
-                HeightmapFallbackGenerator.pickBlockId(62, 55, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(62, 55, 55, false, IDS));
     }
 
     @Test
     @DisplayName("Underwater: y=63 (at sea level) → air")
     void atSeaLevelIsAir() {
         assertEquals(IDS.air(),
-                HeightmapFallbackGenerator.pickBlockId(63, 55, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(63, 55, 55, false, IDS));
     }
 
     @Test
     @DisplayName("Underwater: solid blocks still have correct top 3")
     void underwaterSolidBlocksCorrect() {
-        // Surface at 55: top solid block at y=54 → grass
         assertEquals(IDS.grassBlock(),
-                HeightmapFallbackGenerator.pickBlockId(54, 55, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(54, 55, 55, false, IDS));
         assertEquals(IDS.dirt(),
-                HeightmapFallbackGenerator.pickBlockId(53, 55, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(53, 55, 55, false, IDS));
         assertEquals(IDS.dirt(),
-                HeightmapFallbackGenerator.pickBlockId(52, 55, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(52, 55, 55, false, IDS));
         assertEquals(IDS.stone(),
-                HeightmapFallbackGenerator.pickBlockId(51, 55, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(51, 55, 55, false, IDS));
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Block selection — river / shallow water
+    //  River: groundBlockY=58, waterSurfaceBlockY=62
+    //  Water fills between y=58..61 inclusive
+    // ------------------------------------------------------------------ //
+
+    @Test
+    @DisplayName("River: y=57 (ground - 1) → grass_block (top solid)")
+    void riverTopSolidIsGrass() {
+        assertEquals(IDS.grassBlock(),
+                HeightmapFallbackGenerator.pickBlockId(57, 58, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("River: y=56 (ground - 2) → dirt")
+    void riverSecondSolidIsDirt() {
+        assertEquals(IDS.dirt(),
+                HeightmapFallbackGenerator.pickBlockId(56, 58, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("River: y=55 (ground - 3) → dirt")
+    void riverThirdSolidIsDirt() {
+        assertEquals(IDS.dirt(),
+                HeightmapFallbackGenerator.pickBlockId(55, 58, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("River: y=54 (below top 3, above 0) → stone")
+    void riverBelowTopThreeIsStone() {
+        assertEquals(IDS.stone(),
+                HeightmapFallbackGenerator.pickBlockId(54, 58, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("River: y=58 (at ground level, below water surface) → water")
+    void riverAtGroundIsWater() {
+        assertEquals(IDS.water(),
+                HeightmapFallbackGenerator.pickBlockId(58, 58, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("River: y=60 (between ground and water surface) → water")
+    void riverMidWaterIsWater() {
+        assertEquals(IDS.water(),
+                HeightmapFallbackGenerator.pickBlockId(60, 58, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("River: y=61 (just below water surface) → water")
+    void riverJustBelowWaterSurfaceIsWater() {
+        assertEquals(IDS.water(),
+                HeightmapFallbackGenerator.pickBlockId(61, 58, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("River: y=62 (at water surface, below sea level) → water")
+    void riverAtWaterSurfaceBelowSeaLevel() {
+        // waterSurfaceBlockY = 62, y=62 >= ground, >= waterSurface, but < SEA_LEVEL (63)
+        assertEquals(IDS.water(),
+                HeightmapFallbackGenerator.pickBlockId(62, 58, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("River: y=63 (above water surface, at sea level) → air")
+    void riverAboveWaterSurfaceIsAir() {
+        assertEquals(IDS.air(),
+                HeightmapFallbackGenerator.pickBlockId(63, 58, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("River: sandy biome → sand for top 3 solid, water above")
+    void riverSandyBiomeSand() {
+        assertEquals(IDS.sand(),
+                HeightmapFallbackGenerator.pickBlockId(57, 58, 62, true, IDS));
+        assertEquals(IDS.sand(),
+                HeightmapFallbackGenerator.pickBlockId(56, 58, 62, true, IDS));
+        assertEquals(IDS.sand(),
+                HeightmapFallbackGenerator.pickBlockId(55, 58, 62, true, IDS));
+        assertEquals(IDS.water(),
+                HeightmapFallbackGenerator.pickBlockId(58, 58, 62, true, IDS));
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Block selection — ocean (deep water)
+    //  Ocean: groundBlockY=40, waterSurfaceBlockY=62
+    // ------------------------------------------------------------------ //
+
+    @Test
+    @DisplayName("Ocean: y=39 (ground - 1) → grass_block (top solid)")
+    void oceanTopSolidIsGrass() {
+        assertEquals(IDS.grassBlock(),
+                HeightmapFallbackGenerator.pickBlockId(39, 40, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("Ocean: y=40 (at ground, below water surface) → water")
+    void oceanAtGroundIsWater() {
+        assertEquals(IDS.water(),
+                HeightmapFallbackGenerator.pickBlockId(40, 40, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("Ocean: y=50 (mid-water) → water")
+    void oceanMidWaterIsWater() {
+        assertEquals(IDS.water(),
+                HeightmapFallbackGenerator.pickBlockId(50, 40, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("Ocean: y=62 (at water surface, below sea level) → water")
+    void oceanAtWaterSurfaceIsWater() {
+        assertEquals(IDS.water(),
+                HeightmapFallbackGenerator.pickBlockId(62, 40, 62, false, IDS));
+    }
+
+    @Test
+    @DisplayName("Ocean: y=63 (above water surface, at sea level) → air")
+    void oceanAboveIsAir() {
+        assertEquals(IDS.air(),
+                HeightmapFallbackGenerator.pickBlockId(63, 40, 62, false, IDS));
     }
 
     // ------------------------------------------------------------------ //
@@ -205,20 +328,17 @@ class HeightmapFallbackGeneratorTest {
     // ------------------------------------------------------------------ //
 
     @Test
-    @DisplayName("Low surface (y=2): top block y=1 → grass, y=0 → dirt, y=-1 → deepslate (not dirt)")
+    @DisplayName("Low surface (y=2): top block y=1 → grass, y=0 → dirt, y=-1 → dirt")
     void lowSurfaceTransition() {
-        // Surface at 2: top 3 would be y=1, y=0, y=-1
         assertEquals(IDS.grassBlock(),
-                HeightmapFallbackGenerator.pickBlockId(1, 2, false, IDS));
-        // y=0 is within top 3 (depth=1), so it's dirt
+                HeightmapFallbackGenerator.pickBlockId(1, 2, 2, false, IDS));
         assertEquals(IDS.dirt(),
-                HeightmapFallbackGenerator.pickBlockId(0, 2, false, IDS));
-        // y=-1 is within top 3 (depth=2), and < 0, but top-3 check takes priority
+                HeightmapFallbackGenerator.pickBlockId(0, 2, 2, false, IDS));
+        // y=-1 is within top 3 (depth=2), top-3 check takes priority over deepslate
         assertEquals(IDS.dirt(),
-                HeightmapFallbackGenerator.pickBlockId(-1, 2, false, IDS));
-        // y=-2 is below top 3 and < 0, so deepslate
+                HeightmapFallbackGenerator.pickBlockId(-1, 2, 2, false, IDS));
         assertEquals(IDS.deepslate(),
-                HeightmapFallbackGenerator.pickBlockId(-2, 2, false, IDS));
+                HeightmapFallbackGenerator.pickBlockId(-2, 2, 2, false, IDS));
     }
 
     // ------------------------------------------------------------------ //
