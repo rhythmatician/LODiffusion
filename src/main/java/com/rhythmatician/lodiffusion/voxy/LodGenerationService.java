@@ -223,21 +223,6 @@ public final class LodGenerationService {
 
             HelloTerrainMod.LOGGER.info("[LodGen] Got Voxy WorldEngine — loading model...");
 
-            // Load model
-            ProgressiveModelRunner model = loadModel();
-            if (model == null) {
-                HelloTerrainMod.LOGGER.error("[LodGen] ONNX model failed to load — aborting");
-                return;
-            }
-
-            // Build Voxy block mapper
-            Object voxyMapper = VoxyCompat.getMapper(worldEngine);
-            VoxyBlockMapper blockMapper = VoxyBlockMapper.build(model.vocabulary(), voxyMapper);
-            VoxySectionWriter writer = new VoxySectionWriter(worldEngine, blockMapper);
-
-            HelloTerrainMod.LOGGER.info("[LodGen] Ready — waiting for player position " +
-                    "(vocab={}, biomeVoxyId={})", model.vocabulary().size(), blockMapper.defaultBiomeVoxyId());
-
             // Try to bind to the integrated server's noise pipeline for real
             // heightmap / biome / router data at any coordinate.
             noiseAccess = WorldNoiseAccess.tryCreate(server, world);
@@ -248,6 +233,40 @@ public final class LodGenerationService {
                 HelloTerrainMod.LOGGER.warn("[LodGen] Noise access unavailable — " +
                         "will fall back to synthetic heightmap + biome for distant sections");
             }
+
+            // Load model
+            ProgressiveModelRunner model = loadModel();
+            if (model == null) {
+                // ── Heightmap fallback path ──────────────────────────────
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen] No ONNX models found — using heightmap fallback generator");
+
+                Object voxyMapper = VoxyCompat.getMapper(worldEngine);
+                HeightmapFallbackGenerator.FallbackBlockIds fallbackBlocks =
+                        HeightmapFallbackGenerator.resolveBlockIds(voxyMapper);
+                int[] fallbackBiomeMappings =
+                        HeightmapFallbackGenerator.resolveBiomeMappings(voxyMapper);
+
+                waitForPlayerPosition();
+                if (stopRequested.get()) return;
+
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen] Starting FALLBACK generation from player section ({}, {})",
+                        playerSectionX, playerSectionZ);
+
+                runFallbackPipeline(world, worldEngine, voxyMapper,
+                        fallbackBlocks, fallbackBiomeMappings);
+                return;
+            }
+
+            // ── Normal ONNX pipeline path ────────────────────────────────
+            // Build Voxy block mapper
+            Object voxyMapper = VoxyCompat.getMapper(worldEngine);
+            VoxyBlockMapper blockMapper = VoxyBlockMapper.build(model.vocabulary(), voxyMapper);
+            VoxySectionWriter writer = new VoxySectionWriter(worldEngine, blockMapper);
+
+            HelloTerrainMod.LOGGER.info("[LodGen] Ready — waiting for player position " +
+                    "(vocab={}, biomeVoxyId={})", model.vocabulary().size(), blockMapper.defaultBiomeVoxyId());
 
             // Wait for the client tick to supply the real player position
             waitForPlayerPosition();
@@ -501,7 +520,7 @@ public final class LodGenerationService {
                 }
                 if (!stopRequested.get()) {
                     HelloTerrainMod.LOGGER.warn("[LodGen] {} batch failed ({} tasks): {}",
-                            threadName, claimed.size(), e.getMessage());
+                            threadName, claimed.size(), e.getMessage(), e);
                 }
             }
         }
@@ -1088,6 +1107,134 @@ public final class LodGenerationService {
             }
         }
         return null;
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Heightmap fallback pipeline
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Ultra-fast fallback pipeline that generates terrain from heightmap data
+     * alone, without any ONNX model.  Processes one column at a time on a
+     * single thread — I/O ({@code insertUpdate}) is the bottleneck, not compute.
+     *
+     * <p>Reuses all existing infrastructure: spiral ordering, column context
+     * caching, surface Y-range filtering, and deduplication.
+     */
+    private void runFallbackPipeline(World world, Object worldEngine,
+                                      Object voxyMapper,
+                                      HeightmapFallbackGenerator.FallbackBlockIds blockIds,
+                                      int[] biomeVoxyMappings) {
+        int centerX = playerSectionX;
+        int centerZ = playerSectionZ;
+
+        List<int[]> columns = buildSpiralSections(centerX, centerZ,
+                GENERATION_RADIUS, false);
+
+        int totalSections = 0;
+        int skippedAir = 0;
+        int skippedExisting = 0;
+        int columnsProcessed = 0;
+        long startTime = System.currentTimeMillis();
+
+        for (int[] col : columns) {
+            if (stopRequested.get()) break;
+
+            int sx = col[0], sz = col[1];
+
+            // Skip columns where vanilla has loaded real chunks
+            if (tryGetLoadedChunk(world, sx, sz) != null) continue;
+
+            // Get or build column context (cached across Y sections)
+            ColumnContext ctx = getOrBuildColumnContext(world, sx, sz);
+
+            // Build per-column Voxy biome IDs
+            int[][] biomeVoxyIds = new int[16][16];
+            for (int lx = 0; lx < 16; lx++) {
+                for (int lz = 0; lz < 16; lz++) {
+                    int canonical = ctx.biomeIdx()[lx][lz];
+                    biomeVoxyIds[lx][lz] = (canonical >= 0 && canonical < biomeVoxyMappings.length)
+                            ? biomeVoxyMappings[canonical] : 0;
+                }
+            }
+
+            // Compute Y range from surface heightmap (same logic as populateQueue)
+            float minH = Float.MAX_VALUE, maxH = -Float.MAX_VALUE;
+            for (int lx = 0; lx < 16; lx++) {
+                for (int lz = 0; lz < 16; lz++) {
+                    float h = ctx.rawHm()[lx][lz];
+                    if (h < minH) minH = h;
+                    if (h > maxH) maxH = h;
+                }
+            }
+
+            // Extend range down to cover water if surface is below sea level
+            float effectiveMax = Math.max(maxH, HeightmapFallbackGenerator.SEA_LEVEL);
+
+            int minSectionY = Math.max(
+                    Math.floorDiv((int) Math.floor(minH), 16) - SURFACE_MARGIN,
+                    Y_BASE_SECTION);
+            int maxSectionY = Math.min(
+                    Math.floorDiv((int) Math.ceil(effectiveMax), 16) + SURFACE_MARGIN,
+                    Y_BASE_SECTION + Y_SECTIONS - 1);
+
+            // Process all Y sections in this column
+            for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+                if (stopRequested.get()) break;
+
+                long key = sectionKey(sx, sy, sz);
+                if (generatedSections.contains(key)) continue;
+
+                // Skip if Voxy already has real data for this section
+                if (VoxyCompat.sectionExists(worldEngine, sx, sy, sz)) {
+                    skippedExisting++;
+                    generatedSections.add(key);
+                    continue;
+                }
+
+                Object section = HeightmapFallbackGenerator.generateSection(
+                        sx, sy, sz, ctx.rawHm(), ctx.biomeIdx(),
+                        biomeVoxyIds, blockIds, voxyMapper);
+
+                if (section == null) {
+                    skippedAir++;
+                } else {
+                    VoxyCompat.insertUpdate(worldEngine, section);
+                    totalSections++;
+                }
+
+                generatedSections.add(key);
+            }
+
+            columnsProcessed++;
+
+            // Progress logging
+            if (columnsProcessed % 100 == 0 || columnsProcessed == columns.size()) {
+                long elapsed = System.currentTimeMillis() - startTime;
+                double sectionsPerSec = totalSections > 0
+                        ? totalSections / (elapsed / 1000.0) : 0;
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen] Fallback progress: {}/{} columns, {} sections written, "
+                        + "{} air-skipped, {} existing-skipped ({} sec, {} sections/s)",
+                        columnsProcessed, columns.size(), totalSections,
+                        skippedAir, skippedExisting,
+                        elapsed / 1000, (int) sectionsPerSec);
+            }
+
+            // Track skipped sections above/below surface
+            int generatedRange = maxSectionY - minSectionY + 1;
+            skippedAirSections.addAndGet(Y_SECTIONS - generatedRange);
+        }
+
+        // Free cached column context
+        columnContextCache.clear();
+
+        long elapsed = System.currentTimeMillis() - startTime;
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen] Fallback pipeline complete — {} sections in {}.{}s "
+                + "({} columns, {} air-skipped, {} existing-skipped)",
+                totalSections, elapsed / 1000, elapsed % 1000,
+                columnsProcessed, skippedAir, skippedExisting);
     }
 
     /**
