@@ -550,12 +550,27 @@ public final class ProgressiveModelRunner implements AutoCloseable {
             long elapsed = System.currentTimeMillis() - t0;
             long perSample = batchSize > 0 ? elapsed / batchSize : elapsed;
 
+            // ── Convert entire batch to float[] immediately ──────────────
+            // OrtNDArray does not support .get(index) or .expandDims();
+            // extract the flat array once and slice manually per sample.
+            long[] batchShape = batchLogits.getShape().getShape();
+            // batchShape: [batchSize, vocabSize, D, D, D]
+            int sampleElements = 1;
+            for (int d = 1; d < batchShape.length; d++) sampleElements *= (int) batchShape[d];
+            float[] allLogitsFlat = batchLogits.toFloatArray();
+
             // ── Split per-sample results ────────────────────────────────
             List<StageOutput> results = new ArrayList<>(batchSize);
             for (int b = 0; b < batchSize; b++) {
-                // Slice single sample: NDArray index → [vocabSize, D, D, D]
-                // then expandDims(0) → [1, vocabSize, D, D, D]
-                NDArray singleLogits = batchLogits.get(b).expandDims(0);
+                // Slice this sample's flat data
+                float[] sampleFlat = new float[sampleElements];
+                System.arraycopy(allLogitsFlat, b * sampleElements, sampleFlat, 0, sampleElements);
+                // Wrap as [1, vocabSize, D, D, D] NDArray in the sub-manager
+                // (sub is a proper NDManager that supports all operations)
+                long[] sampleShape = new long[batchShape.length];
+                sampleShape[0] = 1;
+                System.arraycopy(batchShape, 1, sampleShape, 1, batchShape.length - 1);
+                NDArray singleLogits = sub.create(sampleFlat, new Shape(sampleShape));
 
                 if (stage < 3) {
                     float[] solidFlat = toSolidParentFlatFromLogits(singleLogits);
@@ -563,7 +578,7 @@ public final class ProgressiveModelRunner implements AutoCloseable {
                     results.add(new StageOutput(solidFlat, nativeLogits, null, perSample));
                 } else {
                     float[][][][][] nativeLogits = extract5D(singleLogits);
-                    int vocabSize = (int) batchLogits.getShape().getShape()[1];
+                    int vocabSize = (int) batchShape[1];
                     float[][][][][] logits16 = new float[1][vocabSize][16][16][16];
                     extractAndUpsample5D(singleLogits, logits16);
                     results.add(new StageOutput(null, nativeLogits,
