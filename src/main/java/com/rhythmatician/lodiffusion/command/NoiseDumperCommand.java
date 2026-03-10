@@ -67,7 +67,7 @@ public final class NoiseDumperCommand {
             // /dumpnoise            (default radius 8)
             .executes(ctx -> execute(ctx, 8))
             // /dumpnoise <radius>
-            .then(CommandManager.argument("radius", IntegerArgumentType.integer(1, 64))
+            .then(CommandManager.argument("radius", IntegerArgumentType.integer(1, 512))
                 .executes(ctx -> execute(ctx,
                         IntegerArgumentType.getInteger(ctx, "radius"))))
         );
