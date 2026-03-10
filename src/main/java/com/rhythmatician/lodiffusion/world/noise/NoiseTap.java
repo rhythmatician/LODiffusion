@@ -33,6 +33,21 @@ public interface NoiseTap {
                      EnumSet<Heightmap.Type> whichHeightmaps);
 
     /**
+     * Capture all requested noise signals for a specific 16-block Y section.
+     *
+     * <p>The router fields are sampled at {@code sectionAnchorY .. sectionAnchorY + 15}.
+     * Use this overload when you need router data at a particular section (e.g., sea level).
+     *
+     * @param whichRouterFields NoiseRouter fields to sample at 16×16×16 resolution
+     * @param whichHeightmaps   Heightmap types to capture at 16×16 resolution
+     * @param sectionAnchorY    Y coordinate of the bottom block of the 16-block section to sample
+     * @return immutable cache view for this chunk at native API resolutions
+     */
+    Cache captureAll(EnumSet<RouterField> whichRouterFields,
+                     EnumSet<Heightmap.Type> whichHeightmaps,
+                     int sectionAnchorY);
+
+    /**
      * Router fields we can sample (exactly those exposed by NoiseRouter).
      * These correspond to the 15 DensityFunction fields in Yarn 1.21.4+ NoiseRouter.
      */

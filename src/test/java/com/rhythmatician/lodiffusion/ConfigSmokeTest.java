@@ -25,7 +25,8 @@ public class ConfigSmokeTest {
         assertEquals("unified_v1", Config.adapter(), "Default adapter should be unified_v1");
         assertEquals(2, Config.inferenceThreads(), "Default inference threads should be 2");
         assertEquals(0.5, Config.threshold(), 0.001, "Default threshold should be 0.5");
-                assertTrue(Config.logTimings(), "Log timings should be true by default");
+        // logTimings defaults to false unless debug.logTimings is set in runtime.json
+        assertFalse(Config.logTimings(), "Log timings should be false by default");
     }
     
     @Test
@@ -38,9 +39,22 @@ public class ConfigSmokeTest {
     @Test
     public void testMetricsCsv() {
         Optional<Path> csvPath = Config.metricsCsv();
-        // CSV output is enabled by default in the test config
-        assertFalse(csvPath.isEmpty(), "CSV output should be enabled by default");
-        assertTrue(csvPath.get().toString().contains("lodiffusion_metrics.csv"), "CSV path should reference metrics file");
+        // CSV output is disabled by default (requires debug.dumpCsv in runtime.json)
+        assertTrue(csvPath.isEmpty(), "CSV output should be disabled by default");
+    }
+
+    @Test
+    public void testMetricsCsvWhenEnabled() {
+        // Verify that CSV output can be enabled via runtime config
+        try {
+            Config.setDebugDumpCsv("lodiffusion_metrics.csv");
+            Optional<Path> csvPath = Config.metricsCsv();
+            assertFalse(csvPath.isEmpty(), "CSV output should be enabled after setting debug.dumpCsv");
+            assertTrue(csvPath.get().toString().contains("lodiffusion_metrics.csv"),
+                    "CSV path should reference the configured file");
+        } finally {
+            Config.setDebugDumpCsv(null); // restore: disable CSV output
+        }
     }
     
     @Test

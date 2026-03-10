@@ -27,7 +27,7 @@ public class ModDetection {
         if (isVoxyAvailable()) {
             return "Voxy detected — AI-powered LOD injection available";
         } else {
-            return "Voxy not detected — ONNX terrain generation via mixin only";
+            return "Voxy not detected — LOD generation disabled (install Voxy for AI-powered LODs)";
         }
     }
 }

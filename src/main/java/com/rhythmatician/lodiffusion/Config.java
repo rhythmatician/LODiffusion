@@ -131,6 +131,33 @@ public final class Config {
   public static void setAdapter(String adapterId) { setRuntime("adapter", adapterId); }
   public static void setThreshold(double thr) { setRuntime("threshold", thr); }
 
+  /**
+   * Set the debug.dumpCsv path in the runtime overlay (writes nested object).
+   * Pass {@code null} or blank string to disable CSV output.
+   */
+  public static void setDebugDumpCsv(String csvPath) {
+    try {
+      Files.createDirectories(CONFIG_DIR);
+      JsonObject overlay = loadRuntime();
+      JsonObject debug = overlay.has("debug") && overlay.get("debug").isJsonObject()
+          ? overlay.getAsJsonObject("debug") : new JsonObject();
+      if (csvPath == null || csvPath.isBlank()) {
+        debug.remove("dumpCsv");
+      } else {
+        debug.addProperty("dumpCsv", csvPath);
+      }
+      if (debug.size() > 0) {
+        overlay.add("debug", debug);
+      } else {
+        overlay.remove("debug");
+      }
+      try (var w = Files.newBufferedWriter(RUNTIME_FILE, StandardCharsets.UTF_8)) {
+        GSON.toJson(overlay, w);
+      }
+      CACHED.set(null);
+    } catch (IOException ignored) {}
+  }
+
   private static void setRuntime(String key, Object value) {
     try {
       Files.createDirectories(CONFIG_DIR);

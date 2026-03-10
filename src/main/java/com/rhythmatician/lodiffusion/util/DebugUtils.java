@@ -91,8 +91,9 @@ public final class DebugUtils {
             
             double mean = sum / data.length;
             
-            HelloTerrainMod.LOGGER.debug("[DebugUtils] Tensor '{}' - Shape: {}, Min: {:.3f}, Max: {:.3f}, Mean: {:.3f}", 
-                label, Arrays.toString(tensor.getShape().getShape()), min, max, mean);
+            HelloTerrainMod.LOGGER.debug("[DebugUtils] Tensor '{}' - Shape: {}, Min: {}, Max: {}, Mean: {}", 
+                label, Arrays.toString(tensor.getShape().getShape()),
+                String.format("%.3f", min), String.format("%.3f", max), String.format("%.3f", mean));
                 
         } catch (Exception e) {
             HelloTerrainMod.LOGGER.warn("[DebugUtils] Failed to analyze tensor '{}': {}", label, e.getMessage());
