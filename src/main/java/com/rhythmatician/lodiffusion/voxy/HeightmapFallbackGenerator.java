@@ -13,7 +13,7 @@ import net.minecraft.block.Blocks;
  * <ul>
  *   <li>Below y=0 → deepslate</li>
  *   <li>y=0 to (surface − 3) → stone</li>
- *   <li>Top 3 solid blocks → biome-dependent (sand for desert/beach, else dirt/dirt/grass_block)</li>
+ *   <li>Top 3 solid blocks → biome-dependent (sand, red sand, gravel, snow block, podzol, mycelium, or grass/dirt)</li>
  *   <li>Above surface, below sea level → water</li>
  *   <li>Above surface, at or above sea level → air</li>
  * </ul>
@@ -33,12 +33,6 @@ public final class HeightmapFallbackGenerator {
     /** Minecraft sea level in block Y coordinates. */
     static final int SEA_LEVEL = 63;
 
-    /** Canonical biome index for minecraft:desert (alphabetical position 12). */
-    private static final int BIOME_DESERT = 12;
-
-    /** Canonical biome index for minecraft:beach (alphabetical position 2). */
-    private static final int BIOME_BEACH = 2;
-
     /** Default light value: full sky light, no block light → 0x0F. */
     private static final int DEFAULT_LIGHT = 0x0F;
 
@@ -52,6 +46,27 @@ public final class HeightmapFallbackGenerator {
      * Pre-resolved Voxy block IDs for the 7 block types used by the fallback.
      * Resolved once at startup via {@link #resolveBlockIds(Object)}.
      */
+    /**
+     * Surface material category used to select the top 3 solid blocks per column.
+     * Determined once per column from the biome's canonical index.
+     */
+    enum SurfaceType {
+        /** Grass block over dirt — most temperate biomes. */
+        GRASS,
+        /** Sand for all 3 layers — deserts, beaches, warm/lukewarm ocean floors. */
+        SAND,
+        /** Red sand — badlands variants. */
+        RED_SAND,
+        /** Gravel — cold/regular ocean floors, stony shores, gravelly hills. */
+        GRAVEL,
+        /** Snow block over dirt — frozen peaks, snowy plains, taigas, etc. */
+        SNOW,
+        /** Podzol over dirt — old-growth pine and spruce taigas. */
+        PODZOL,
+        /** Mycelium over dirt — mushroom fields. */
+        MYCELIUM
+    }
+
     public record FallbackBlockIds(
         int air,
         int stone,
@@ -59,7 +74,12 @@ public final class HeightmapFallbackGenerator {
         int dirt,
         int grassBlock,
         int sand,
-        int water
+        int water,
+        int redSand,
+        int gravel,
+        int snowBlock,
+        int podzol,
+        int mycelium
     ) {}
 
     /**
@@ -83,12 +103,20 @@ public final class HeightmapFallbackGenerator {
             int grassBlock = (int) getIdMethod.invoke(voxyMapper, Blocks.GRASS_BLOCK.getDefaultState());
             int sand       = (int) getIdMethod.invoke(voxyMapper, Blocks.SAND.getDefaultState());
             int water      = (int) getIdMethod.invoke(voxyMapper, Blocks.WATER.getDefaultState());
+            int redSand    = (int) getIdMethod.invoke(voxyMapper, Blocks.RED_SAND.getDefaultState());
+            int gravel     = (int) getIdMethod.invoke(voxyMapper, Blocks.GRAVEL.getDefaultState());
+            int snowBlock  = (int) getIdMethod.invoke(voxyMapper, Blocks.SNOW_BLOCK.getDefaultState());
+            int podzol     = (int) getIdMethod.invoke(voxyMapper, Blocks.PODZOL.getDefaultState());
+            int mycelium   = (int) getIdMethod.invoke(voxyMapper, Blocks.MYCELIUM.getDefaultState());
 
             LOGGER.info("Fallback block IDs resolved: air=" + air + " stone=" + stone
                     + " deepslate=" + deepslate + " dirt=" + dirt + " grass=" + grassBlock
-                    + " sand=" + sand + " water=" + water);
+                    + " sand=" + sand + " water=" + water + " redSand=" + redSand
+                    + " gravel=" + gravel + " snowBlock=" + snowBlock
+                    + " podzol=" + podzol + " mycelium=" + mycelium);
 
-            return new FallbackBlockIds(air, stone, deepslate, dirt, grassBlock, sand, water);
+            return new FallbackBlockIds(air, stone, deepslate, dirt, grassBlock, sand, water,
+                    redSand, gravel, snowBlock, podzol, mycelium);
         } catch (Exception e) {
             throw new RuntimeException("Failed to resolve fallback block IDs from Voxy Mapper", e);
         }
@@ -209,14 +237,14 @@ public final class HeightmapFallbackGenerator {
                 int canonBiome = biomeIdx[lx][lz];
                 int voxyBiome = biomeVoxyIds[lx][lz];
 
-                boolean isSandy = canonBiome == BIOME_DESERT || canonBiome == BIOME_BEACH;
+                SurfaceType surfaceType = surfaceTypeForBiome(canonBiome);
 
                 for (int ly = 0; ly < 16; ly++) {
                     int worldY = baseY + ly;
                     int idx = VoxyCompat.l0Index(lx, ly, lz);
 
                     int blockId = pickBlockId(worldY, groundBlockY,
-                            waterSurfaceBlockY, isSandy, blockIds);
+                            waterSurfaceBlockY, surfaceType, blockIds);
 
                     data[idx] = VoxyCompat.composeVoxel(blockId, voxyBiome, DEFAULT_LIGHT);
 
@@ -235,14 +263,47 @@ public final class HeightmapFallbackGenerator {
     }
 
     /**
-     * Determine whether a canonical biome index should use sandy surface blocks.
+     * Map a canonical biome index to a {@link SurfaceType} for the top 3 solid blocks.
      * Package-private for testing.
      *
+     * <p>Biome indices follow the alphabetical ordering in {@link BiomeMapping}.
+     *
      * @param canonicalBiomeIdx biome index from {@link BiomeMapping}
-     * @return true if the biome should use sand instead of grass/dirt
+     * @return the surface material category for this biome
      */
-    static boolean isSandyBiome(int canonicalBiomeIdx) {
-        return canonicalBiomeIdx == BIOME_DESERT || canonicalBiomeIdx == BIOME_BEACH;
+    static SurfaceType surfaceTypeForBiome(int canonicalBiomeIdx) {
+        return switch (canonicalBiomeIdx) {
+            // Sand — deserts, beaches, warm/lukewarm ocean floors, snowy beach
+            case 2, 10, 12, 24, 38, 48 -> SurfaceType.SAND;
+            // beach(2), deep_lukewarm_ocean(10), desert(12),
+            // lukewarm_ocean(24), snowy_beach(38), warm_ocean(48)
+
+            // Red sand — badlands variants
+            case 0, 14, 53 -> SurfaceType.RED_SAND;
+            // badlands(0), eroded_badlands(14), wooded_badlands(53)
+
+            // Gravel — cold/regular ocean floors, stony shores, gravelly hills
+            case 5, 7, 9, 11, 17, 29, 43, 44, 50 -> SurfaceType.GRAVEL;
+            // cold_ocean(5), deep_cold_ocean(7), deep_frozen_ocean(9),
+            // deep_ocean(11), frozen_ocean(17), ocean(29),
+            // stony_peaks(43), stony_shore(44), windswept_gravelly_hills(50)
+
+            // Snow block — frozen and snowy biomes
+            case 18, 19, 20, 21, 22, 39, 40, 41 -> SurfaceType.SNOW;
+            // frozen_peaks(18), frozen_river(19), grove(20), ice_spikes(21),
+            // jagged_peaks(22), snowy_plains(39), snowy_slopes(40), snowy_taiga(41)
+
+            // Podzol — old-growth taigas
+            case 31, 32 -> SurfaceType.PODZOL;
+            // old_growth_pine_taiga(31), old_growth_spruce_taiga(32)
+
+            // Mycelium — mushroom fields
+            case 28 -> SurfaceType.MYCELIUM;
+            // mushroom_fields(28)
+
+            // Grass/dirt — all remaining biomes
+            default -> SurfaceType.GRASS;
+        };
     }
 
     /**
@@ -258,27 +319,30 @@ public final class HeightmapFallbackGenerator {
      * @param worldY              absolute block Y coordinate
      * @param groundBlockY        the solid ground height (floor of ocean floor or surface heightmap)
      * @param waterSurfaceBlockY  the water surface height (floor of WORLD_SURFACE_WG heightmap)
-     * @param isSandy             true if the biome uses sand
+     * @param surfaceType         surface material category for the top 3 solid blocks
      * @param blockIds            pre-resolved block IDs
      * @return the Voxy block ID to use
      */
     static int pickBlockId(int worldY, int groundBlockY, int waterSurfaceBlockY,
-                            boolean isSandy, FallbackBlockIds blockIds) {
+                            SurfaceType surfaceType, FallbackBlockIds blockIds) {
         if (worldY >= groundBlockY) {
             // Above solid ground — could be water or air
             if (worldY < waterSurfaceBlockY) {
-                // Between ground and water surface — water
                 return blockIds.water();
             }
-            // Above both ground and water surface
             return (worldY < SEA_LEVEL) ? blockIds.water() : blockIds.air();
         } else if (worldY >= groundBlockY - 3) {
-            // Top 3 solid blocks
-            if (isSandy) {
-                return blockIds.sand();
-            }
-            int depth = groundBlockY - 1 - worldY;
-            return (depth == 0) ? blockIds.grassBlock() : blockIds.dirt();
+            // Top 3 solid blocks — material depends on surface type
+            int depth = groundBlockY - 1 - worldY; // 0=topmost, 1=second, 2=third
+            return switch (surfaceType) {
+                case SAND     -> blockIds.sand();
+                case RED_SAND -> blockIds.redSand();
+                case GRAVEL   -> blockIds.gravel();
+                case SNOW     -> (depth == 0) ? blockIds.snowBlock() : blockIds.dirt();
+                case PODZOL   -> (depth == 0) ? blockIds.podzol()    : blockIds.dirt();
+                case MYCELIUM -> (depth == 0) ? blockIds.mycelium()  : blockIds.dirt();
+                default       -> (depth == 0) ? blockIds.grassBlock() : blockIds.dirt();
+            };
         } else if (worldY < 0) {
             return blockIds.deepslate();
         } else {
