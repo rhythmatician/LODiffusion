@@ -5,6 +5,7 @@ import java.util.logging.Logger;
 
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
+import net.minecraft.state.property.Properties;
 
 /**
  * Ultra-fast fallback terrain generator for when no ONNX models are available.
@@ -59,7 +60,7 @@ public final class HeightmapFallbackGenerator {
         RED_SAND,
         /** Gravel — cold/regular ocean floors, stony shores, gravelly hills. */
         GRAVEL,
-        /** Snow block over dirt — frozen peaks, snowy plains, taigas, etc. */
+        /** Snow layer on top of snowy grass_block over dirt — frozen peaks, snowy plains, taigas, etc. */
         SNOW,
         /** Podzol over dirt — old-growth pine and spruce taigas. */
         PODZOL,
@@ -77,7 +78,8 @@ public final class HeightmapFallbackGenerator {
         int water,
         int redSand,
         int gravel,
-        int snowBlock,
+        int snowyGrassBlock,
+        int snowLayer,
         int podzol,
         int mycelium
     ) {}
@@ -96,27 +98,30 @@ public final class HeightmapFallbackGenerator {
             Method getIdMethod = voxyMapper.getClass().getMethod("getIdForBlockState",
                     BlockState.class);
 
-            int air        = (int) getIdMethod.invoke(voxyMapper, Blocks.AIR.getDefaultState());
-            int stone      = (int) getIdMethod.invoke(voxyMapper, Blocks.STONE.getDefaultState());
-            int deepslate  = (int) getIdMethod.invoke(voxyMapper, Blocks.DEEPSLATE.getDefaultState());
-            int dirt       = (int) getIdMethod.invoke(voxyMapper, Blocks.DIRT.getDefaultState());
-            int grassBlock = (int) getIdMethod.invoke(voxyMapper, Blocks.GRASS_BLOCK.getDefaultState());
-            int sand       = (int) getIdMethod.invoke(voxyMapper, Blocks.SAND.getDefaultState());
-            int water      = (int) getIdMethod.invoke(voxyMapper, Blocks.WATER.getDefaultState());
-            int redSand    = (int) getIdMethod.invoke(voxyMapper, Blocks.RED_SAND.getDefaultState());
-            int gravel     = (int) getIdMethod.invoke(voxyMapper, Blocks.GRAVEL.getDefaultState());
-            int snowBlock  = (int) getIdMethod.invoke(voxyMapper, Blocks.SNOW_BLOCK.getDefaultState());
-            int podzol     = (int) getIdMethod.invoke(voxyMapper, Blocks.PODZOL.getDefaultState());
-            int mycelium   = (int) getIdMethod.invoke(voxyMapper, Blocks.MYCELIUM.getDefaultState());
+            int air            = (int) getIdMethod.invoke(voxyMapper, Blocks.AIR.getDefaultState());
+            int stone          = (int) getIdMethod.invoke(voxyMapper, Blocks.STONE.getDefaultState());
+            int deepslate      = (int) getIdMethod.invoke(voxyMapper, Blocks.DEEPSLATE.getDefaultState());
+            int dirt           = (int) getIdMethod.invoke(voxyMapper, Blocks.DIRT.getDefaultState());
+            int grassBlock     = (int) getIdMethod.invoke(voxyMapper, Blocks.GRASS_BLOCK.getDefaultState());
+            int sand           = (int) getIdMethod.invoke(voxyMapper, Blocks.SAND.getDefaultState());
+            int water          = (int) getIdMethod.invoke(voxyMapper, Blocks.WATER.getDefaultState());
+            int redSand        = (int) getIdMethod.invoke(voxyMapper, Blocks.RED_SAND.getDefaultState());
+            int gravel         = (int) getIdMethod.invoke(voxyMapper, Blocks.GRAVEL.getDefaultState());
+            int snowyGrassBlock = (int) getIdMethod.invoke(voxyMapper,
+                    Blocks.GRASS_BLOCK.getDefaultState().with(Properties.SNOWY, true));
+            int snowLayer      = (int) getIdMethod.invoke(voxyMapper, Blocks.SNOW.getDefaultState());
+            int podzol         = (int) getIdMethod.invoke(voxyMapper, Blocks.PODZOL.getDefaultState());
+            int mycelium       = (int) getIdMethod.invoke(voxyMapper, Blocks.MYCELIUM.getDefaultState());
 
             LOGGER.info("Fallback block IDs resolved: air=" + air + " stone=" + stone
                     + " deepslate=" + deepslate + " dirt=" + dirt + " grass=" + grassBlock
                     + " sand=" + sand + " water=" + water + " redSand=" + redSand
-                    + " gravel=" + gravel + " snowBlock=" + snowBlock
+                    + " gravel=" + gravel + " snowyGrass=" + snowyGrassBlock
+                    + " snowLayer=" + snowLayer
                     + " podzol=" + podzol + " mycelium=" + mycelium);
 
             return new FallbackBlockIds(air, stone, deepslate, dirt, grassBlock, sand, water,
-                    redSand, gravel, snowBlock, podzol, mycelium);
+                    redSand, gravel, snowyGrassBlock, snowLayer, podzol, mycelium);
         } catch (Exception e) {
             throw new RuntimeException("Failed to resolve fallback block IDs from Voxy Mapper", e);
         }
@@ -326,11 +331,18 @@ public final class HeightmapFallbackGenerator {
     static int pickBlockId(int worldY, int groundBlockY, int waterSurfaceBlockY,
                             SurfaceType surfaceType, FallbackBlockIds blockIds) {
         if (worldY >= groundBlockY) {
-            // Above solid ground — could be water or air
+            // Above solid ground — could be snow layer, water, or air
             if (worldY < waterSurfaceBlockY) {
                 return blockIds.water();
             }
-            return (worldY < SEA_LEVEL) ? blockIds.water() : blockIds.air();
+            if (worldY >= SEA_LEVEL) {
+                // Dry air zone — place a snow layer directly on snowy terrain
+                if (worldY == groundBlockY && surfaceType == SurfaceType.SNOW) {
+                    return blockIds.snowLayer();
+                }
+                return blockIds.air();
+            }
+            return blockIds.water();
         } else if (worldY >= groundBlockY - 3) {
             // Top 3 solid blocks — material depends on surface type
             int depth = groundBlockY - 1 - worldY; // 0=topmost, 1=second, 2=third
@@ -338,7 +350,7 @@ public final class HeightmapFallbackGenerator {
                 case SAND     -> blockIds.sand();
                 case RED_SAND -> blockIds.redSand();
                 case GRAVEL   -> blockIds.gravel();
-                case SNOW     -> (depth == 0) ? blockIds.snowBlock() : blockIds.dirt();
+                case SNOW     -> (depth == 0) ? blockIds.snowyGrassBlock() : blockIds.dirt();
                 case PODZOL   -> (depth == 0) ? blockIds.podzol()    : blockIds.dirt();
                 case MYCELIUM -> (depth == 0) ? blockIds.mycelium()  : blockIds.dirt();
                 default       -> (depth == 0) ? blockIds.grassBlock() : blockIds.dirt();
