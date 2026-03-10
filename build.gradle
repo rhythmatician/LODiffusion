@@ -1,7 +1,8 @@
 plugins {
-	id 'fabric-loom' version '1.10-SNAPSHOT'
+	id 'fabric-loom' version '1.13.6'
 	id 'maven-publish'
 	id 'jacoco'
+	id 'checkstyle'
 }
 
 version = project.mod_version
@@ -36,6 +37,8 @@ repositories {
 }
 
 loom {
+	accessWidenerPath = file("src/main/resources/lodiffusion.accesswidener")
+
 	splitEnvironmentSourceSets()
 
 	mods {
@@ -55,14 +58,7 @@ dependencies {
 	// Fabric API. This is technically optional, but you probably want it anyway.
 	modImplementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_version}"
 	
-	// Distant Horizons integration - using local JAR files
-	compileOnly files('mods/DistantHorizonsApi-4.0.0.jar')
-	modRuntimeOnly files('mods/DistantHorizons-fabric-2.3.5-b-dev-1.21.4.jar')
-
-	// NOTE: Distant Horizons integration is runtime-only via reflection
-	// DH doesn't publish to Maven Central, so we avoid compile-time dependencies
-	// Users need to install DH separately for LOD features to work
-	// Runtime detection handles DH presence/absence gracefully
+	// (Distant Horizons dependency removed — now targeting Voxy)
 
 	// JUnit 5 for testing
 	testImplementation 'org.junit.jupiter:junit-jupiter:5.9.2'
@@ -70,17 +66,27 @@ dependencies {
 	
 	// Mockito for mocking in tests
 	testImplementation 'org.mockito:mockito-core:5.1.1'
-	testImplementation 'org.mockito:mockito-junit-jupiter:5.1.1'	// NBT and MCA library for parsing Minecraft region files (1.18+ compatible)
+	testImplementation 'org.mockito:mockito-junit-jupiter:5.1.1'
+
+	// Voxy jar on the test classpath.  VoxelizedSection (the only class used by
+	// encoding tests) has no transitive Minecraft class references, so no Loom
+	// remapping is required — the raw intermediary jar loads fine in the yarn JVM.
+	testRuntimeOnly files('mods/voxy-0.2.11-alpha.jar')
+
+	// NBT and MCA library for parsing Minecraft region files (1.18+ compatible)
 	// Using JitPack for reliable dependency resolution
 	implementation 'com.github.Minestom.Hephaistos:common:2.1.2'
 
 	// Kotlin standard library - required by Hephaistos
 	implementation 'org.jetbrains.kotlin:kotlin-stdlib:1.9.10'
 	
-	// DJL (Deep Java Library) for ONNX inference using BOM for version management
-	implementation platform('ai.djl:bom:0.27.0')
+	// DJL (Deep Java Library) for ONNX inference using BOM for version management (updated to 0.30.0 per ONNX integration roadmap)
+	implementation platform('ai.djl:bom:0.30.0')
 	implementation 'ai.djl:api'
 	runtimeOnly 'ai.djl.onnxruntime:onnxruntime-engine'
+
+	// Gson for lightweight JSON config loading (runtime toggle + metrics paths)
+	implementation 'com.google.code.gson:gson:2.11.0'
 }
 
 processResources {
@@ -113,11 +119,32 @@ jar {
 
 test {
 	useJUnitPlatform()
+	// Byte Buddy (used by Mockito inline mock-maker) requires this flag on Java 21+
+	// since Mockito 5.1.1 bundles an older Byte Buddy that only officially supports Java 20.
+	jvmArgs '-Dnet.bytebuddy.experimental=true'
 	finalizedBy jacocoTestReport
 }
 
+// Auto-deploy built JAR to run/mods/ after remapJar
+tasks.register('deployToRunMods', Copy) {
+	group = 'fabric'
+	description = 'Copy remapped mod JAR to run/mods/ for testing'
+	dependsOn remapJar
+	from(remapJar.archiveFile)
+	into(file('run/mods'))
+}
+
+// Wire deployToRunMods into the build lifecycle
+build.dependsOn deployToRunMods
+
 jacoco {
 	toolVersion = "0.8.11"
+}
+
+checkstyle {
+	toolVersion = '10.21.4'
+	configFile = file('config/checkstyle/checkstyle.xml')
+	maxWarnings = 0
 }
 
 jacocoTestReport {

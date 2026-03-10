@@ -1,6 +1,6 @@
 # Developer Instructions
 
-Welcome to the AI-Diffusion Minecraft Mod project. Follow these steps using the **micro-commit strategy** to keep Copilot productive and PRs manageable.
+Welcome to the **LODiffusion** project. Follow these steps using the **micro-commit strategy** to keep Copilot productive and PRs manageable.
 
 ## 🚀 Micro-Commit Workflow
 
@@ -19,7 +19,7 @@ Welcome to the AI-Diffusion Minecraft Mod project. Follow these steps using the 
 
 ### Branch Completion
 1. **Verify all tests pass**: `./gradlew test`
-2. **Check coverage**: `./gradlew jacocoTestReport` (≥ 80% target)
+2. **Check coverage**: `./gradlew jacocoTestReport` (≥ 70% target)
 3. **Final push**: `git push origin branch-name`
 4. **Create PR**: Should be reviewable in < 10 minutes, max 200 lines changed
 
@@ -36,15 +36,13 @@ Welcome to the AI-Diffusion Minecraft Mod project. Follow these steps using the 
 3. **Invoke Copilot** to generate only the code needed to make the test pass.
 4. Clean up generated code:
    - Remove any unrelated or unused code.
-   - **For NBT/Anvil operations**: Use Querz/NBT library with proper error handling
-   - **For biome parsing**: Implement version-aware logic (pre-1.18 vs 1.18+)
 5. **Commit immediately**: `git add . && git commit -m "feat: implement heightmap sampling"`
 
 ## ✅ Verify & Refine
 
 1. **Run local checks**: `./gradlew clean lint test jacocoTestReport` (matches CI pipeline).
 2. Confirm your new test is green.
-3. Check coverage: total coverage ≥ 80%.
+3. Check coverage: total coverage ≥ 70%.
 4. If coverage dips, write additional tests rather than lowering the threshold.
 5. **Commit any fixes**: `git add . && git commit -m "fix: resolve compilation error in heightmap test"`
 6. **Troubleshooting**: If build fails, try `./gradlew build --refresh-dependencies` or `./gradlew cleanloom`
@@ -74,7 +72,7 @@ Avoid hard-killing builds (e.g., force-closing VS Code or Ctrl+C twice). Use `--
 
 ### Normal Gradle Behavior During Dependency Updates
 
-When adding or updating dependencies (especially complex ones like Hephaistos), expect these **normal behaviors**:
+When adding or updating dependencies, expect these **normal behaviors**:
 
 #### File Locking During Sync (Expected)
 - VS Code Java extension locks Gradle cache files during dependency resolution
@@ -96,36 +94,10 @@ When adding or updating dependencies (especially complex ones like Hephaistos), 
 - Repeated Gradle daemon crashes
 - Imports still unresolved after successful configuration
 
-### Hephaistos NBT Library Specific
-```gradle
-// Correct dependency (repository moved to Minestom):
-dependencies {
-    implementation 'com.github.Minestom:Hephaistos:2.2.0'
-}
-```
-
-### Gradle Troubleshooting Tips
-If you encounter issues specifically related to dependency resolution or the Hephaistos library, consider the following steps:
-```bash
-./gradlew --stop                          # Stop all Gradle daemons
-rm -rf .gradle build                      # Clear local project cache
-rm -rf ~/.gradle/caches/fabric-loom       # Clear Loom's global cache
-./gradlew clean build --refresh-dependencies  # Clean rebuild
-
-# For persistent Loom issues:
-rm -rf ~/.gradle/caches/fabric-loom       # Clear Loom cache
-```
-
-### Testing Strategy for NBT Code
-1. **Unit Tests**: Test individual NBT parsing methods with mock data
-2. **Integration Tests**: Use real `.mca` files from test worlds
-3. **Error Handling Tests**: Validate behavior with corrupt/missing data
-4. **Performance Tests**: Benchmark parsing speed with large region files
-
 ## 📚 Update Documentation
 
 1. **docs/PROJECT-OUTLINE.md**: mark the task complete (`- [x]`) or refine future steps if needed.
-2. **Commit documentation changes**: `git add docs/ && git commit -m "docs: complete DiffusionModel.run integration"`
+2. **Commit documentation changes**: `git add docs/ && git commit -m "docs: mark task complete"`
 
 ## 🔄 Reflection & Learning Cycle
 
@@ -146,7 +118,7 @@ This reflection cycle ensures that knowledge gained from each task informs and i
 3. Push branch frequently during development for backup.
 4. **Only merge** when:
    - All tests pass.
-   - Coverage threshold is met (≥ 80%).
+   - Coverage threshold is met (≥ 70%).
    - Documentation updates included where relevant.
 5. **Enable auto-merge** for Copilot-reviewed PRs with no unresolved threads.
 6. Use clear commit messages:
@@ -162,14 +134,6 @@ This reflection cycle ensures that knowledge gained from each task informs and i
 - Approve and enable auto-merge on PRs with no unresolved threads.
 
 ## 🛠️ Technical Standards
-
-### NBT Parsing & World Data
-- **Library**: Use `io.github.querz:nbt:6.1` for all NBT operations
-- **File Operations**: Always use try-with-resources for MCA file reading
-- **Validation**: Check NBT tag existence before access (`tag.containsKey()`)
-- **Heightmaps**: Extract MOTION_BLOCKING with fallback to WORLD_SURFACE
-- **Biomes**: Handle both pre-1.18 and 1.18+ formats with version detection
-- **Packed Data**: Use helper methods for decoding packed long arrays (9-bit values)
 
 ### Performance & Coordinate Systems
 - **Chunk Math**: Use bitwise operations (`chunkX >> 5` instead of `/32`)

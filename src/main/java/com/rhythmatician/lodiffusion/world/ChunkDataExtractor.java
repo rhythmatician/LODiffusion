@@ -6,12 +6,13 @@ import java.io.RandomAccessFile;
 import java.util.Arrays;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+
+import org.jglrxavpok.hephaistos.collections.ImmutableLongArray;
 import org.jglrxavpok.hephaistos.mca.AnvilException;
 import org.jglrxavpok.hephaistos.mca.ChunkColumn;
 import org.jglrxavpok.hephaistos.mca.RegionFile;
 import org.jglrxavpok.hephaistos.nbt.NBTCompound;
 import org.jglrxavpok.hephaistos.nbt.NBTLongArray;
-import org.jglrxavpok.hephaistos.collections.ImmutableLongArray;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -328,9 +329,6 @@ public class ChunkDataExtractor {    private static final Logger LOGGER = Logger
             throw new IllegalArgumentException("Chunk coordinates must be 0-31");
         }
 
-        System.out.println("DEBUG: Starting extractBiomesFromChunk for region " + regionFile.getName() + 
-                          " chunk [" + chunkX + ", " + chunkZ + "]");
-
         startTiming();
 
         try {
@@ -352,20 +350,16 @@ public class ChunkDataExtractor {    private static final Logger LOGGER = Logger
                 // Hephaistos failed - try raw NBT fallback for any AnvilException
                 LOGGER.debug("Hephaistos failed for chunk [{}, {}] in region {} - attempting raw NBT fallback: {}",
                     chunkX, chunkZ, regionFile.getName(), e.getMessage());
-                System.out.println("DEBUG: Hephaistos failed (" + e.getMessage() + "), attempting raw NBT fallback");
                 
                 // Attempt raw NBT reading for any Hephaistos failure
                 chunkTag = readChunkNBTDirectly(regionCache.file, chunkX, chunkZ);
-                System.out.println("DEBUG: Raw NBT reading returned: " + (chunkTag != null ? "valid NBT" : "null"));
                 if (chunkTag == null) {
                     LOGGER.debug("Raw NBT fallback also failed for chunk [{}, {}] in region {}",
                         chunkX, chunkZ, regionFile.getName());
-                    System.out.println("DEBUG: Raw NBT fallback also failed");
                     return null;
                 }
             }// Try to extract biomes based on format (1.18+ vs pre-1.18)
             String[] result = extractBiomesFromChunkTag(chunkTag);
-            System.out.println("DEBUG: extractBiomesFromChunkTag returned: " + (result != null ? result.length + " biomes" : "null"));
             return result;
 
         } catch (IOException e) {
@@ -388,9 +382,6 @@ public class ChunkDataExtractor {    private static final Logger LOGGER = Logger
         try {
             RegionFileCache regionCache = getOrCreateRegionFileCache(regionFile);
             RegionFile regionFileHandle = regionCache.getRegionFile();
-
-            // Debug the region file header to see what chunks actually exist
-            debugRegionFileHeader(regionCache.file);
 
             // Parse region coordinates from filename to understand expected coordinate range
             int[] regionCoords = parseRegionCoordinates(regionFile);
@@ -489,16 +480,9 @@ public class ChunkDataExtractor {    private static final Logger LOGGER = Logger
      * @return Array of biome identifiers for 16x16 surface positions
      */    private static String[] extractBiomesFromChunkTag(NBTCompound chunkTag) {
         // Debug logging to understand chunk structure
-        LOGGER.debug("Chunk NBT keys: {}", chunkTag.getKeys());
-        System.out.println("DEBUG: Chunk NBT keys: " + chunkTag.getKeys());
-        
-        // Print all top-level keys for debugging
-        for (String key : chunkTag.getKeys()) {
-            System.out.println("DEBUG: Found key: " + key + " with type: " + chunkTag.get(key).getClass().getSimpleName());
-        }        // Try 1.18+ format first - sections is a ListTag, not a CompoundTag
+        LOGGER.debug("Chunk NBT keys: {}", chunkTag.getKeys());        // Try 1.18+ format first - sections is a ListTag, not a CompoundTag
         if (chunkTag.containsKey("sections")) {
             LOGGER.debug("Found 1.18+ format with sections");
-            System.out.println("DEBUG: Found 1.18+ format with sections");
             try {
                 // In 1.18+, sections is a ListTag containing section compounds
                 @SuppressWarnings("unchecked")
@@ -507,10 +491,9 @@ public class ChunkDataExtractor {    private static final Logger LOGGER = Logger
                 if (sectionsTag != null && sectionsTag.getSize() > 0) {
                     return extractBiomes1_18Plus(sectionsTag);
                 } else {
-                    System.out.println("DEBUG: sections exists but is empty or null");
+                    // sections exists but is empty or null
                 }
             } catch (ClassCastException e) {
-                System.out.println("DEBUG: sections is not a ListTag: " + e.getMessage());
                 // Try as compound (alternative format)
                 NBTCompound sectionsCompound = chunkTag.getCompound("sections");
                 if (sectionsCompound != null) {
@@ -522,11 +505,9 @@ public class ChunkDataExtractor {    private static final Logger LOGGER = Logger
         // Try pre-1.18 format (Level tag with 2D biomes)
         if (chunkTag.containsKey("Level")) {
             LOGGER.debug("Found pre-1.18 format with Level tag");
-            System.out.println("DEBUG: Found pre-1.18 format with Level tag");
             return extractBiomesPre1_18(chunkTag.getCompound("Level"));
         }
 
-        System.out.println("DEBUG: Unable to extract biomes - no recognized format. Available keys: " + chunkTag.getKeys());
         LOGGER.debug("Unable to extract biomes - no recognized format");
         return null; // Unable to extract biomes
     }/**
@@ -535,8 +516,6 @@ public class ChunkDataExtractor {    private static final Logger LOGGER = Logger
      * @return Array of surface biome identifiers
      */
     private static String[] extractBiomes1_18Plus(org.jglrxavpok.hephaistos.nbt.NBTList<org.jglrxavpok.hephaistos.nbt.NBT> sectionsTag) {
-        System.out.println("DEBUG: 1.18+ sections list has " + sectionsTag.getSize() + " sections");
-        
         // For now, return a placeholder indicating 1.18+ format detected
         // TODO: Implement proper biome extraction from section palette data
         String[] biomes = new String[256]; // 16x16 positions
@@ -551,8 +530,6 @@ public class ChunkDataExtractor {    private static final Logger LOGGER = Logger
      * @return Array of surface biome identifiers
      */
     private static String[] extractBiomes1_18PlusCompound(NBTCompound sectionsTag) {
-        System.out.println("DEBUG: 1.18+ sections compound keys: " + sectionsTag.getKeys());
-        
         // For now, return a placeholder indicating 1.18+ format detected
         // TODO: Implement proper biome extraction from section palette data
         String[] biomes = new String[256]; // 16x16 positions
@@ -568,8 +545,6 @@ public class ChunkDataExtractor {    private static final Logger LOGGER = Logger
      * @return Array of surface biome identifiers
      */
     private static String[] extractBiomesPre1_18(NBTCompound levelTag) {
-        System.out.println("DEBUG: Pre-1.18 Level tag keys: " + levelTag.getKeys());
-        
         // In pre-1.18, biomes were stored as a simple array in the Level tag
         if (levelTag.containsKey("Biomes")) {
             // TODO: Implement proper pre-1.18 biome extraction
@@ -809,50 +784,6 @@ public class ChunkDataExtractor {    private static final Logger LOGGER = Logger
         } catch (Exception e) {
             LOGGER.debug("Failed to parse compressed NBT: {} - {}", e.getClass().getSimpleName(), e.getMessage());
             return null;
-        }
-    }    /**
-     * Debug method to examine the region file header and see what chunks actually exist.
-     * This helps us understand the structure of 1.18+ region files.
-     * 
-     * @param regionFile The region file to examine
-     */
-    private static void debugRegionFileHeader(RandomAccessFile regionFile) {
-        try {
-            System.out.println("=== DEBUG: Region file header analysis ===");
-            regionFile.seek(0);
-            
-            int chunksFound = 0;
-            for (int chunkIndex = 0; chunkIndex < 1024; chunkIndex++) { // 32x32 = 1024 chunks
-                regionFile.seek(chunkIndex * 4);
-                int locationData = regionFile.readInt();
-                
-                if (locationData != 0) {
-                    int chunkX = chunkIndex % 32;
-                    int chunkZ = chunkIndex / 32;
-                    int offset = (locationData >>> 8) * 4096;
-                    int sectorCount = locationData & 0xFF;
-                    
-                    chunksFound++;
-                    System.out.printf("Chunk [%d, %d] at index %d has location data: 0x%s (offset: %d, sectors: %d)%n",
-                        chunkX, chunkZ, chunkIndex, Integer.toHexString(locationData), offset, sectorCount);
-                    
-                    if (chunksFound <= 3) { // Only examine first few chunks in detail
-                        try {
-                            regionFile.seek(offset);
-                            int chunkLength = regionFile.readInt();
-                            int compressionType = regionFile.readByte();
-                            System.out.printf("  -> Chunk data: length=%d, compression=%d%n", chunkLength, compressionType);
-                        } catch (Exception e) {
-                            System.out.printf("  -> Error reading chunk data: %s%n", e.getMessage());
-                        }
-                    }
-                }
-            }
-            
-            System.out.printf("=== Total chunks found in header: %d ===%n", chunksFound);
-            
-        } catch (Exception e) {
-            System.out.printf("Error debugging region file header: %s%n", e.getMessage());
         }
     }
 }

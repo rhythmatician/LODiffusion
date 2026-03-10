@@ -3,7 +3,13 @@ package com.rhythmatician.lodiffusion;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import com.rhythmatician.lodiffusion.command.LodiffusionCommand;
+import com.rhythmatician.lodiffusion.command.NoiseDumperCommand;
+import java.nio.file.Files;
+import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
+
 import net.fabricmc.api.ModInitializer;
+import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 
 public class HelloTerrainMod implements ModInitializer {
 	public static final String MOD_ID = "lodiffusion";
@@ -12,31 +18,35 @@ public class HelloTerrainMod implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		LOGGER.info("[LODiffusion] Mod initialized!");
-		LOGGER.info("LODiffusion is ready to enhance terrain generation with AI-powered diffusion!");
-		
-		// Test ONNX integration on startup
-		testOnnxIntegration();
-	}
-	
-	private void testOnnxIntegration() {
+
+		// Register /lodiffusion command
 		try {
-			LOGGER.info("[LODiffusion] Testing ONNX terrain generator...");
-			
-			try (OnnxTerrainGenerator generator = new OnnxTerrainGenerator()) {
-				if (generator.isAvailable()) {
-					LOGGER.info("[LODiffusion] ✅ ONNX terrain generator loaded successfully!");
-					LOGGER.info("[LODiffusion] 🎮 Ready for AI-powered terrain generation!");
-				} else {
-					LOGGER.info("[LODiffusion] ⚠️ ONNX model not available, using enhanced fallback");
-				}
-			}
-			
-			// Test DiffusionModel integration  
-			new DiffusionModel(); // Test instantiation
-			LOGGER.info("[LODiffusion] ✅ DiffusionModel initialized successfully!");
-			
+			CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> {
+				LodiffusionCommand.register(dispatcher);
+				NoiseDumperCommand.register(dispatcher);
+			});
+			LOGGER.info("[LODiffusion] Registered /lodiffusion and /dumpnoise commands");
 		} catch (Exception e) {
-			LOGGER.error("[LODiffusion] ❌ Error during ONNX testing: " + e.getMessage());
+			LOGGER.error("[LODiffusion] Failed to register command: {}", e.getMessage(), e);
 		}
+
+		// Detect companion mods
+		LOGGER.info("[LODiffusion] {}", ModDetection.getLODStrategyInfo());
+
+		if (VoxyCompat.isAvailable()) {
+			LOGGER.info("[LODiffusion] Voxy reflection bindings OK — LOD injection path available");
+		}
+
+		// Check if progressive model files are present in the model dir
+		java.nio.file.Path modelDir = Config.modelDir();
+		boolean modelsPresent = Files.isRegularFile(modelDir.resolve("init_to_lod4.onnx"))
+				&& Files.isRegularFile(modelDir.resolve("refine_lod2_to_lod1.onnx"));
+		if (modelsPresent) {
+			LOGGER.info("[LODiffusion] Progressive ONNX models found in {}", modelDir);
+		} else {
+			LOGGER.warn("[LODiffusion] Progressive model files not found in {} — LOD generation will fail until models are placed", modelDir);
+		}
+
+		LOGGER.info("[LODiffusion] Mod initialization complete!");
 	}
 }

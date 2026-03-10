@@ -129,6 +129,7 @@ wandb/
 *.csv
 *.json
 !fabric.mod.json
+!lodiffusion.defaults.json
 *.pkl
 *.pickle
 *.npz

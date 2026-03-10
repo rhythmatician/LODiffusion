@@ -2,15 +2,8 @@ package com.rhythmatician.lodiffusion;
 
 public class DiffusionModel {
   
-  private OnnxTerrainGenerator onnxGenerator;
-  
   public DiffusionModel() {
-    try {
-      this.onnxGenerator = new OnnxTerrainGenerator();
-    } catch (Exception e) {
-      System.err.println("Warning: Could not initialize ONNX terrain generator, falling back to stub implementation: " + e.getMessage());
-      this.onnxGenerator = null;
-    }
+    // Legacy stub — real terrain generation goes through terrain.OnnxTerrainGenerator
   }
 
   // LOD → diffusion pass mappings as documented in project requirements
@@ -36,210 +29,20 @@ public class DiffusionModel {
    * @param biomes Biome data for context
    */
   public void run(int[][] heightmap, String[] biomes) {
-    // Try ONNX-based terrain generation first
-    if (onnxGenerator != null) {
-      try {
-        // Convert biome strings to biome IDs
-        int[][] biomeIds = convertBiomesToIds(biomes);
-        
-        // Use ONNX terrain generator with proper baseY calculation
-        int[][][] generatedTerrain = onnxGenerator.generateTerrainFromHeights(heightmap, biomeIds, calculateBaseY(heightmap), 0, 0);
-        
-        // Extract height information from generated 16x16x16 terrain back to heightmap
-        extractHeightmapFromTerrain(generatedTerrain, heightmap, calculateBaseY(heightmap));
-        
-        return; // Successfully used ONNX generator
-      } catch (Exception e) {
-        System.err.println("Warning: ONNX terrain generation failed, falling back to stub: " + e.getMessage());
-        // Fall through to stub implementation
-      }
-    }
-    
-    // Fallback to enhanced stub implementation
-    runStubImplementation(heightmap, biomes);
-  }
-  
-  /**
-   * Fallback stub implementation for when ONNX is not available.
-   */
-  private void runStubImplementation(int[][] heightmap, String[] biomes) {
-    // Enhanced diffusion implementation with multiple passes and noise
-    int passes = LOD_DIFFUSION_PASSES[0]; // Use highest detail passes for standard run
-    float noiseIntensity = LOD_NOISE_INTENSITY[0];
-
-    // Apply multiple diffusion passes for better quality
-    for (int pass = 0; pass < passes; pass++) {
-      for (int x = 1; x < 15; x++) {
-        for (int z = 1; z < 15; z++) {
-          // Calculate weighted average of neighbors with tile-aware behavior
-          int neighbors = heightmap[x-1][z] + heightmap[x+1][z] +
-                         heightmap[x][z-1] + heightmap[x][z+1];
-          int average = neighbors / 4;
-
-          // Apply progressive diffusion with decreasing intensity per pass
-          float passStrength = 1.0f - (pass * 0.3f);
-          int variation = Math.round(getBiomeVariation(biomes, x, z) * noiseIntensity * passStrength);
-          
-          // Tile-aware processing: reduce diffusion at tile boundaries (every 16 blocks)
-          float tileEdgeFactor = getTileEdgeFactor(x, z);
-          int diffusedValue = Math.round(((heightmap[x][z] + (average * passStrength)) / (1.0f + passStrength)) * tileEdgeFactor);
-          
-          heightmap[x][z] = diffusedValue + variation;
-        }
+    // Legacy stub — applies simple heightmap smoothing. 
+    // Real terrain generation goes through terrain.OnnxTerrainGenerator.
+    int width = heightmap.length;
+    int height = heightmap[0].length;
+    for (int x = 1; x < width - 1; x++) {
+      for (int z = 1; z < height - 1; z++) {
+        int neighbors = heightmap[x-1][z] + heightmap[x+1][z] +
+                       heightmap[x][z-1] + heightmap[x][z+1];
+        int variation = getBiomeVariation(biomes, x, z);
+        heightmap[x][z] = (heightmap[x][z] + neighbors / 4) / 2 + variation;
       }
     }
   }
   
-  /**
-   * Convert biome strings to biome IDs for ONNX processing.
-   * Updated for new 16x16 model that accepts 16x16 biome input directly.
-   */
-  private int[][] convertBiomesToIds(String[] biomes) {
-    int[][] biomeIds = new int[16][16]; // 16x16 for new ONNX model
-    
-    for (int x = 0; x < 16; x++) {
-      for (int z = 0; z < 16; z++) {
-        // Direct mapping from 16x16 biome array
-        int biomeIndex = Math.min(x + z * 16, biomes.length - 1);
-        String biome = biomes[biomeIndex];
-        
-        // Convert biome string to ID using improved mapping
-        int biomeId = getBiomeId(biome);
-        biomeIds[x][z] = biomeId;
-      }
-    }
-    
-    return biomeIds;
-  }
-
-  /**
-   * Convert biome string to numeric ID using registry-style mapping.
-   * This should eventually use the actual Fabric biome registry.
-   */
-  private int getBiomeId(String biome) {
-    if (biome == null) return 1; // Default to plains
-    
-    // Use a more robust mapping based on biome registry names
-    switch (biome.toLowerCase()) {
-      case "minecraft:ocean":
-      case "minecraft:deep_ocean":
-      case "minecraft:cold_ocean":
-      case "minecraft:deep_cold_ocean":
-      case "minecraft:frozen_ocean":
-      case "minecraft:deep_frozen_ocean":
-      case "minecraft:lukewarm_ocean":
-      case "minecraft:deep_lukewarm_ocean":
-      case "minecraft:warm_ocean":
-        return 0; // Ocean biomes
-        
-      case "minecraft:plains":
-      case "minecraft:sunflower_plains":
-        return 1; // Plains
-        
-      case "minecraft:desert":
-      case "minecraft:desert_hills":
-        return 2; // Desert
-        
-      case "minecraft:mountains":
-      case "minecraft:mountain_edge":
-      case "minecraft:wooded_mountains":
-      case "minecraft:gravelly_mountains":
-      case "minecraft:modified_gravelly_mountains":
-        return 3; // Mountains
-        
-      case "minecraft:forest":
-      case "minecraft:wooded_hills":
-      case "minecraft:flower_forest":
-      case "minecraft:birch_forest":
-      case "minecraft:birch_forest_hills":
-      case "minecraft:tall_birch_forest":
-      case "minecraft:tall_birch_hills":
-      case "minecraft:dark_forest":
-      case "minecraft:dark_forest_hills":
-        return 6; // Forest variants
-        
-      case "minecraft:taiga":
-      case "minecraft:taiga_hills":
-      case "minecraft:snowy_taiga":
-      case "minecraft:snowy_taiga_hills":
-      case "minecraft:giant_tree_taiga":
-      case "minecraft:giant_tree_taiga_hills":
-      case "minecraft:giant_spruce_taiga":
-      case "minecraft:giant_spruce_taiga_hills":
-        return 5; // Taiga variants
-        
-      case "minecraft:swamp":
-      case "minecraft:swamp_hills":
-        return 7; // Swamp
-        
-      case "minecraft:river":
-      case "minecraft:frozen_river":
-        return 8; // River
-        
-      case "minecraft:nether_wastes":
-      case "minecraft:crimson_forest":
-      case "minecraft:warped_forest":
-      case "minecraft:soul_sand_valley":
-      case "minecraft:basalt_deltas":
-        return 9; // Nether biomes
-        
-      case "minecraft:the_end":
-      case "minecraft:end_highlands":
-      case "minecraft:end_midlands":
-      case "minecraft:small_end_islands":
-      case "minecraft:end_barrens":
-        return 10; // End biomes
-        
-      default:
-        // For unknown biomes, try legacy substring matching as fallback
-        if (biome.contains("desert")) return 2;
-        else if (biome.contains("forest")) return 6;
-        else if (biome.contains("mountain")) return 3;
-        else if (biome.contains("ocean")) return 0;
-        else if (biome.contains("taiga")) return 5;
-        else if (biome.contains("swamp")) return 7;
-        else return 1; // Default to plains
-    }
-  }
-  
-  /**
-   * Extract heightmap from 16x16x16 generated terrain by finding surface.
-   * Updated to handle variable baseY for different world heights.
-   */
-  private void extractHeightmapFromTerrain(int[][][] terrain, int[][] heightmap, int baseY) {
-    for (int x = 0; x < 16; x++) {
-      for (int z = 0; z < 16; z++) {
-        // Find the top non-air block
-        int surfaceY = baseY; // Default to baseY if no surface found
-        for (int y = 15; y >= 0; y--) {
-          if (terrain[x][y][z] != 0) { // Non-air block
-            surfaceY = baseY + y;
-            break;
-          }
-        }
-        heightmap[x][z] = surfaceY;
-      }
-    }
-  }
-
-  /**
-   * Calculate appropriate baseY for terrain generation based on heightmap.
-   * This accounts for different world heights and minY values.
-   */
-  private int calculateBaseY(int[][] heightmap) {
-    // Find the minimum height in the heightmap
-    int minHeight = Integer.MAX_VALUE;
-    for (int x = 0; x < heightmap.length; x++) {
-      for (int z = 0; z < heightmap[x].length; z++) {
-        minHeight = Math.min(minHeight, heightmap[x][z]);
-      }
-    }
-    
-    // Set baseY to be 16 blocks below the minimum height to allow for underground generation
-    // This ensures the 16-block generation window covers the surface
-    return Math.max(minHeight - 16, -64); // Don't go below world minimum
-  }
-
   /**
    * Get height variation based on biome type.
    * @param biomes Array of biome data

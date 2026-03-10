@@ -13,23 +13,26 @@
   },
   "license": "MIT",
   "icon": "assets/lodiffusion/icon.png",
+  "accessWidener": "lodiffusion.accesswidener",
   "environment": "*",
   "entrypoints": {
     "main": [
       "com.rhythmatician.lodiffusion.HelloTerrainMod"
+    ],
+    "client": [
+      "com.rhythmatician.lodiffusion.LodiffusionClient"
     ]
   },
   "mixins": [
     "lodiffusion.mixins.json"
   ],
   "depends": {
-    "fabricloader": ">=0.16.10",
-    "minecraft": "~1.21.4",
+    "fabricloader": ">=0.18.4",
+    "minecraft": "1.21.11",
     "java": ">=21",
-    "fabric-api": "*",
-    "distanthorizons": ">=2.3.0-b-dev"
+    "fabric-api": "*"
   },
   "suggests": {
-    "another-mod": "*"
+    "voxy": "*"
   }
 }
