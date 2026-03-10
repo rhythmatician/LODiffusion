@@ -1,10 +1,14 @@
 package com.rhythmatician.lodiffusion.voxy;
 
+import java.util.ArrayList;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 
 /**
  * Thread-safe priority queue system for the 4-stage ONNX inference pipeline.
@@ -13,10 +17,16 @@ import java.util.concurrent.atomic.AtomicInteger;
  * stage completes.  Each stage has its own {@link PriorityBlockingQueue}
  * ordered by distance from the player (closest first).
  *
+ * <h3>Continuous scheduling</h3>
+ * <p>The queue supports live re-prioritisation as the player moves:
+ * {@link #reprioritise(int, int)} re-weights all pending tasks, and
+ * {@link #cancelBeyondRadius(int, int, int)} marks distant tasks as
+ * cancelled so stage workers skip them cheaply.
+ *
  * <h3>Shutdown cascade</h3>
  * <p>Clean shutdown flows from upstream to downstream:
  * <ol>
- *   <li>Population finishes → {@link #signalPopulationDone()}</li>
+ *   <li>Service stop requested → {@link #signalPopulationDone()}</li>
  *   <li>All stage-0 workers drain their queue and exit →
  *       {@link #signalStageComplete(int) signalStageComplete(0)}</li>
  *   <li>Stage-1 worker drains its queue and exits →
@@ -54,7 +64,11 @@ public final class LodGenerationQueue {
      * stage have exited (for stage 0, this means every thread in the pool).
      */
     private final AtomicBoolean[] stageComplete = new AtomicBoolean[NUM_STAGES];
-
+    /**
+     * Lock protecting re-prioritisation.  Held during drain–re-add cycles
+     * to prevent stage workers from seeing a transiently empty queue.
+     */
+    private final ReentrantLock reprioritiseLock = new ReentrantLock();
     // ── Construction ────────────────────────────────────────────────────
 
     public LodGenerationQueue() {
@@ -174,9 +188,117 @@ public final class LodGenerationQueue {
         return stageComplete[stage - 1].get();
     }
 
+    // ── Live re-prioritisation ───────────────────────────────────────
+
+    /**
+     * Re-heap all stage queues using updated priorities based on the
+     * player's current section position.  Called by the scheduler when
+     * the player crosses a section boundary.
+     *
+     * <p>This drains each queue, updates each task's priority via
+     * {@link SectionTask#updatePriority(int, int)}, and re-adds them.
+     * The lock prevents stage workers from seeing a transiently empty
+     * queue mid-drain.
+     *
+     * @param centreX current player section X
+     * @param centreZ current player section Z
+     */
+    public void reprioritise(int centreX, int centreZ) {
+        reprioritiseLock.lock();
+        try {
+            for (int s = 0; s < NUM_STAGES; s++) {
+                List<SectionTask> tmp = new ArrayList<>();
+                stageQueues[s].drainTo(tmp);
+                for (SectionTask t : tmp) {
+                    if (!t.isCancelled()) {
+                        t.updatePriority(centreX, centreZ);
+                    }
+                }
+                stageQueues[s].addAll(tmp);
+            }
+        } finally {
+            reprioritiseLock.unlock();
+        }
+    }
+
+    /**
+     * Re-heap using direction-weighted priorities.  Sections ahead of the
+     * player's heading receive higher priority (lower number).
+     *
+     * @param centreX      current player section X
+     * @param centreZ      current player section Z
+     * @param headingX     normalised heading X component
+     * @param headingZ     normalised heading Z component
+     * @param coneStrength bias strength (0=pure Manhattan, 1=aggressive cone)
+     */
+    public void reprioritiseDirectional(int centreX, int centreZ,
+                                         float headingX, float headingZ,
+                                         float coneStrength) {
+        reprioritiseLock.lock();
+        try {
+            for (int s = 0; s < NUM_STAGES; s++) {
+                List<SectionTask> tmp = new ArrayList<>();
+                stageQueues[s].drainTo(tmp);
+                for (SectionTask t : tmp) {
+                    if (!t.isCancelled()) {
+                        t.updateDirectionalPriority(centreX, centreZ,
+                                headingX, headingZ, coneStrength);
+                    }
+                }
+                stageQueues[s].addAll(tmp);
+            }
+        } finally {
+            reprioritiseLock.unlock();
+        }
+    }
+
+    /**
+     * Cancel all PENDING tasks whose Manhattan distance from the given
+     * centre exceeds {@code maxRadius}.  Cancelled tasks remain in the
+     * queue but are skipped by workers in O(1) via
+     * {@link SectionTask#claimForProcessing()}.
+     *
+     * <p>Also removes cancelled and terminal tasks from the dedup map
+     * so they can be re-enqueued if the player returns.
+     *
+     * @return number of tasks cancelled in this call
+     */
+    public int cancelBeyondRadius(int centreX, int centreZ, int maxRadius) {
+        int cancelled = 0;
+        for (Map.Entry<Long, SectionTask> entry : allTasks.entrySet()) {
+            SectionTask t = entry.getValue();
+            int dist = Math.abs(t.sectionX - centreX) + Math.abs(t.sectionZ - centreZ);
+            if (dist > maxRadius && t.cancel()) {
+                cancelled++;
+            }
+        }
+        // Clean up terminal tasks from the dedup map
+        allTasks.entrySet().removeIf(e -> {
+            SectionTask.State s = e.getValue().state();
+            return s == SectionTask.State.CANCELLED
+                || s == SectionTask.State.READY
+                || s == SectionTask.State.FAILED;
+        });
+        return cancelled;
+    }
+
+    /**
+     * Remove a task from the dedup map so the same section can be
+     * re-enqueued later (e.g. after cancellation + player return).
+     */
+    public void removeFromDedup(long key) {
+        allTasks.remove(key);
+    }
+
+    /** @return total number of tracked tasks (all states). */
+    public int trackedTaskCount() {
+        return allTasks.size();
+    }
+
     // ── Accessors ───────────────────────────────────────────────────────
 
     public void setTotalEnqueued(int total) { this.totalEnqueued = total; }
+    public void addTotalEnqueued(int delta) { this.totalEnqueued += delta; }
     public int totalEnqueued()  { return totalEnqueued; }
     public int completedCount() { return completedCount.get(); }
     public int failedCount()    { return failedCount.get(); }

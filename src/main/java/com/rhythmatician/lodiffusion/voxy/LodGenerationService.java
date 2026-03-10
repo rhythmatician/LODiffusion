@@ -96,7 +96,30 @@ public final class LodGenerationService {
      * Generation radius (in sections).  All sections within this Manhattan
      * distance from the player are generated, closest first.
      */
-    private static final int GENERATION_RADIUS = PASS_RADIUS[COARSEST_LOD];
+    private static final int GENERATION_RADIUS =
+            Config.getInt("generationRadius", PASS_RADIUS[COARSEST_LOD]);
+
+    /**
+     * Extra margin (in sections) beyond GENERATION_RADIUS before tasks
+     * are cancelled.  Prevents thrashing when the player oscillates
+     * near the boundary.
+     */
+    private static final int CANCEL_MARGIN = Config.getInt("cancelMargin", 4);
+
+    /**
+     * How strongly to bias generation toward the player's heading
+     * direction.  0.0 = pure Manhattan (360° fill), 1.0 = aggressive
+     * forward cone.  See {@link ChunkScheduler} for details.
+     */
+    private static final float CONE_STRENGTH =
+            (float) Config.getDouble("coneStrength", 0.5);
+
+    /**
+     * Back-pressure cap: stop enqueuing when the queue exceeds this
+     * many tracked tasks.  Prevents runaway memory when the player
+     * moves faster than inference can process.
+     */
+    private static final int MAX_QUEUE_SIZE = Config.getInt("maxQueueSize", 5000);
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
@@ -173,6 +196,11 @@ public final class LodGenerationService {
         if (!running.get()) return;
 
         stopRequested.set(true);
+
+        // Signal population done so stage workers can drain and exit
+        LodGenerationQueue q = activeQueue;
+        if (q != null) q.signalPopulationDone();
+
         Thread t = workerThread;
         if (t != null) {
             t.interrupt();
@@ -183,7 +211,6 @@ public final class LodGenerationService {
         running.set(false);
         generatedSections.clear();
         columnContextCache.clear();
-        LodGenerationQueue q = activeQueue;
         if (q != null) q.clear();
         activeQueue = null;
         HelloTerrainMod.LOGGER.info("[LodGen] Service stopped");
@@ -293,31 +320,23 @@ public final class LodGenerationService {
     // ------------------------------------------------------------------ //
 
     /**
-     * Run the per-stage pipeline: populate a priority queue with all sections
-     * in the generation radius, then start stage workers that process sections
-     * through stages 0→1→2→3.
+     * Run the continuous pipeline: start stage workers, then enter the
+     * {@link ChunkScheduler} loop which feeds new sections as the player
+     * moves.  The scheduler runs until {@code stopRequested} is set.
      */
     private void runPipeline(World world,
                               ProgressiveModelRunner model,
                               VoxySectionWriter writer,
                               VoxyBlockMapper blockMapper) {
-        int centerX = playerSectionX;
-        int centerZ = playerSectionZ;
 
         LodGenerationQueue queue = new LodGenerationQueue();
         this.activeQueue = queue;
 
-        // Populate the queue with all sections in the generation radius
-        populateQueue(queue, world, centerX, centerZ);
-
-        if (stopRequested.get()) return;
-
-        int total = queue.totalEnqueued();
         HelloTerrainMod.LOGGER.info(
-                "[LodGen] Pipeline starting — {} sections, {} stage-0 workers + 3 stage workers, radius={}",
-                total, STAGE_0_PARALLELISM, GENERATION_RADIUS);
+                "[LodGen] Pipeline starting — {} stage-0 workers + 3 stage workers, radius={}",
+                STAGE_0_PARALLELISM, GENERATION_RADIUS);
 
-        // ── Create stage worker threads ─────────────────────────────────
+        // ── Create and start stage worker threads ───────────────────────
         int numWorkers = STAGE_0_PARALLELISM + 3;
         Thread[] workers = new Thread[numWorkers];
         AtomicInteger stage0Active = new AtomicInteger(STAGE_0_PARALLELISM);
@@ -351,13 +370,28 @@ public final class LodGenerationService {
             workers[workerIdx].setDaemon(true);
         }
 
-        // ── Start all workers ───────────────────────────────────────────
         for (Thread w : workers) w.start();
 
-        // ── Wait for completion ─────────────────────────────────────────
+        // ── Run the continuous chunk scheduler ──────────────────────────
+        // The scheduler feeds sections into the queue as the player moves.
+        // It blocks until stopRequested is set.
+        ChunkScheduler scheduler = new ChunkScheduler(
+                queue, stopRequested, generatedSections,
+                (w, sx, sz) -> getOrBuildColumnContext(w, sx, sz),
+                GENERATION_RADIUS, CANCEL_MARGIN, CONE_STRENGTH, MAX_QUEUE_SIZE);
+
+        scheduler.run(world,
+                () -> playerSectionX,
+                () -> playerSectionZ,
+                (sx, sz) -> tryGetLoadedChunk(world, sx, sz) != null);
+
+        // ── Scheduler exited (stopRequested) — signal pipeline shutdown ─
+        queue.signalPopulationDone();
+
+        // Wait for all stage workers to drain and exit
         for (Thread w : workers) {
             try {
-                w.join();
+                w.join(10_000);
             } catch (InterruptedException e) {
                 if (!stopRequested.get()) {
                     HelloTerrainMod.LOGGER.warn("[LodGen] Pipeline interrupted");
@@ -366,15 +400,18 @@ public final class LodGenerationService {
             }
         }
 
-        // Free cached column context (may be large with noise data)
+        // Evict column context cache entries beyond 2× radius
+        int evicted = ChunkScheduler.evictDistantSections(
+                generatedSections, playerSectionX, playerSectionZ,
+                GENERATION_RADIUS * 10);
         columnContextCache.clear();
 
         HelloTerrainMod.LOGGER.info(
-                "[LodGen] Pipeline complete — {} done, {} failed out of {} total " +
-                "(noise={}, real={}, synthetic={}, skippedAir={})",
-                queue.completedCount(), queue.failedCount(), total,
+                "[LodGen] Pipeline complete — {} done, {} failed " +
+                "(noise={}, real={}, synthetic={}, skippedAir={}, evicted={})",
+                queue.completedCount(), queue.failedCount(),
                 noiseAccessSections.get(), realDataSections.get(),
-                syntheticDataSections.get(), skippedAirSections.get());
+                syntheticDataSections.get(), skippedAirSections.get(), evicted);
     }
 
     /**
@@ -1128,108 +1165,140 @@ public final class LodGenerationService {
                                       Object voxyMapper,
                                       HeightmapFallbackGenerator.FallbackBlockIds blockIds,
                                       int[] biomeVoxyMappings) {
-        int centerX = playerSectionX;
-        int centerZ = playerSectionZ;
-
-        List<int[]> columns = buildSpiralSections(centerX, centerZ,
-                GENERATION_RADIUS, false);
-
         int totalSections = 0;
         int skippedAir = 0;
         int skippedExisting = 0;
         int columnsProcessed = 0;
         long startTime = System.currentTimeMillis();
 
-        for (int[] col : columns) {
-            if (stopRequested.get()) break;
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen] Fallback pipeline starting — continuous mode, radius={}",
+                GENERATION_RADIUS);
 
-            int sx = col[0], sz = col[1];
+        // ── Continuous loop: re-spiral from player position each pass ───
+        while (!stopRequested.get()) {
+            int centerX = playerSectionX;
+            int centerZ = playerSectionZ;
 
-            // NOTE: We intentionally do NOT skip columns loaded by vanilla.
-            // The per-section sectionExists() check below prevents overwriting
-            // any sections Voxy has already ingested from real chunks, and
-            // filling the rest avoids a visible gap between vanilla render
-            // distance and the LOD terrain.
+            List<int[]> columns = buildSpiralSections(centerX, centerZ,
+                    GENERATION_RADIUS, false);
 
-            // Get or build column context (cached across Y sections)
-            ColumnContext ctx = getOrBuildColumnContext(world, sx, sz);
+            boolean anyNew = false;
 
-            // Build per-column Voxy biome IDs
-            int[][] biomeVoxyIds = new int[16][16];
-            for (int lx = 0; lx < 16; lx++) {
-                for (int lz = 0; lz < 16; lz++) {
-                    int canonical = ctx.biomeIdx()[lx][lz];
-                    biomeVoxyIds[lx][lz] = (canonical >= 0 && canonical < biomeVoxyMappings.length)
-                            ? biomeVoxyMappings[canonical] : 0;
-                }
-            }
-
-            // Compute Y range from surface heightmap (same logic as populateQueue)
-            float minH = Float.MAX_VALUE, maxH = -Float.MAX_VALUE;
-            for (int lx = 0; lx < 16; lx++) {
-                for (int lz = 0; lz < 16; lz++) {
-                    float h = ctx.rawHm()[lx][lz];
-                    if (h < minH) minH = h;
-                    if (h > maxH) maxH = h;
-                }
-            }
-
-            // Extend range down to cover water if surface is below sea level
-            float effectiveMax = Math.max(maxH, HeightmapFallbackGenerator.SEA_LEVEL);
-
-            int minSectionY = Math.max(
-                    Math.floorDiv((int) Math.floor(minH), 16) - SURFACE_MARGIN,
-                    Y_BASE_SECTION);
-            int maxSectionY = Math.min(
-                    Math.floorDiv((int) Math.ceil(effectiveMax), 16) + SURFACE_MARGIN,
-                    Y_BASE_SECTION + Y_SECTIONS - 1);
-
-            // Process all Y sections in this column
-            for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+            for (int[] col : columns) {
                 if (stopRequested.get()) break;
 
-                long key = sectionKey(sx, sy, sz);
-                if (generatedSections.contains(key)) continue;
+                int sx = col[0], sz = col[1];
 
-                // Skip if Voxy already has real data for this section
-                if (VoxyCompat.sectionExists(worldEngine, sx, sy, sz)) {
-                    skippedExisting++;
+                // If player moved far, restart spiral from new position
+                int drift = Math.abs(playerSectionX - centerX)
+                          + Math.abs(playerSectionZ - centerZ);
+                if (drift > 2) break;
+
+                // NOTE: We intentionally do NOT skip columns loaded by vanilla.
+                // The per-section sectionExists() check below prevents overwriting
+                // any sections Voxy has already ingested from real chunks, and
+                // filling the rest avoids a visible gap between vanilla render
+                // distance and the LOD terrain.
+
+                // Get or build column context (cached across Y sections)
+                ColumnContext ctx = getOrBuildColumnContext(world, sx, sz);
+
+                // Build per-column Voxy biome IDs
+                int[][] biomeVoxyIds = new int[16][16];
+                for (int lx = 0; lx < 16; lx++) {
+                    for (int lz = 0; lz < 16; lz++) {
+                        int canonical = ctx.biomeIdx()[lx][lz];
+                        biomeVoxyIds[lx][lz] = (canonical >= 0 && canonical < biomeVoxyMappings.length)
+                                ? biomeVoxyMappings[canonical] : 0;
+                    }
+                }
+
+                // Compute Y range from surface heightmap
+                float minH = Float.MAX_VALUE, maxH = -Float.MAX_VALUE;
+                for (int lx = 0; lx < 16; lx++) {
+                    for (int lz = 0; lz < 16; lz++) {
+                        float h = ctx.rawHm()[lx][lz];
+                        if (h < minH) minH = h;
+                        if (h > maxH) maxH = h;
+                    }
+                }
+
+                // Extend range down to cover water if surface is below sea level
+                float effectiveMax = Math.max(maxH, HeightmapFallbackGenerator.SEA_LEVEL);
+
+                int minSectionY = Math.max(
+                        Math.floorDiv((int) Math.floor(minH), 16) - SURFACE_MARGIN,
+                        Y_BASE_SECTION);
+                int maxSectionY = Math.min(
+                        Math.floorDiv((int) Math.ceil(effectiveMax), 16) + SURFACE_MARGIN,
+                        Y_BASE_SECTION + Y_SECTIONS - 1);
+
+                // Process all Y sections in this column
+                for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+                    if (stopRequested.get()) break;
+
+                    long key = sectionKey(sx, sy, sz);
+                    if (generatedSections.contains(key)) continue;
+
+                    // Skip if Voxy already has real data for this section
+                    if (VoxyCompat.sectionExists(worldEngine, sx, sy, sz)) {
+                        skippedExisting++;
+                        generatedSections.add(key);
+                        continue;
+                    }
+
+                    Object section = HeightmapFallbackGenerator.generateSection(
+                            sx, sy, sz, ctx.rawHm(), ctx.oceanFloorHm(),
+                            ctx.biomeIdx(), biomeVoxyIds, blockIds, voxyMapper);
+
+                    if (section == null) {
+                        skippedAir++;
+                    } else {
+                        VoxyCompat.insertUpdate(worldEngine, section);
+                        totalSections++;
+                        anyNew = true;
+                    }
+
                     generatedSections.add(key);
-                    continue;
                 }
 
-                Object section = HeightmapFallbackGenerator.generateSection(
-                        sx, sy, sz, ctx.rawHm(), ctx.oceanFloorHm(),
-                        ctx.biomeIdx(), biomeVoxyIds, blockIds, voxyMapper);
+                columnsProcessed++;
 
-                if (section == null) {
-                    skippedAir++;
-                } else {
-                    VoxyCompat.insertUpdate(worldEngine, section);
-                    totalSections++;
+                // Progress logging
+                if (columnsProcessed % 100 == 0) {
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    double sectionsPerSec = totalSections > 0
+                            ? totalSections / (elapsed / 1000.0) : 0;
+                    HelloTerrainMod.LOGGER.info(
+                            "[LodGen] Fallback progress: {} columns, {} sections written, "
+                            + "{} air-skipped, {} existing-skipped ({} sec, {} sections/s)",
+                            columnsProcessed, totalSections,
+                            skippedAir, skippedExisting,
+                            elapsed / 1000, (int) sectionsPerSec);
                 }
 
-                generatedSections.add(key);
+                // Track skipped sections above/below surface
+                int generatedRange = maxSectionY - minSectionY + 1;
+                skippedAirSections.addAndGet(Y_SECTIONS - generatedRange);
             }
 
-            columnsProcessed++;
-
-            // Progress logging
-            if (columnsProcessed % 100 == 0 || columnsProcessed == columns.size()) {
-                long elapsed = System.currentTimeMillis() - startTime;
-                double sectionsPerSec = totalSections > 0
-                        ? totalSections / (elapsed / 1000.0) : 0;
-                HelloTerrainMod.LOGGER.info(
-                        "[LodGen] Fallback progress: {}/{} columns, {} sections written, "
-                        + "{} air-skipped, {} existing-skipped ({} sec, {} sections/s)",
-                        columnsProcessed, columns.size(), totalSections,
-                        skippedAir, skippedExisting,
-                        elapsed / 1000, (int) sectionsPerSec);
+            // If nothing new was generated (all in radius already done), idle
+            if (!anyNew && !stopRequested.get()) {
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    if (!stopRequested.get()) {
+                        HelloTerrainMod.LOGGER.warn("[LodGen] Fallback interrupted");
+                    }
+                    break;
+                }
             }
 
-            // Track skipped sections above/below surface
-            int generatedRange = maxSectionY - minSectionY + 1;
-            skippedAirSections.addAndGet(Y_SECTIONS - generatedRange);
+            // Periodically evict distant tracked sections to bound memory
+            ChunkScheduler.evictDistantSections(
+                    generatedSections, playerSectionX, playerSectionZ,
+                    GENERATION_RADIUS * 10);
         }
 
         // Free cached column context
@@ -1237,7 +1306,7 @@ public final class LodGenerationService {
 
         long elapsed = System.currentTimeMillis() - startTime;
         HelloTerrainMod.LOGGER.info(
-                "[LodGen] Fallback pipeline complete — {} sections in {}.{}s "
+                "[LodGen] Fallback pipeline stopped — {} sections in {}.{}s "
                 + "({} columns, {} air-skipped, {} existing-skipped)",
                 totalSections, elapsed / 1000, elapsed % 1000,
                 columnsProcessed, skippedAir, skippedExisting);

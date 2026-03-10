@@ -154,11 +154,11 @@ public final class Config {
     JsonObject o = merged();
     return o.has(key) ? o.get(key).getAsBoolean() : def;
   }
-  private static int getInt(String key, int def) {
+  public static int getInt(String key, int def) {
     JsonObject o = merged();
     return o.has(key) ? o.get(key).getAsInt() : def;
   }
-  private static double getDouble(String key, double def) {
+  public static double getDouble(String key, double def) {
     JsonObject o = merged();
     return o.has(key) ? o.get(key).getAsDouble() : def;
   }

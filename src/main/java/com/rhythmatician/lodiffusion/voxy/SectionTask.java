@@ -30,7 +30,9 @@ public final class SectionTask implements Comparable<SectionTask> {
         /** All 4 stages complete, result written to Voxy. */
         READY,
         /** Inference or write failed. */
-        FAILED
+        FAILED,
+        /** Cancelled because player moved away — skipped by workers. */
+        CANCELLED
     }
 
     // ── Identity (immutable after construction) ─────────────────────────
@@ -45,8 +47,11 @@ public final class SectionTask implements Comparable<SectionTask> {
     /** Packed key for deduplication: same encoding as LodGenerationService.sectionKey(). */
     public final long key;
 
-    /** Manhattan distance from player — lower = higher priority. */
-    public final int priority;
+    /**
+     * Distance-based priority — lower = higher urgency.  Volatile so it
+     * can be updated by the scheduler when the player moves.
+     */
+    volatile int priority;
 
     // ── Mutable pipeline state ──────────────────────────────────────────
 
@@ -129,6 +134,59 @@ public final class SectionTask implements Comparable<SectionTask> {
         this.failureMessage = message;
         this.parentFlat = null;
         state.set(State.FAILED);
+    }
+
+    /**
+     * Cancel this task if it is still PENDING.  Cancelled tasks are
+     * silently skipped by stage workers (claimForProcessing returns false).
+     *
+     * @return true if the task was in PENDING state and is now CANCELLED
+     */
+    public boolean cancel() {
+        return state.compareAndSet(State.PENDING, State.CANCELLED);
+    }
+
+    /** @return true if this task has been cancelled. */
+    public boolean isCancelled() {
+        return state.get() == State.CANCELLED;
+    }
+
+    /**
+     * Update this task's priority based on current player position.
+     * Used by the scheduler when the player moves to re-weight the
+     * priority queues.
+     *
+     * @param centreX current player section X
+     * @param centreZ current player section Z
+     */
+    public void updatePriority(int centreX, int centreZ) {
+        this.priority = Math.abs(sectionX - centreX) + Math.abs(sectionZ - centreZ);
+    }
+
+    /**
+     * Update this task's priority using a direction-weighted distance.
+     * Sections ahead of the player's heading get a bonus (lower priority
+     * number = higher urgency), sections behind get a penalty.
+     *
+     * @param centreX  current player section X
+     * @param centreZ  current player section Z
+     * @param headingX normalised heading X component
+     * @param headingZ normalised heading Z component
+     * @param coneStrength how much to bias toward heading (0=pure Manhattan, 1=aggressive)
+     */
+    public void updateDirectionalPriority(int centreX, int centreZ,
+                                           float headingX, float headingZ,
+                                           float coneStrength) {
+        int dx = sectionX - centreX;
+        int dz = sectionZ - centreZ;
+        int manhattan = Math.abs(dx) + Math.abs(dz);
+
+        // Dot product with heading: positive = ahead, negative = behind
+        float dot = dx * headingX + dz * headingZ;
+        // Scale penalty: sections behind get up to coneStrength * manhattan added
+        float directionalPenalty = -dot * coneStrength;
+
+        this.priority = manhattan + Math.round(directionalPenalty);
     }
 
     // ── Comparable (priority queue ordering) ────────────────────────────
