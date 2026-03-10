@@ -200,4 +200,93 @@ public class DiffusionChunkGeneratorTest {
         assertNotNull(strategyInfo, "LOD strategy info should not be null");
         assertFalse(strategyInfo.isEmpty(), "LOD strategy info should not be empty");
     }
+
+    // ── Sparse octree tests ──────────────────────────────────────────────────
+
+    @Test
+    void testBuildSparseOctree_ReturnsPatch() {
+        int patchSize = com.rhythmatician.lodiffusion.training.TerrainPatch.PATCH_SIZE;
+        int[][] patch8 = new int[patchSize][patchSize];
+        String[] biomes8 = new String[patchSize * patchSize];
+        for (int i = 0; i < patchSize * patchSize; i++) biomes8[i] = "plains";
+        for (int x = 0; x < patchSize; x++)
+            for (int z = 0; z < patchSize; z++)
+                patch8[x][z] = 64;
+
+        com.rhythmatician.lodiffusion.training.TerrainPatch result =
+                generator.buildSparseOctree(0, 0, patch8, biomes8, 0);
+
+        assertNotNull(result, "buildSparseOctree should return a TerrainPatch");
+    }
+
+    @Test
+    void testBuildSparseOctree_HasOccupiedVoxels() {
+        int patchSize = com.rhythmatician.lodiffusion.training.TerrainPatch.PATCH_SIZE;
+        int[][] patch8 = new int[patchSize][patchSize];
+        String[] biomes8 = new String[patchSize * patchSize];
+        for (int i = 0; i < patchSize * patchSize; i++) biomes8[i] = "forest";
+        for (int x = 0; x < patchSize; x++)
+            for (int z = 0; z < patchSize; z++)
+                patch8[x][z] = 70 + x + z;
+
+        com.rhythmatician.lodiffusion.training.TerrainPatch result =
+                generator.buildSparseOctree(1, 2, patch8, biomes8, 1);
+
+        assertFalse(result.getOccupiedVoxels().isEmpty(),
+                "Sparse octree patch should have occupied voxels for terrain");
+        assertNotNull(result.getOctreeStructure(),
+                "Octree structure should be present");
+    }
+
+    @Test
+    void testBuildSparseOctree_WrongSizeHeightmapThrows() {
+        int[][] wrongSize = new int[16][16]; // must be 8×8
+        String[] biomes8 = new String[64];
+        for (int i = 0; i < 64; i++) biomes8[i] = "plains";
+
+        assertThrows(IllegalArgumentException.class,
+                () -> generator.buildSparseOctree(0, 0, wrongSize, biomes8, 0),
+                "Should reject a non-8×8 heightmap");
+    }
+
+    @Test
+    void testBuildSparseOctree_WrongBiomesLengthThrows() {
+        int patchSize = com.rhythmatician.lodiffusion.training.TerrainPatch.PATCH_SIZE;
+        int[][] patch8 = new int[patchSize][patchSize];
+        String[] wrongBiomes = new String[10]; // must be 64
+        for (int i = 0; i < 10; i++) wrongBiomes[i] = "plains";
+
+        assertThrows(IllegalArgumentException.class,
+                () -> generator.buildSparseOctree(0, 0, patch8, wrongBiomes, 0),
+                "Should reject biomes array with wrong length");
+    }
+
+    @Test
+    void testBuildSparseOctree_MultipleLodsSucceed() {
+        int patchSize = com.rhythmatician.lodiffusion.training.TerrainPatch.PATCH_SIZE;
+        // Use a varied heightmap so smoothing has a visible effect
+        String[] biomes8 = new String[patchSize * patchSize];
+        for (int i = 0; i < biomes8.length; i++) biomes8[i] = "plains";
+
+        com.rhythmatician.lodiffusion.training.TerrainPatch p0 =
+                generator.buildSparseOctree(0, 0, buildVariedPatch(patchSize), biomes8, 0);
+        com.rhythmatician.lodiffusion.training.TerrainPatch p4 =
+                generator.buildSparseOctree(0, 0, buildVariedPatch(patchSize), biomes8, 4);
+
+        assertNotNull(p0, "LOD 0 result should not be null");
+        assertNotNull(p4, "LOD 4 result should not be null");
+        assertTrue(p0.getOccupiedVoxelCount() > 0, "LOD 0 patch should have occupied voxels");
+        assertTrue(p4.getOccupiedVoxelCount() > 0, "LOD 4 patch should have occupied voxels");
+        int maxVoxels = patchSize * com.rhythmatician.lodiffusion.training.TerrainPatch.OCTREE_SIZE * patchSize;
+        assertTrue(p0.getOccupiedVoxelCount() <= maxVoxels, "LOD 0 count must not exceed 8×8×8");
+        assertTrue(p4.getOccupiedVoxelCount() <= maxVoxels, "LOD 4 count must not exceed 8×8×8");
+    }
+
+    private static int[][] buildVariedPatch(int size) {
+        int[][] patch = new int[size][size];
+        for (int x = 0; x < size; x++)
+            for (int z = 0; z < size; z++)
+                patch[x][z] = 64 + x * 4;
+        return patch;
+    }
 }

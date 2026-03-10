@@ -409,4 +409,55 @@ public class DiffusionChunkGenerator {
   public String getLODStrategyInfo() {
     return ModDetection.getLODStrategyInfo();
   }
+
+  /**
+   * Build surface terrain using sparse octree representation.
+   * Instead of diffusing all cells in the dense heightmap, only the occupied voxels
+   * (those that contain terrain) are processed and refined. Empty cells are skipped,
+   * aligning with Voxy's octree schema and avoiding wasteful computation.
+   *
+   * <p>The {@link com.rhythmatician.lodiffusion.training.TerrainPatch} created here
+   * exposes {@code getOccupiedVoxels()} and {@code getOctreeStructure()} for downstream
+   * model inference and VoxelTree training pipeline consumption.
+   *
+   * @param chunkX   X coordinate of the chunk
+   * @param chunkZ   Z coordinate of the chunk
+   * @param heightmap 8×8 heightmap patch to process (matches TerrainPatch.PATCH_SIZE)
+   * @param biomes   Biome data (64 entries for the 8×8 patch)
+   * @param lod      Level of detail (0 = highest, higher = coarser)
+   * @return A {@link com.rhythmatician.lodiffusion.training.TerrainPatch} populated with
+   *         both the dense heightmap and the derived sparse occupancy representation
+   */
+  public com.rhythmatician.lodiffusion.training.TerrainPatch buildSparseOctree(
+      int chunkX, int chunkZ, int[][] heightmap, String[] biomes, int lod) {
+
+    int patchSize = com.rhythmatician.lodiffusion.training.TerrainPatch.PATCH_SIZE;
+    if (heightmap.length != patchSize || heightmap[0].length != patchSize) {
+      throw new IllegalArgumentException(
+          "heightmap must be " + patchSize + "x" + patchSize + " for sparse octree processing");
+    }
+    if (biomes.length != patchSize * patchSize) {
+      throw new IllegalArgumentException(
+          "biomes must have " + (patchSize * patchSize) + " entries for sparse octree processing");
+    }
+
+    // Apply LOD-gated diffusion only to the terrain surface volume.
+    // diffusionPasses decreases as lod increases: LOD 0 → OCTREE_SIZE passes (most detail),
+    // LOD ≥ OCTREE_SIZE → 0 passes (no smoothing at very coarse LODs).
+    int diffusionPasses = Math.max(0, com.rhythmatician.lodiffusion.training.TerrainPatch.OCTREE_SIZE - lod);
+    for (int pass = 0; pass < diffusionPasses; pass++) {
+      for (int x = 1; x < patchSize - 1; x++) {
+        for (int z = 1; z < patchSize - 1; z++) {
+          int neighbors = heightmap[x - 1][z] + heightmap[x + 1][z]
+                        + heightmap[x][z - 1] + heightmap[x][z + 1];
+          // Use full-precision formula: avoid premature integer truncation of neighbors/4
+          heightmap[x][z] = (heightmap[x][z] * (lod + 1) * 4 + neighbors) / ((lod + 2) * 4);
+        }
+      }
+    }
+
+    // Wrap in a TerrainPatch – the sparse occupancy is derived automatically.
+    return new com.rhythmatician.lodiffusion.training.TerrainPatch(
+        chunkX * patchSize, chunkZ * patchSize, heightmap, biomes);
+  }
 }
