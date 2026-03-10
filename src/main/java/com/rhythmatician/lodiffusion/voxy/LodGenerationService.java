@@ -1145,8 +1145,11 @@ public final class LodGenerationService {
 
             int sx = col[0], sz = col[1];
 
-            // Skip columns where vanilla has loaded real chunks
-            if (tryGetLoadedChunk(world, sx, sz) != null) continue;
+            // NOTE: We intentionally do NOT skip columns loaded by vanilla.
+            // The per-section sectionExists() check below prevents overwriting
+            // any sections Voxy has already ingested from real chunks, and
+            // filling the rest avoids a visible gap between vanilla render
+            // distance and the LOD terrain.
 
             // Get or build column context (cached across Y sections)
             ColumnContext ctx = getOrBuildColumnContext(world, sx, sz);
