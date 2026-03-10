@@ -97,7 +97,7 @@ public final class LodGenerationService {
      * distance from the player are generated, closest first.
      */
     private static final int GENERATION_RADIUS =
-            Config.getInt("generationRadius", PASS_RADIUS[COARSEST_LOD]);
+            Config.getInt("generationRadius", PASS_RADIUS[COARSEST_LOD] * 2);
 
     /**
      * Extra margin (in sections) beyond GENERATION_RADIUS before tasks

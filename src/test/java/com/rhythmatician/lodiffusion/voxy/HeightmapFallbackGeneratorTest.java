@@ -316,6 +316,9 @@ class HeightmapFallbackGeneratorTest {
     @DisplayName("SNOW: underwater column — no snow layer, water above instead")
     void snowUnderwaterNoSnowLayer() {
         // ground=55, waterSurface=62 (snowy river: frozen top, underwater body)
+        // worldY=54 (top solid) → dirt (not snowy grass, because underwater)
+        assertEquals(IDS.dirt(),
+                HeightmapFallbackGenerator.pickBlockId(54, 55, 62, SNOW, IDS));
         // worldY=55 (at ground) → water (not snow layer, because underwater)
         assertEquals(IDS.water(),
                 HeightmapFallbackGenerator.pickBlockId(55, 55, 62, SNOW, IDS));
@@ -358,7 +361,7 @@ class HeightmapFallbackGeneratorTest {
     @Test
     @DisplayName("River (ground=58, water=62): solid below ground, water in column, air above")
     void riverWaterColumn() {
-        assertEquals(IDS.grassBlock(),
+        assertEquals(IDS.dirt(),
                 HeightmapFallbackGenerator.pickBlockId(57, 58, 62, GRASS, IDS));
         assertEquals(IDS.water(),
                 HeightmapFallbackGenerator.pickBlockId(58, 58, 62, GRASS, IDS));

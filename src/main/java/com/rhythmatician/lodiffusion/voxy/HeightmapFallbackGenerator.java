@@ -344,16 +344,19 @@ public final class HeightmapFallbackGenerator {
             }
             return blockIds.water();
         } else if (worldY >= groundBlockY - 3) {
-            // Top 3 solid blocks — material depends on surface type
+            // Top 3 solid blocks — material depends on surface type.
+            // Soft surface materials (grass, podzol, mycelium, snowy grass) only appear
+            // on dry columns; underwater tops are always dirt.
             int depth = groundBlockY - 1 - worldY; // 0=topmost, 1=second, 2=third
+            boolean underwater = groundBlockY < waterSurfaceBlockY;
             return switch (surfaceType) {
                 case SAND     -> blockIds.sand();
                 case RED_SAND -> blockIds.redSand();
                 case GRAVEL   -> blockIds.gravel();
-                case SNOW     -> (depth == 0) ? blockIds.snowyGrassBlock() : blockIds.dirt();
-                case PODZOL   -> (depth == 0) ? blockIds.podzol()    : blockIds.dirt();
-                case MYCELIUM -> (depth == 0) ? blockIds.mycelium()  : blockIds.dirt();
-                default       -> (depth == 0) ? blockIds.grassBlock() : blockIds.dirt();
+                case SNOW     -> (depth == 0 && !underwater) ? blockIds.snowyGrassBlock() : blockIds.dirt();
+                case PODZOL   -> (depth == 0 && !underwater) ? blockIds.podzol()    : blockIds.dirt();
+                case MYCELIUM -> (depth == 0 && !underwater) ? blockIds.mycelium()  : blockIds.dirt();
+                default       -> (depth == 0 && !underwater) ? blockIds.grassBlock() : blockIds.dirt();
             };
         } else if (worldY < 0) {
             return blockIds.deepslate();
