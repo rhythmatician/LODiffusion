@@ -231,5 +231,140 @@ class TerrainPatchTest {
     @Test
     void testPatchConstants() {
         assertEquals(8, TerrainPatch.PATCH_SIZE, "PATCH_SIZE constant should be 8");
+        assertEquals(8, TerrainPatch.OCTREE_SIZE, "OCTREE_SIZE constant should be 8");
+    }
+
+    // ── Sparse / octree tests ────────────────────────────────────────────────
+
+    @Test
+    void testGetOccupiedVoxels_NotNull() {
+        TerrainPatch patch = new TerrainPatch(0, 0, testHeightmap, testBiomes);
+        assertNotNull(patch.getOccupiedVoxels(), "occupiedVoxels should never be null");
+    }
+
+    @Test
+    void testGetOccupiedVoxels_NotEmpty() {
+        TerrainPatch patch = new TerrainPatch(0, 0, testHeightmap, testBiomes);
+        assertFalse(patch.getOccupiedVoxels().isEmpty(),
+                "Patch with terrain should have at least one occupied voxel");
+    }
+
+    @Test
+    void testGetOccupiedVoxels_IsUnmodifiable() {
+        TerrainPatch patch = new TerrainPatch(0, 0, testHeightmap, testBiomes);
+        java.util.Set<Voxel> occupied = patch.getOccupiedVoxels();
+        assertThrows(UnsupportedOperationException.class,
+                () -> occupied.add(new Voxel(0, 0, 0)),
+                "occupiedVoxels set should be unmodifiable");
+    }
+
+    @Test
+    void testGetOccupiedVoxelCount_MatchesSetSize() {
+        TerrainPatch patch = new TerrainPatch(0, 0, testHeightmap, testBiomes);
+        assertEquals(patch.getOccupiedVoxels().size(), patch.getOccupiedVoxelCount(),
+                "getOccupiedVoxelCount() should match occupiedVoxels.size()");
+    }
+
+    @Test
+    void testGetOccupiedVoxelCount_SparsityBelowMaximum() {
+        TerrainPatch patch = new TerrainPatch(0, 0, testHeightmap, testBiomes);
+        int maxVoxels = TerrainPatch.PATCH_SIZE * TerrainPatch.OCTREE_SIZE * TerrainPatch.PATCH_SIZE;
+        assertTrue(patch.getOccupiedVoxelCount() <= maxVoxels,
+                "Occupied voxel count should not exceed the full 8×8×8 grid");
+    }
+
+    @Test
+    void testGetOctreeStructure_Dimensions() {
+        TerrainPatch patch = new TerrainPatch(0, 0, testHeightmap, testBiomes);
+        int[][][] octree = patch.getOctreeStructure();
+
+        assertNotNull(octree, "octreeStructure should not be null");
+        assertEquals(TerrainPatch.PATCH_SIZE, octree.length, "Octree X dimension should be PATCH_SIZE");
+        assertEquals(TerrainPatch.OCTREE_SIZE, octree[0].length, "Octree Y dimension should be OCTREE_SIZE");
+        assertEquals(TerrainPatch.PATCH_SIZE, octree[0][0].length, "Octree Z dimension should be PATCH_SIZE");
+    }
+
+    @Test
+    void testGetOctreeStructure_ValuesAreBinary() {
+        TerrainPatch patch = new TerrainPatch(0, 0, testHeightmap, testBiomes);
+        int[][][] octree = patch.getOctreeStructure();
+        for (int x = 0; x < TerrainPatch.PATCH_SIZE; x++) {
+            for (int y = 0; y < TerrainPatch.OCTREE_SIZE; y++) {
+                for (int z = 0; z < TerrainPatch.PATCH_SIZE; z++) {
+                    int val = octree[x][y][z];
+                    assertTrue(val == 0 || val == 1,
+                            "Octree cell [" + x + "][" + y + "][" + z + "] must be 0 or 1, got " + val);
+                }
+            }
+        }
+    }
+
+    @Test
+    void testGetOctreeStructure_LowestLevelOccupied() {
+        // For any heightmap, the lowest Y level should always be occupied for all columns.
+        TerrainPatch patch = new TerrainPatch(0, 0, testHeightmap, testBiomes);
+        int[][][] octree = patch.getOctreeStructure();
+        for (int x = 0; x < TerrainPatch.PATCH_SIZE; x++) {
+            for (int z = 0; z < TerrainPatch.PATCH_SIZE; z++) {
+                assertEquals(1, octree[x][0][z],
+                        "Lowest octree Y level must be occupied for column (" + x + "," + z + ")");
+            }
+        }
+    }
+
+    @Test
+    void testGetOctreeStructure_FlatHeightmap_LowestLevelOccupied() {
+        // Edge case: all heights identical → yRange = 0, only level 0 should be occupied.
+        int[][] flat = new int[TerrainPatch.PATCH_SIZE][TerrainPatch.PATCH_SIZE];
+        String[] flatBiomes = new String[TerrainPatch.PATCH_SIZE * TerrainPatch.PATCH_SIZE];
+        for (int i = 0; i < flatBiomes.length; i++) flatBiomes[i] = "plains";
+        for (int x = 0; x < TerrainPatch.PATCH_SIZE; x++)
+            for (int z = 0; z < TerrainPatch.PATCH_SIZE; z++)
+                flat[x][z] = 64; // uniform height
+
+        TerrainPatch patch = new TerrainPatch(0, 0, flat, flatBiomes);
+        int[][][] octree = patch.getOctreeStructure();
+
+        for (int x = 0; x < TerrainPatch.PATCH_SIZE; x++) {
+            for (int z = 0; z < TerrainPatch.PATCH_SIZE; z++) {
+                assertEquals(1, octree[x][0][z],
+                        "Level 0 must be occupied even for flat heightmap at (" + x + "," + z + ")");
+            }
+        }
+        // Also verify occupied voxels are non-empty for flat terrain
+        assertFalse(patch.getOccupiedVoxels().isEmpty(),
+                "Flat terrain must still have occupied voxels");
+    }
+
+    @Test
+    void testGetOctreeStructure_IsDefensiveCopy() {
+        TerrainPatch patch = new TerrainPatch(0, 0, testHeightmap, testBiomes);
+        int[][][] first = patch.getOctreeStructure();
+        first[0][0][0] = 99; // mutate the copy
+        int[][][] second = patch.getOctreeStructure();
+        assertTrue(second[0][0][0] == 0 || second[0][0][0] == 1,
+                "Modifying the returned octree copy should not affect internal state");
+    }
+
+    @Test
+    void testOccupiedVoxelsMatchOctreeStructure() {
+        TerrainPatch patch = new TerrainPatch(0, 0, testHeightmap, testBiomes);
+        int[][][] octree = patch.getOctreeStructure();
+        java.util.Set<Voxel> occupied = patch.getOccupiedVoxels();
+
+        int expectedCount = 0;
+        for (int x = 0; x < TerrainPatch.PATCH_SIZE; x++) {
+            for (int y = 0; y < TerrainPatch.OCTREE_SIZE; y++) {
+                for (int z = 0; z < TerrainPatch.PATCH_SIZE; z++) {
+                    if (octree[x][y][z] == 1) {
+                        expectedCount++;
+                        assertTrue(occupied.contains(new Voxel(x, y, z)),
+                                "Occupied voxel (" + x + "," + y + "," + z + ") should be in the set");
+                    }
+                }
+            }
+        }
+        assertEquals(expectedCount, occupied.size(),
+                "Occupied voxels set size should match octree occupied cell count");
     }
 }

@@ -3,15 +3,31 @@ package com.rhythmatician.lodiffusion.training;
 /**
  * Represents a single 8x8 terrain patch for machine learning training.
  * Contains heightmap data, biome information, and metadata about the patch location.
+ *
+ * <p>In addition to the dense heightmap, each patch also exposes a sparse occupancy
+ * representation aligned with Voxy's octree schema:
+ * <ul>
+ *   <li>{@link #getOccupiedVoxels()} – only the voxels that contain terrain</li>
+ *   <li>{@link #getOctreeStructure()} – an 8×8×8 binary occupancy grid</li>
+ * </ul>
+ * This avoids predicting/storing empty cells for LOD refinement, matching the
+ * contract expected by the VoxelTree training pipeline.
  */
 public class TerrainPatch {
     
     public static final int PATCH_SIZE = 8;
+    /** Vertical quantisation levels for the octree occupancy grid (matches PATCH_SIZE). */
+    public static final int OCTREE_SIZE = 8;
     
     private final int worldX;
     private final int worldZ;
     private final int[][] heightmap;
     private final String[] biomes;
+
+    /** Sparse set of occupied voxels derived from the heightmap. */
+    private final java.util.Set<Voxel> occupiedVoxels;
+    /** 8×8×8 binary occupancy grid [x][y][z], 1 = terrain, 0 = air. */
+    private final int[][][] octreeStructure;
     
     /**
      * Constructor for TerrainPatch.
@@ -29,6 +45,9 @@ public class TerrainPatch {
         this.worldZ = worldZ;
         this.heightmap = copyHeightmap(heightmap);
         this.biomes = biomes.clone();
+
+        this.octreeStructure = buildOctreeStructure(this.heightmap);
+        this.occupiedVoxels = buildOccupiedVoxels(this.octreeStructure);
     }
     
     /**
@@ -66,6 +85,52 @@ public class TerrainPatch {
             System.arraycopy(original[x], 0, copy[x], 0, PATCH_SIZE);
         }
         return copy;
+    }
+
+    /**
+     * Build an 8×8×8 binary occupancy grid from the heightmap.
+     * The Y axis is quantised into OCTREE_SIZE levels spanning [minHeight, maxHeight].
+     * Level {@code oy} is occupied for column (x, z) when its lower bound is ≤ heightmap[x][z].
+     */
+    private static int[][][] buildOctreeStructure(int[][] heightmap) {
+        int yMin = Integer.MAX_VALUE;
+        int yMax = Integer.MIN_VALUE;
+        for (int x = 0; x < PATCH_SIZE; x++) {
+            for (int z = 0; z < PATCH_SIZE; z++) {
+                yMin = Math.min(yMin, heightmap[x][z]);
+                yMax = Math.max(yMax, heightmap[x][z]);
+            }
+        }
+        int yRange = Math.max(1, yMax - yMin);
+
+        int[][][] structure = new int[PATCH_SIZE][OCTREE_SIZE][PATCH_SIZE];
+        for (int x = 0; x < PATCH_SIZE; x++) {
+            for (int z = 0; z < PATCH_SIZE; z++) {
+                int height = heightmap[x][z];
+                for (int oy = 0; oy < OCTREE_SIZE; oy++) {
+                    int levelBottom = yMin + (oy * yRange) / OCTREE_SIZE;
+                    structure[x][oy][z] = (levelBottom <= height) ? 1 : 0;
+                }
+            }
+        }
+        return structure;
+    }
+
+    /**
+     * Build the sparse set of occupied voxels from the pre-computed occupancy grid.
+     */
+    private static java.util.Set<Voxel> buildOccupiedVoxels(int[][][] structure) {
+        java.util.Set<Voxel> occupied = new java.util.LinkedHashSet<>();
+        for (int x = 0; x < PATCH_SIZE; x++) {
+            for (int oy = 0; oy < OCTREE_SIZE; oy++) {
+                for (int z = 0; z < PATCH_SIZE; z++) {
+                    if (structure[x][oy][z] != 0) {
+                        occupied.add(new Voxel(x, oy, z));
+                    }
+                }
+            }
+        }
+        return java.util.Collections.unmodifiableSet(occupied);
     }
     
     /**
@@ -218,6 +283,40 @@ public class TerrainPatch {
         }
         
         return flattened;
+    }
+
+    /**
+     * Return the sparse set of occupied voxels for this patch.
+     * Only voxels where terrain exists are included, aligned with Voxy's octree schema.
+     * @return Unmodifiable set of occupied {@link Voxel} instances
+     */
+    public java.util.Set<Voxel> getOccupiedVoxels() {
+        return occupiedVoxels;
+    }
+
+    /**
+     * Return the 8×8×8 binary occupancy grid for this patch.
+     * Axis order is [x][y][z]; a value of 1 means terrain, 0 means air.
+     * The Y axis represents OCTREE_SIZE quantised levels spanning the heightmap range.
+     * @return Copy of the octree occupancy grid
+     */
+    public int[][][] getOctreeStructure() {
+        int[][][] copy = new int[PATCH_SIZE][OCTREE_SIZE][PATCH_SIZE];
+        for (int x = 0; x < PATCH_SIZE; x++) {
+            for (int oy = 0; oy < OCTREE_SIZE; oy++) {
+                System.arraycopy(octreeStructure[x][oy], 0, copy[x][oy], 0, PATCH_SIZE);
+            }
+        }
+        return copy;
+    }
+
+    /**
+     * Return the number of occupied voxels (non-empty octree nodes).
+     * Useful for measuring sparsity: lower values mean less terrain to predict/store.
+     * @return Count of occupied voxels
+     */
+    public int getOccupiedVoxelCount() {
+        return occupiedVoxels.size();
     }
     
     /**
