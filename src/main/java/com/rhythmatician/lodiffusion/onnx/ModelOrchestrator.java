@@ -49,6 +49,7 @@ public final class ModelOrchestrator implements AutoCloseable {
     @Override
     public void close() {
         if (pipeline != null) pipeline.close();
-        if (manager != null) manager.close();
+        // NDManager is owned by the caller; do not close it here to avoid double-close.
+        // TerrainPipeline (or whoever created the manager) is responsible for closing it.
     }
 }

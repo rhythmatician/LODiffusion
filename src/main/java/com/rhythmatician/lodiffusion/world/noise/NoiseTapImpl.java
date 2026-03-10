@@ -4,6 +4,7 @@ import java.util.EnumMap;
 import java.util.EnumSet;
 import java.util.Map;
 
+import com.rhythmatician.lodiffusion.voxy.BiomeMapping;
 import it.unimi.dsi.fastutil.objects.Object2ObjectArrayMap;
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.HeightLimitView;
@@ -49,7 +50,17 @@ final class NoiseTapImpl implements NoiseTap {
     @Override
     public Cache captureAll(EnumSet<RouterField> whichRouter,
                             EnumSet<Heightmap.Type> whichHMs) {
-        // 1) Router fields @ 16×16×16 (block-level sampling)
+        // Default to the first section above minY (section 0).
+        // Callers can use captureAll(whichRouter, whichHMs, sectionAnchorY)
+        // to capture a specific 16-block vertical range.
+        return captureAll(whichRouter, whichHMs, minY);
+    }
+
+    @Override
+    public Cache captureAll(EnumSet<RouterField> whichRouter,
+                            EnumSet<Heightmap.Type> whichHMs,
+                            int sectionAnchorY) {
+        // 1) Router fields @ 16×16×16 (block-level sampling at the requested Y section)
         Map<RouterField, float[][][]> routerMaps = new EnumMap<>(RouterField.class);
         for (RouterField f : whichRouter) {
             DensityFunction df = switch (f) {
@@ -76,7 +87,7 @@ final class NoiseTapImpl implements NoiseTap {
                 case VEIN_RIDGED -> router.veinRidged();
                 case VEIN_GAP -> router.veinGap();
             };
-            routerMaps.put(f, sampleDensityFunction16(df));
+            routerMaps.put(f, sampleDensityFunction16(df, sectionAnchorY));
         }
 
         // 2) Biomes @ 4×4×4 lattice (native storage granularity since 19w36a)
@@ -99,17 +110,21 @@ final class NoiseTapImpl implements NoiseTap {
 
     /**
      * Sample a DensityFunction at 16×16×16 block resolution for this chunk.
-     * Uses DensityFunction.sample(UnblendedNoisePos) - the core API for noise sampling.
+     *
+     * @param df            the DensityFunction to sample
+     * @param sectionAnchorY the Y coordinate of the bottom block in the 16-block
+     *                       section to sample (e.g. {@code minY} for the bottom
+     *                       section, or {@code 64} to start at sea level).
+     *                       Use Y values that are multiples of 16 for section-aligned sampling.
      */
-    private float[][][] sampleDensityFunction16(DensityFunction df) {
+    private float[][][] sampleDensityFunction16(DensityFunction df, int sectionAnchorY) {
         float[][][] out = new float[16][16][16];
         for (int lx = 0; lx < 16; lx++) {
             int x = bx0 + lx;
             for (int lz = 0; lz < 16; lz++) {
                 int z = bz0 + lz;
                 for (int ly = 0; ly < 16; ly++) {
-                    // Sample at chunk section height - adjust if sampling multiple sections
-                    int y = minY + ly;
+                    int y = sectionAnchorY + ly;
                     double v = df.sample(new DensityFunction.UnblendedNoisePos(x, y, z));
                     out[lx][lz][ly] = (float)v;
                 }
@@ -133,9 +148,9 @@ final class NoiseTapImpl implements NoiseTap {
                 for (int qy = 0; qy < 4; qy++) {
                     int by = minY + qy * 4;
                     var entry = biomeAccess.getBiomeForNoiseGen(bx, by, bz);
-                    // Use hashCode as stable identifier since getRawId() may not be available
-                    // This provides a consistent identifier for the biome type
-                    out[qx][qz][qy] = entry.hashCode();
+                    // Use canonical biome ID (0-53 for overworld biomes, 255 for unknown)
+                    // from BiomeMapping, which provides a stable, bounded, non-negative ID.
+                    out[qx][qz][qy] = BiomeMapping.toCanonicalId(entry);
                 }
             }
         }

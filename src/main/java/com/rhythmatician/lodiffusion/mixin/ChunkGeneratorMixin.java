@@ -19,7 +19,8 @@ public class ChunkGeneratorMixin {
     
     /**
      * No-op injection point — kept so the mixin class remains valid.
-     * Logs the first few chunk generations for debugging connectivity.
+     * Vanilla world generation proceeds normally; LOD generation is handled
+     * by LodGenerationService + VoxySectionWriter, not by this mixin.
      */
     @Inject(method = "generateFeatures", at = @At("TAIL"))
     private void onGenerateFeatures(StructureWorldAccess world, Chunk chunk, StructureAccessor structureAccessor, CallbackInfo ci) {
