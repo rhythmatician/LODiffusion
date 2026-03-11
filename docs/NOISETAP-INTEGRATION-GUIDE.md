@@ -155,6 +155,8 @@ Maps exactly to NoiseRouter's 15 DensityFunction fields:
 **Tier D (Vein/Ore)**:
 - `VEIN_TOGGLE`, `VEIN_RIDGED`, `VEIN_GAP`
 
+**⚠️ LEGACY:** This document describes the *old progressive LOD pipeline* (five-model chain) that has since been replaced by the octree‑based pipeline. For the current architecture and model contract see `OCTREE-GENERATION-DESIGN.md` and the top‑level `PROJECT-OUTLINE.md` sections labelled Phase 1/3.
+
 ### Cache Record
 
 ```java

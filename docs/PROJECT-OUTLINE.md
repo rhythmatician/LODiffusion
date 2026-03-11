@@ -2,7 +2,7 @@
 
 ### 🎯 **Mission**
 
-Render plausible terrain for far chunks via a progressive LOD pipeline driven by **VoxelTree** models, keeping strong parity with vanilla and tight compatibility with **Distant Horizons** (DH). Priorities: correctness → stability → speed.
+Render plausible terrain for far chunks via an **octree‑based LOD pipeline** driven by **VoxelTree** models, keeping strong parity with vanilla and tight compatibility with **Distant Horizons** (DH). Priorities: correctness → stability → speed.
 
 ---
 
@@ -17,11 +17,11 @@ Render plausible terrain for far chunks via a progressive LOD pipeline driven by
 
 ### **PHASE 1 — Core LOD Engine & Runtime Contracts (🆕 In-progress)**
 
-**Goal:** Replace the old "single diffusion pass" with a **4-model progressive refinement ladder** and shared input contract with VoxelTree.
+**Goal:** Replace the old "single diffusion pass" with an **octree‑traversal pipeline** and shared input contract with VoxelTree.
 
 **What’s new**
 
-* **Four models**: `Init→LOD4`, `LOD4→3`, `LOD3→2`, `LOD2→1` (LOD0 is vanilla-authoritative)
+* **Three octree models**: `octree_init` (L4 seed), `octree_refine` (shared for L3→L2→L1→L0), `octree_leaf` (final 32³ leaf) – vanilla handles LOD0
 * **Shared conditioning inputs** (identical across all models):
 
   * `x_height_planes` **[1,5,16,16]** float32 — surface, ocean\_floor, slope\_x, slope\_z, curvature
@@ -34,12 +34,12 @@ Render plausible terrain for far chunks via a progressive LOD pipeline driven by
 
 **Rules**
 
-* **ONNX models produce static shapes.** Final stage (`refine_lod2_to_lod1`) outputs 8³; `ProgressiveModelRunner` upsamples 2× to 16³ before writing to Voxy.
+* **ONNX models produce static shapes.** Octree leaves are 32³; `OctreeModelRunner` handles upsampling and spawning child tasks.
 * **Vanilla `carve()` at LOD0 only.** Distant terrain skips carve; near terrain (LOD0) calls vanilla carve to finalize caves/aquifers/structures.
 
 **Deliverables**
 
-* `LodGenerationService` (progress controller + spiral ordering), `ProgressiveModelRunner` (four-model inference chain), `VoxyBlockMapper` + `VoxySectionWriter` (post-process + write), `AnchorSampler` / `NoiseTap` (feature capture)
+* `LodGenerationService` (octree controller + spiral ordering), `OctreeModelRunner` (three‑model inference), `VoxyBlockMapper` + `VoxySectionWriter` (post-process + write), `AnchorSampler` / `NoiseTap` (feature capture)
 
 ---
 
@@ -74,12 +74,12 @@ Render plausible terrain for far chunks via a progressive LOD pipeline driven by
 **Tasks**
 
 * **ONNX loader (DJL ONNX Runtime)**: shared `ModelZoo`, lazy load per model
-* **`ProgressiveModelRunner`**: map `AnchorSampler` output → exact ONNX input names/shapes, chain four stages
+* **`OctreeModelRunner`**: map `AnchorSampler` output → ONNX inputs, run init/refine/leaf rounds
 * **Refinement loop**:
 
   1. `init_to_lod4` (D=1) → `x_parent` for next stage
   2. `refine_lod4_to_lod3` (D=2) → `refine_lod3_to_lod2` (D=4) → `refine_lod2_to_lod1` (D=8)
-  3. Upsample 8³ → 16³ (`ProgressiveModelRunner`); write to Voxy via `VoxySectionWriter`
+  3. Upsample or split leaf output; write to Voxy via `VoxySectionWriter`
 * **Perf controls**: per-stage timers, pool NDArrays, cap memory/threads
 
 **Acceptance**
@@ -140,30 +140,30 @@ Render plausible terrain for far chunks via a progressive LOD pipeline driven by
 
 ## 🔗 **Interface with VoxelTree (Exact Contract)**
 
-**VoxelTree delivers (contract `lodiffusion.v3.progressive`):**
+**VoxelTree delivers (contract `lodiffusion.v5.octree`):**
 
-1. Four ONNX model files (opset 17, static shapes):
-   - `init_to_lod4.onnx`
-   - `refine_lod4_to_lod3.onnx`
-   - `refine_lod3_to_lod2.onnx`
-   - `refine_lod2_to_lod1.onnx`
-2. Four sidecar configs: `init_to_lod4_config.json`, `refine_lod4_to_lod3_config.json`, `refine_lod3_to_lod2_config.json`, `refine_lod2_to_lod1_config.json`
+1. Three ONNX model files (opset 17, static shapes):
+   - `octree_init.onnx`
+   - `octree_refine.onnx`
+   - `octree_leaf.onnx`
+2. Three sidecar configs: `octree_init_config.json`, `octree_refine_config.json`, `octree_leaf_config.json`
    * Each contains: input/output names, block vocabulary (`block_mapping`), normalization specs
 3. `pipeline_manifest.json` — lists all required files; validated at startup
-4. Four test-vector files: `*_test_vectors.npz` (golden inputs → outputs per model)
+4. Three test-vector files: `*_test_vectors.npz` (golden inputs → outputs per model)
 
 **Per-model tensor contract:**
 
-| Model | `x_height_planes` | `x_biome` | `x_y_index` | `x_parent` | Output `block_logits` | Output `air_mask` |
-|---|---|---|---|---|---|---|
-| `init_to_lod4` | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | — | [1,N,1,1,1] | [1,1,1,1,1] |
-| `refine_lod4_to_lod3` | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | [1,1,1,1,1] float32 | [1,N,2,2,2] | [1,1,2,2,2] |
-| `refine_lod3_to_lod2` | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | [1,1,2,2,2] float32 | [1,N,4,4,4] | [1,1,4,4,4] |
-| `refine_lod2_to_lod1` | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | [1,1,4,4,4] float32 | [1,N,8,8,8] | [1,1,8,8,8] |
+| Model | `x_height_planes` | `x_biome` | `x_y_index` | `x_parent` | Output `block_logits` | Output `occ_logits` |
+|-------|------------------|-----------|--------------|------------|---------------------|-------------------|
+| `octree_init`   | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | — | [1,N,1,1,1] | [1,8] |
+| `octree_refine` | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | [1,N,32,32,32] int64* | [1,N,32,32,32] | [1,8] |
+| `octree_leaf`   | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | [1,N,32,32,32] int64* | [1,N,32,32,32] | — |
+
+*`x_parent` for refine/leaf is upsampled parent octant (32³) as int IDs.
 
 **LODiffusion guarantees:**
 
-* `ProgressiveModelRunner` chains the four models, builds exact tensor shapes, and upsamples the final 8³ output 2× to 16³
+* `OctreeModelRunner` loads the three models, runs init/refine/leaf calls, and flattens/splits leaf outputs into Voxy sections.
 * `VoxyBlockMapper` reads `block_mapping` from `*_config.json` and maps model indices → Voxy block IDs at startup
 * `VoxySectionWriter` pushes argmax results into Voxy via reflection (VoxyCompat)
 * `pipeline_manifest.json` validated at startup; load fails if any required file is missing or hash-mismatched
@@ -174,12 +174,12 @@ Render plausible terrain for far chunks via a progressive LOD pipeline driven by
 ```
 AnchorSampler.capture() → x_height_planes [1,5,16,16], x_biome [1,16,16], x_y_index [1]
    ↓
-ProgressiveModelRunner:
-   init_to_lod4              → block_logits/air_mask [D=1]
-   refine_lod4_to_lod3  (x_parent from prev) → [D=2]
-   refine_lod3_to_lod2  (x_parent from prev) → [D=4]
-   refine_lod2_to_lod1  (x_parent from prev) → [D=8]
-   upsample 2× → InferenceResult [16³]
+OctreeModelRunner:
+   octree_init           → root blocks[32³] + occ_mask[8]
+   spawn child tasks for occupied octants
+   octree_refine (recursively for L3→L2→L1→L0) using parent blocks
+   octree_leaf           → leaf 32³ block logits
+   split leaf into eight 16³ sections
    ↓
 VoxySectionWriter → Voxy (LOD1–LOD4 only; LOD0 = vanilla)
 ```
