@@ -26,6 +26,14 @@ public class LodiffusionClient implements ClientModInitializer {
     public void onInitializeClient() {
         HelloTerrainMod.LOGGER.info("[LODiffusion] Client initializer starting");
 
+        // --- Connection init: pre-load ONNX models during "Logging in..." screen ---
+        ClientPlayConnectionEvents.INIT.register((handler, client) -> {
+            if (VoxyCompat.isAvailable() && Config.useOnnxTerrain()) {
+                HelloTerrainMod.LOGGER.info("[LODiffusion] Connection init — pre-loading ONNX models");
+                LOD_SERVICE.preloadModel();
+            }
+        });
+
         // --- World join: start LOD generation ---
         ClientPlayConnectionEvents.JOIN.register((handler, sender, client) -> {
             if (!VoxyCompat.isAvailable()) {
@@ -37,14 +45,18 @@ public class LodiffusionClient implements ClientModInitializer {
                 return;
             }
 
-            // Delay service start slightly so the world has time to initialize
-            client.execute(() -> {
-                if (client.world != null) {
-                    HelloTerrainMod.LOGGER.info("[LODiffusion] World joined — starting LOD generation service");
-                    // Pass integrated server for noise access (null on dedicated server)
-                    LOD_SERVICE.start(client.world, client.getServer());
-                }
-            });
+            // JOIN fires on the render thread with client.world already set.
+            // start() just spawns a daemon thread and returns — no need to defer.
+
+            // Seed position immediately from the player entity.
+            if (client.player != null) {
+                LOD_SERVICE.updatePlayerPosition(client.player.getBlockPos());
+            }
+
+            if (client.world != null) {
+                HelloTerrainMod.LOGGER.info("[LODiffusion] World joined — starting LOD generation service");
+                LOD_SERVICE.start(client.world, client.getServer());
+            }
         });
 
         // --- World leave: stop LOD generation ---

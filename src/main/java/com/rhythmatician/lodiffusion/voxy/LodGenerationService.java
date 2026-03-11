@@ -4,6 +4,7 @@ import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -67,6 +68,13 @@ public final class LodGenerationService {
     private static final boolean HEIGHTMAP_CLIP = true;
 
     /**
+     * Debug/testing override: when true, treat every voxel as 1×1 blocks
+     * (full resolution).  Can be enabled with JVM property
+     * `-Dlodiffusion.forceFullRes=true` to force block-per-voxel behaviour.
+     */
+    private static final boolean FORCE_FULL_RES = Boolean.getBoolean("lodiffusion.forceFullRes");
+
+    /**
      * Number of parallel worker threads for stage 0 (init → LOD4).
      * Stage 0 has no parent dependency so sections can run concurrently.
      * Capped at 4 to avoid starving the game thread.
@@ -118,6 +126,13 @@ public final class LodGenerationService {
     private final AtomicBoolean positionReady = new AtomicBoolean(false);
     private volatile Thread workerThread;
 
+    /**
+     * Optional pre-loaded model future started via {@link #preloadModel()}
+     * before the world fully joins (e.g. during "Loading terrain...").
+     * {@code null} if pre-loading was not requested.
+     */
+    private volatile CompletableFuture<OctreeModelRunner> preloadFuture;
+
     /** Updated each tick from the client thread. */
     private volatile int playerSectionX;
     private volatile int playerSectionZ;
@@ -147,6 +162,41 @@ public final class LodGenerationService {
     // ------------------------------------------------------------------ //
     //  Lifecycle
     // ------------------------------------------------------------------ //
+
+    /**
+     * Begin loading the three ONNX models on a background thread so they are
+     * ready (or nearly so) by the time {@link #start} is called.
+     *
+     * <p>Safe to call multiple times — a second call is a no-op while a
+     * previous future is still pending.  The future is consumed (and nulled)
+     * by {@link #resolveModel}; calling {@code preloadModel()} again after
+     * the session ends will restart pre-loading for the next join.
+     *
+     * <p>Intended to be wired to {@code ClientPlayConnectionEvents.INIT},
+     * which fires as soon as the network connection is established — well
+     * before the "Loading terrain..." screen appears.
+     */
+    public void preloadModel() {
+        if (preloadFuture != null && !preloadFuture.isDone()) {
+            HelloTerrainMod.LOGGER.debug("[LodGen] preloadModel() — already in progress, skipping");
+            return;
+        }
+        if (!Config.useOnnxTerrain()) return;
+
+        HelloTerrainMod.LOGGER.info("[LodGen] Pre-loading ONNX models in background...");
+        preloadFuture = CompletableFuture.supplyAsync(() -> {
+            try {
+                java.nio.file.Path modelDir = Config.modelDir();
+                OctreeModelRunner runner = OctreeModelRunner.loadAll(modelDir);
+                HelloTerrainMod.LOGGER.info("[LodGen] ONNX pre-load complete");
+                return runner;
+            } catch (Exception e) {
+                HelloTerrainMod.LOGGER.warn("[LodGen] ONNX pre-load failed (will retry in worker): {}",
+                        e.getMessage());
+                return null;
+            }
+        });
+    }
 
     /**
      * Start the LOD generation service for a given world.
@@ -253,8 +303,8 @@ public final class LodGenerationService {
                         "will fall back to synthetic heightmap + biome for distant sections");
             }
 
-            // Load model
-            OctreeModelRunner model = loadModel();
+            // Load model — use the pre-loaded future if available, otherwise synchronous
+            OctreeModelRunner model = resolveModel();
             if (model == null) {
                 // ── Heightmap fallback path ──────────────────────────────
                 HelloTerrainMod.LOGGER.info(
@@ -327,15 +377,27 @@ public final class LodGenerationService {
      */
     private static void applyHeightmapClipScaled(float[][][][][] logits, float[][] rawHm,
                                                    int sectionY, int voxyLvl) {
-        int cellsPerAxis = 16 >> voxyLvl;  // 8,4,2,1
-        int blocksPerVoxel = 1 << voxyLvl; // 2,4,8,16
+        // Optionally force full-resolution voxels (1 block per voxel)
+        int effLevel = FORCE_FULL_RES ? 0 : voxyLvl;
+        int cellsPerAxis = 16 >> effLevel;  // 16,8,4,2,1 for effLevel 0..4
+        int blocksPerVoxel = 1 << effLevel; // 1,2,4,8,16
 
         for (int lx = 0; lx < cellsPerAxis; lx++) {
             for (int lz = 0; lz < cellsPerAxis; lz++) {
-                // Sample heightmap at the center of this voxel's XZ footprint
-                int hmX = Math.min(lx * blocksPerVoxel + blocksPerVoxel / 2, 15);
-                int hmZ = Math.min(lz * blocksPerVoxel + blocksPerVoxel / 2, 15);
-                float surfaceY = rawHm[hmX][hmZ];
+                // Conservative sampling: use the HIGHEST surface Y within this
+                // voxel's XZ footprint.  Using the centre sample (previous
+                // behaviour) produced visible seams equal to the voxel size
+                // (e.g. 4 blocks) when the heightmap varied inside the voxel.
+                int hmX0 = lx * blocksPerVoxel;
+                int hmZ0 = lz * blocksPerVoxel;
+                int hmX1 = Math.min(hmX0 + blocksPerVoxel, 16);
+                int hmZ1 = Math.min(hmZ0 + blocksPerVoxel, 16);
+                float surfaceY = -Float.MAX_VALUE;
+                for (int hx = hmX0; hx < hmX1; hx++) {
+                    for (int hz = hmZ0; hz < hmZ1; hz++) {
+                        surfaceY = Math.max(surfaceY, rawHm[hx][hz]);
+                    }
+                }
 
                 for (int ly = 0; ly < cellsPerAxis; ly++) {
                     // Lowest block Y covered by this voxel
@@ -836,6 +898,37 @@ public final class LodGenerationService {
     }
 
     /**
+     * Resolve the ONNX model runner, preferring the pre-loaded future.
+     *
+     * <p>If {@link #preloadFuture} is set, block on it (it may already be
+     * done by the time we get here).  On any error falls back to a fresh
+     * synchronous load.
+     *
+     * @return the loaded runner, or {@code null} if models are absent / failed
+     */
+    private OctreeModelRunner resolveModel() {
+        CompletableFuture<OctreeModelRunner> future = preloadFuture;
+        preloadFuture = null;  // consume so we don't reuse a stale instance
+
+        if (future != null) {
+            try {
+                HelloTerrainMod.LOGGER.info("[LodGen] Waiting for pre-loaded ONNX model...");
+                OctreeModelRunner preloaded = future.get(60, TimeUnit.SECONDS);
+                if (preloaded != null) {
+                    HelloTerrainMod.LOGGER.info("[LodGen] Using pre-loaded ONNX model");
+                    return preloaded;
+                }
+            } catch (Exception e) {
+                HelloTerrainMod.LOGGER.warn(
+                        "[LodGen] Pre-load future failed — falling back to synchronous load: {}",
+                        e.getMessage());
+            }
+        }
+
+        return loadModel();
+    }
+
+    /**
      * Load all three octree ONNX models from the configured model directory.
      *
      * @return the loaded runner, or {@code null} if models are absent / failed to load
@@ -865,7 +958,8 @@ public final class LodGenerationService {
      * the synthetic sine-wave heightmap.
      */
     private OctreeColumnContext buildOctreeColumnContext(int level, int wsX, int wsY, int wsZ) {
-        int blockStep = 1 << level;                   // blocks per octree voxel
+        // Allow forcing full-resolution sampling (1 block per sample)
+        int blockStep = FORCE_FULL_RES ? 1 : (1 << level); // blocks per octree voxel
         float[][] rawHm = new float[32][32];
         int[][]   biomeIdx = new int[32][32];
 
