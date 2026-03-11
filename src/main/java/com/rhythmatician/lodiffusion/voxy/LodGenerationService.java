@@ -57,6 +57,23 @@ public final class LodGenerationService {
      */
     private static final int SURFACE_MARGIN = 1;  // 1 section = 16 blocks
 
+    /** Minimum block Y in the Minecraft world (floor of bedrock). */
+    static final int MIN_WORLD_BLOCK_Y = Y_BASE_SECTION * 16;  // -64
+    /** Maximum block Y in the Minecraft world (exclusive). */
+    static final int MAX_WORLD_BLOCK_Y = (Y_BASE_SECTION + Y_SECTIONS) * 16;  // 192
+
+    /**
+     * Returns {@code true} if the entire world-section at the given level and
+     * Y coordinate falls outside the Minecraft world Y range
+     * [{@value #MIN_WORLD_BLOCK_Y}, {@value #MAX_WORLD_BLOCK_Y}).
+     */
+    static boolean isOutOfWorldY(int level, int wsY) {
+        int blockSpan = 32 << level;  // L0=32, L1=64, L2=128, L3=256, L4=512
+        int blockYMin = wsY * blockSpan;
+        int blockYMax = blockYMin + blockSpan;
+        return blockYMax <= MIN_WORLD_BLOCK_Y || blockYMin >= MAX_WORLD_BLOCK_Y;
+    }
+
 
     /**
      * Debug/testing override: when true, treat every voxel as 1×1 blocks
@@ -1137,6 +1154,17 @@ public final class LodGenerationService {
             for (OctreeTask t : batch) {
                 if (t.claimForProcessing()) claimed.add(t);
             }
+            if (claimed.isEmpty()) continue;
+
+            // Skip tasks whose Y range is entirely outside the world
+            claimed.removeIf(t -> {
+                if (isOutOfWorldY(t.level, t.wsY)) {
+                    t.markReady();
+                    queue.markCompleted();
+                    return true;
+                }
+                return false;
+            });
             if (claimed.isEmpty()) continue;
 
             // ── Ensure column context is set for every task ──────────

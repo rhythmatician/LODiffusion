@@ -198,6 +198,12 @@ public final class OctreeQueue {
             int cy = OctreeTask.childY(parent.wsY, oct);
             int cz = OctreeTask.childZ(parent.wsZ, oct);
 
+            // Skip children whose Y range is entirely outside the world
+            if (LodGenerationService.isOutOfWorldY(childLevel, cy)) {
+                pruned++;
+                continue;
+            }
+
             // Extract the 16³ octant from the parent's 32³ predictions
             // Octant bits: bit0=X, bit1=Z, bit2=Y
             int offX = (oct & 1) * 16;

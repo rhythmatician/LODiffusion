@@ -162,7 +162,8 @@ class OctreeQueueSpawnTest {
     @Test
     void spawnChildren_allOccupied_spawnsEight() {
         OctreeQueue queue = new OctreeQueue();
-        OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
+        // Use L2 parent at (0,0,0): all 8 L1 children have Y in [0,127] — in-world
+        OctreeTask parent = new OctreeTask(2, 0, 0, 0, -1, 0);
         float[][][] argmax = new float[32][32][32];
 
         int spawned = queue.spawnChildren(parent, (byte) 0xFF, argmax, 0, 0);
@@ -217,7 +218,8 @@ class OctreeQueueSpawnTest {
     @Test
     void spawnChildren_deduplication() {
         OctreeQueue queue = new OctreeQueue();
-        OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
+        // Use L2 parent at (0,0,0): all 8 L1 children have Y in [0,127] — in-world
+        OctreeTask parent = new OctreeTask(2, 0, 0, 0, -1, 0);
         float[][][] argmax = new float[32][32][32];
 
         // First spawn: 8 children
@@ -232,21 +234,22 @@ class OctreeQueueSpawnTest {
     @Test
     void spawnChildren_childCoordinates() {
         OctreeQueue queue = new OctreeQueue();
-        // Parent at L4 (5, 3, 7), only octant 7 occupied
-        OctreeTask parent = new OctreeTask(4, 5, 3, 7, -1, 0);
+        // Parent at L4 (5, -1, 7), only octant 7 occupied
+        // Child Y = -1*2+1 = -1 at L3 → blocks [-256, -1], overlaps world [-64, 192)
+        OctreeTask parent = new OctreeTask(4, 5, -1, 7, -1, 0);
         float[][][] argmax = new float[32][32][32];
 
         queue.spawnChildren(parent, (byte) (1 << 7), argmax, 0, 0);
 
         // Child should be at L3 with coords:
         // childX = 5*2 + 1 = 11
-        // childY = 3*2 + 1 = 7
+        // childY = -1*2 + 1 = -1
         // childZ = 7*2 + 1 = 15
         OctreeTask child = queue.pollLevel(3);
         assertNotNull(child, "Child should be in L3 queue");
         assertEquals(3, child.level);
         assertEquals(11, child.wsX, "childX = parentX*2 + (oct&1)");
-        assertEquals(7, child.wsY, "childY = parentY*2 + ((oct>>2)&1)");
+        assertEquals(-1, child.wsY, "childY = parentY*2 + ((oct>>2)&1)");
         assertEquals(15, child.wsZ, "childZ = parentZ*2 + ((oct>>1)&1)");
         assertEquals(7, child.octant, "Child's octant should be 7");
     }
