@@ -155,7 +155,7 @@ class OctreeQueueSpawnTest {
         OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
         float[][][] argmax = new float[32][32][32]; // all zeros
 
-        int spawned = queue.spawnChildren(parent, (byte) 0x00, argmax);
+        int spawned = queue.spawnChildren(parent, (byte) 0x00, argmax, 0, 0);
         assertEquals(0, spawned, "Zero occMask should spawn no children");
     }
 
@@ -165,7 +165,7 @@ class OctreeQueueSpawnTest {
         OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
         float[][][] argmax = new float[32][32][32];
 
-        int spawned = queue.spawnChildren(parent, (byte) 0xFF, argmax);
+        int spawned = queue.spawnChildren(parent, (byte) 0xFF, argmax, 0, 0);
         assertEquals(8, spawned, "Full occMask should spawn 8 children");
     }
 
@@ -176,7 +176,7 @@ class OctreeQueueSpawnTest {
         float[][][] argmax = new float[32][32][32];
 
         // Only octant 5 occupied (bit 5)
-        int spawned = queue.spawnChildren(parent, (byte) (1 << 5), argmax);
+        int spawned = queue.spawnChildren(parent, (byte) (1 << 5), argmax, 0, 0);
         assertEquals(1, spawned, "Single bit should spawn 1 child");
 
         // The child should be at level 2
@@ -191,7 +191,7 @@ class OctreeQueueSpawnTest {
         // L4 parent → L3 children
         OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
         float[][][] argmax = new float[32][32][32];
-        queue.spawnChildren(parent, (byte) 0x01, argmax);
+        queue.spawnChildren(parent, (byte) 0x01, argmax, 0, 0);
         assertEquals(1, queue.levelQueueSize(3),
                 "L4 parent spawns to L3 queue");
 
@@ -199,7 +199,7 @@ class OctreeQueueSpawnTest {
         queue.clear();
         OctreeTask parent1 = new OctreeTask(1, 0, 0, 0, 0, 0);
         parent1.parentContextFlat = new long[32 * 32 * 32]; // required for non-root
-        queue.spawnChildren(parent1, (byte) 0x01, argmax);
+        queue.spawnChildren(parent1, (byte) 0x01, argmax, 0, 0);
         assertEquals(1, queue.levelQueueSize(0),
                 "L1 parent spawns to L0 queue");
     }
@@ -210,7 +210,7 @@ class OctreeQueueSpawnTest {
         OctreeTask parent = new OctreeTask(0, 0, 0, 0, 0, 0);
         float[][][] argmax = new float[32][32][32];
 
-        int spawned = queue.spawnChildren(parent, (byte) 0xFF, argmax);
+        int spawned = queue.spawnChildren(parent, (byte) 0xFF, argmax, 0, 0);
         assertEquals(0, spawned, "L0 (leaf) should not spawn children");
     }
 
@@ -221,11 +221,11 @@ class OctreeQueueSpawnTest {
         float[][][] argmax = new float[32][32][32];
 
         // First spawn: 8 children
-        int first = queue.spawnChildren(parent, (byte) 0xFF, argmax);
+        int first = queue.spawnChildren(parent, (byte) 0xFF, argmax, 0, 0);
         assertEquals(8, first);
 
         // Second spawn with same parent: all duplicates
-        int second = queue.spawnChildren(parent, (byte) 0xFF, argmax);
+        int second = queue.spawnChildren(parent, (byte) 0xFF, argmax, 0, 0);
         assertEquals(0, second, "Duplicate children should not be re-enqueued");
     }
 
@@ -236,7 +236,7 @@ class OctreeQueueSpawnTest {
         OctreeTask parent = new OctreeTask(4, 5, 3, 7, -1, 0);
         float[][][] argmax = new float[32][32][32];
 
-        queue.spawnChildren(parent, (byte) (1 << 7), argmax);
+        queue.spawnChildren(parent, (byte) (1 << 7), argmax, 0, 0);
 
         // Child should be at L3 with coords:
         // childX = 5*2 + 1 = 11
@@ -264,7 +264,7 @@ class OctreeQueueSpawnTest {
                     argmax[y][z][x] = y;
 
         // Spawn octant 0 (offsets: X=0, Z=0, Y=0 → lower-left-bottom octant)
-        queue.spawnChildren(parent, (byte) 0x01, argmax);
+        queue.spawnChildren(parent, (byte) 0x01, argmax, 0, 0);
         OctreeTask child = queue.pollLevel(3);
 
         assertNotNull(child.parentContextFlat,

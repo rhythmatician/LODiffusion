@@ -98,6 +98,13 @@ public final class OctreeTask implements Comparable<OctreeTask> {
      */
     volatile int priority;
 
+    /**
+     * One-time priority penalty added during child spawning (e.g. non-surface
+     * sections get +1000).  Persisted across reprioritisation so the penalty
+     * is not lost when the player moves.
+     */
+    volatile int basePenalty;
+
     // ── Mutable state ───────────────────────────────────────────────────
 
     /** Current pipeline state (lock-free). */
@@ -243,7 +250,8 @@ public final class OctreeTask implements Comparable<OctreeTask> {
         int playerAtLevel_X = playerSectionX >> level;
         int playerAtLevel_Z = playerSectionZ >> level;
         this.priority = Math.abs(wsX - playerAtLevel_X)
-                      + Math.abs(wsZ - playerAtLevel_Z);
+                      + Math.abs(wsZ - playerAtLevel_Z)
+                      + basePenalty;
     }
 
     /**
@@ -266,7 +274,7 @@ public final class OctreeTask implements Comparable<OctreeTask> {
         int manhattan = Math.abs(dx) + Math.abs(dz);
         float dot = dx * headingX + dz * headingZ;
         float directionalPenalty = -dot * coneStrength;
-        this.priority = manhattan + Math.round(directionalPenalty);
+        this.priority = manhattan + Math.round(directionalPenalty) + basePenalty;
     }
 
     // ── Comparable (priority queue ordering) ────────────────────────────

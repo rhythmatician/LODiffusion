@@ -219,7 +219,9 @@ public final class OctreeQueue {
             // Check whether this child's block-Y range overlaps the
             // surface height in its XZ sub-region of the parent heightmap.
             // Non-intersecting children (deep underground or pure sky) get
-            // a large priority penalty so surface chunks render first.
+            // a persistent basePenalty so surface chunks render first even
+            // after reprioritisation.
+            int surfacePenalty = 0;
             if (parentRawHm != null) {
                 int blockStep = 1 << childLevel;
                 int childMinBlockY = cy * 32 * blockStep;
@@ -243,12 +245,13 @@ public final class OctreeQueue {
 
                 // No overlap → this child is entirely underground or sky
                 if (childMaxBlockY <= rangeMin || childMinBlockY >= rangeMax) {
-                    childPriority += NON_SURFACE_PRIORITY_PENALTY;
+                    surfacePenalty = NON_SURFACE_PRIORITY_PENALTY;
                 }
             }
 
             OctreeTask child = new OctreeTask(
-                    childLevel, cx, cy, cz, oct, childPriority);
+                    childLevel, cx, cy, cz, oct, childPriority + surfacePenalty);
+            child.basePenalty = surfacePenalty;
             child.parentContextFlat = childParentFlat;
 
             // Column context is built lazily by the processing worker
