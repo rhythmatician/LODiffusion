@@ -68,10 +68,10 @@ public final class LodGenerationService {
      * [{@value #MIN_WORLD_BLOCK_Y}, {@value #MAX_WORLD_BLOCK_Y}).
      */
     static boolean isOutOfWorldY(int level, int wsY) {
-        int blockSpan = 32 << level;  // L0=32, L1=64, L2=128, L3=256, L4=512
-        int blockYMin = wsY * blockSpan;
-        int blockYMax = blockYMin + blockSpan;
-        return blockYMax <= MIN_WORLD_BLOCK_Y || blockYMin >= MAX_WORLD_BLOCK_Y;
+        int blockYMin = WorldSectionCoord.worldSectionToBlockMin(wsY, level);
+        // exclusive upper bound: one past the last block in this world section
+        int blockYMaxExcl = WorldSectionCoord.worldSectionToBlockMax(wsY, level) + 1;
+        return blockYMaxExcl <= MIN_WORLD_BLOCK_Y || blockYMin >= MAX_WORLD_BLOCK_Y;
     }
 
 
@@ -85,10 +85,14 @@ public final class LodGenerationService {
     /**
      * Number of parallel worker threads for stage 0 (init → LOD4).
      * Stage 0 has no parent dependency so sections can run concurrently.
-     * Capped at 4 to avoid starving the game thread.
+     *
+     * <p>Defaults to {@link Config#inferenceThreads()} (typically 2).
+     * Keeping this small is important: with N concurrent L4 workers, the
+     * first to finish (not necessarily the closest to the player) seeds
+     * the single-threaded L3→L0 cascade.  N=2 keeps the priority
+     * inversion to at most one adjacent root.
      */
-    private static final int STAGE_0_PARALLELISM =
-            Math.min(Runtime.getRuntime().availableProcessors(), 4);
+    private static final int STAGE_0_PARALLELISM = Config.inferenceThreads();
 
     /**
      * Maximum number of sections to batch into a single ONNX inference call.
@@ -268,10 +272,9 @@ public final class LodGenerationService {
         this.playerSectionX = WorldSectionCoord.blockToSection(pos.getX());
         this.playerSectionY = WorldSectionCoord.blockToSection(pos.getY());
         this.playerSectionZ = WorldSectionCoord.blockToSection(pos.getZ());
-        if (!positionReady.get()) {
-            positionReady.set(true);
-            HelloTerrainMod.LOGGER.info("[LodGen] Player position initialized: section ({}, {})",
-                    playerSectionX, playerSectionZ);
+        if (positionReady.compareAndSet(false, true)) {
+            HelloTerrainMod.LOGGER.info("[LodGen] Player position initialized: section ({}, {}, {})",
+                    playerSectionX, playerSectionY, playerSectionZ);
         }
     }
 
@@ -349,8 +352,8 @@ public final class LodGenerationService {
             waitForPlayerPosition();
             if (stopRequested.get()) return;
 
-            HelloTerrainMod.LOGGER.info("[LodGen] Starting generation from player section ({}, {})",
-                    playerSectionX, playerSectionZ);
+            HelloTerrainMod.LOGGER.info("[LodGen] Starting generation from player section ({}, {}, {})",
+                    playerSectionX, playerSectionY, playerSectionZ);
 
             // Run the octree pipeline
             runOctreePipeline(world, model, writer, blockMapper);
@@ -1004,8 +1007,10 @@ public final class LodGenerationService {
         for (Thread w : workers) w.start();
 
         HelloTerrainMod.LOGGER.info(
-                "[LodGen] Octree pipeline starting — {} L4 workers, radius={}",
-                STAGE_0_PARALLELISM, GENERATION_RADIUS);
+                "[LodGen] Octree pipeline starting — {} L4 workers (batch {}), "
+                + "L3-L0 single-threaded (batch {}), radius={}, total threads={}",
+                STAGE_0_PARALLELISM, L4_BATCH_SIZE,
+                MAX_BATCH_SIZE, GENERATION_RADIUS, numWorkers);
 
         // Root-population loop
         waitForPlayerPosition();

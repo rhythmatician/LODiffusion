@@ -566,8 +566,8 @@ class OctreeQueueSpawnTest {
         for (int i = 0; i < 8; i++) {
             OctreeTask child = queue.pollLevel(3);
             if (child != null && child.wsX == -1 && child.wsZ == -1) {
-                assertEquals(0, child.priority - child.basePenalty,
-                    "L3 child at (-1,*,-1) should have base distance 0 from player");
+                assertEquals(0, child.priority,
+                    "L3 child at (-1,*,-1) should have distance 0 from player");
                 foundZeroPriority = true;
             }
         }

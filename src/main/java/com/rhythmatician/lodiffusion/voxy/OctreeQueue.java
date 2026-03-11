@@ -126,16 +126,8 @@ public final class OctreeQueue {
     // ── Child spawning ──────────────────────────────────────────────────
 
     /**
-     * Priority penalty added to children whose Y range does not intersect
-     * the surface heightmap.  These are fully underground or fully sky
-     * sections — they still get generated but much later, after all
-     * surface-touching sections are done.
-     */
-    private static final int NON_SURFACE_PRIORITY_PENALTY = 1000;
-
-    /**
      * Extra margin (in blocks) above and below the surface range when
-     * checking intersection, to ensure we don't deprioritize sections
+     * checking intersection, to ensure we don't prune sections
      * containing caves near the surface or tree canopies.
      */
     private static final int SURFACE_MARGIN_BLOCKS = 32;
@@ -155,8 +147,8 @@ public final class OctreeQueue {
      * </ol>
      *
      * <p>Children whose Y range does not intersect the surface heightmap
-     * (± {@value #SURFACE_MARGIN_BLOCKS} blocks margin) receive a large
-     * priority penalty so that visible surface sections are processed first.
+     * (± {@value #SURFACE_MARGIN_BLOCKS} blocks margin) are pruned
+     * entirely — only surface-intersecting children are refined.
      *
      * <p>Column context is NOT built here — it is deferred to the worker
      * thread that processes the child, avoiding blocking the parent's
@@ -221,15 +213,13 @@ public final class OctreeQueue {
             int childPriority = Math.abs(cx - playerAtLevel_X)
                               + Math.abs(cz - playerAtLevel_Z);
 
-            // ── Surface-intersection deprioritization ──────────────────
-            // Check whether this child's block-Y range overlaps the
-            // surface height in its XZ sub-region of the parent heightmap.
-            // Non-intersecting children (deep underground or pure sky) get
-            // a persistent basePenalty so surface chunks render first even
-            // after reprioritisation.
-            int surfacePenalty = 0;
+            // ── Surface-intersection pruning ───────────────────────────
+            // Skip children whose Y range does NOT overlap the surface
+            // height in their XZ sub-region of the parent heightmap.
+            // Only surface-intersecting children are refined; deep
+            // underground and pure-sky octants are dropped entirely to
+            // save inference time.
             if (parentRawHm != null) {
-                int blockStep = 1 << childLevel;
                 int childMinBlockY = WorldSectionCoord.worldSectionToBlockMin(cy, childLevel);
                 int childMaxBlockY = WorldSectionCoord.worldSectionToBlockMax(cy, childLevel) + 1;
 
@@ -249,15 +239,15 @@ public final class OctreeQueue {
                 float rangeMin = surfMin - SURFACE_MARGIN_BLOCKS;
                 float rangeMax = Math.max(surfMax, 62f) + SURFACE_MARGIN_BLOCKS; // include sea level
 
-                // No overlap → this child is entirely underground or sky
+                // No overlap → skip entirely (don't refine underground/sky)
                 if (childMaxBlockY <= rangeMin || childMinBlockY >= rangeMax) {
-                    surfacePenalty = NON_SURFACE_PRIORITY_PENALTY;
+                    pruned++;
+                    continue;
                 }
             }
 
             OctreeTask child = new OctreeTask(
-                    childLevel, cx, cy, cz, oct, childPriority + surfacePenalty);
-            child.basePenalty = surfacePenalty;
+                    childLevel, cx, cy, cz, oct, childPriority);
             child.parentContextFlat = childParentFlat;
 
             // Column context is built lazily by the processing worker
@@ -343,11 +333,26 @@ public final class OctreeQueue {
     }
 
     /**
+     * Settling delay (ms) for the first greedy poll after a blocking poll
+     * wakes on an empty-to-non-empty queue transition.  Gives
+     * {@link #spawnChildren} time to add all sibling tasks so the
+     * priority queue can return them in true distance order.
+     *
+     * <p>Without this, the blocking poll returns oct-0 (the first child
+     * added by the loop in spawnChildren) — which is usually NOT the
+     * closest sibling.  50 ms is negligible vs 8+ seconds of context
+     * building per task.
+     */
+    private static final long SIBLING_SETTLE_MS = 50;
+
+    /**
      * Drain up to {@code maxBatch} tasks from a specific level's queue.
      *
      * <p>Performs a blocking poll with timeout for the first task, then
-     * greedily drains additional tasks without blocking.  This enables
-     * batched inference per level.
+     * waits briefly ({@value #SIBLING_SETTLE_MS} ms) for sibling tasks
+     * from {@link #spawnChildren} to accumulate before greedily draining
+     * additional tasks.  This ensures the batch contains the closest
+     * tasks from the full sibling set, not just the first one added.
      *
      * @param level    LOD level (0-4)
      * @param maxBatch maximum tasks to return
@@ -363,6 +368,21 @@ public final class OctreeQueue {
         OctreeTask first = levelQueues[level].poll(timeout, unit);
         if (first == null) return batch;
         batch.add(first);
+
+        // Brief settling delay: let sibling tasks from spawnChildren
+        // accumulate in the priority queue.  Re-insert the first task
+        // so all siblings compete fairly in priority order.
+        if (level < 4 && SIBLING_SETTLE_MS > 0) {
+            Thread.sleep(SIBLING_SETTLE_MS);
+            if (!levelQueues[level].isEmpty()) {
+                // Siblings arrived — re-insert first and drain in true
+                // priority order so we batch the closest tasks together
+                levelQueues[level].add(first);
+                batch.clear();
+                levelQueues[level].drainTo(batch, maxBatch);
+                return batch;
+            }
+        }
 
         while (batch.size() < maxBatch) {
             OctreeTask next = levelQueues[level].poll();
