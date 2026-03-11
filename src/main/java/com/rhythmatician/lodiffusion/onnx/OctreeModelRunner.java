@@ -167,7 +167,20 @@ public final class OctreeModelRunner implements AutoCloseable {
         // Validate required files
         validateRequiredFiles(modelDir);
 
-        NDManager manager = NDManager.newBaseManager();
+        // DJL's Engine.initEngine() uses ServiceLoader with the thread's
+        // context classloader.  In Fabric (Knot), the ORT engine JARs are
+        // loaded by the mod classloader, not the system classloader that is
+        // active on ForkJoinPool worker threads.  Swap the context CL
+        // temporarily so that ServiceLoader can see OrtEngineProvider.
+        ClassLoader prevCl = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(
+                OctreeModelRunner.class.getClassLoader());
+        NDManager manager;
+        try {
+            manager = NDManager.newBaseManager();
+        } finally {
+            Thread.currentThread().setContextClassLoader(prevCl);
+        }
         try {
             // Load configs
             ModelConfig initCfg   = ConfigLoader.load(modelDir.resolve(CONFIG_INIT));
@@ -692,7 +705,7 @@ public final class OctreeModelRunner implements AutoCloseable {
      * an 8-bit mask.
      *
      * @param occLogits raw logits {@code float[8]}
-     * @return byte mask where bit i is set if sigmoid(occLogits[i]) > 0.5
+     * @return byte mask where bit i is set if sigmoid(occLogits[i]) > {@link #occThreshold()}
      */
     static byte sigmoidThreshold(float[] occLogits) {
         byte mask = 0;

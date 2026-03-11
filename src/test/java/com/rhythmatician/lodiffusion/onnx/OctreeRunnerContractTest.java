@@ -36,12 +36,21 @@ class OctreeRunnerContractTest {
     }
 
     @Test
-    void sigmoidThreshold_zeroLogit_noSet() {
-        // sigmoid(0) = 0.5, threshold is "> 0.5" so bit should NOT be set
+    void sigmoidThreshold_zeroLogit_bitSet() {
+        // sigmoid(0) = 0.5 > occThreshold() (default 0.3) → bit IS set
         float[] logits = {0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f};
         byte mask = OctreeModelRunner.sigmoidThreshold(logits);
+        assertEquals((byte) 0xFF, mask,
+                "sigmoid(0)=0.5 is > default threshold 0.3, so all bits set");
+    }
+
+    @Test
+    void sigmoidThreshold_belowThreshold_noSet() {
+        // sigmoid(-2) ≈ 0.119 < occThreshold() (default 0.3) → no bits set
+        float[] logits = {-2f, -2f, -2f, -2f, -2f, -2f, -2f, -2f};
+        byte mask = OctreeModelRunner.sigmoidThreshold(logits);
         assertEquals((byte) 0x00, mask,
-                "sigmoid(0) = 0.5 is not > threshold, so no bits set");
+                "sigmoid(-2)≈0.119 is not > default threshold 0.3, so no bits set");
     }
 
     @Test
@@ -64,8 +73,8 @@ class OctreeRunnerContractTest {
 
     @ParameterizedTest(name = "logit {0} → sigmoid {1} → bit {2}")
     @CsvSource({
-        "0.1,  true",   // sigmoid(0.1) ≈ 0.525 > 0.5
-        "-0.1, false",  // sigmoid(-0.1) ≈ 0.475 < 0.5
+        "0.1,  true",   // sigmoid(0.1) ≈ 0.525 > 0.3 (occThreshold default)
+        "-1.0, false",  // sigmoid(-1.0) ≈ 0.269 < 0.3
         "5.0,  true",
         "-5.0, false"
     })
