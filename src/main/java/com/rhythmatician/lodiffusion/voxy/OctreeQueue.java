@@ -126,6 +126,21 @@ public final class OctreeQueue {
     // ── Child spawning ──────────────────────────────────────────────────
 
     /**
+     * Priority penalty added to children whose Y range does not intersect
+     * the surface heightmap.  These are fully underground or fully sky
+     * sections — they still get generated but much later, after all
+     * surface-touching sections are done.
+     */
+    private static final int NON_SURFACE_PRIORITY_PENALTY = 1000;
+
+    /**
+     * Extra margin (in blocks) above and below the surface range when
+     * checking intersection, to ensure we don't deprioritize sections
+     * containing caves near the surface or tree canopies.
+     */
+    private static final int SURFACE_MARGIN_BLOCKS = 32;
+
+    /**
      * After inference on a parent task, spawn child tasks for each occupied
      * octant.  This is the core of the octree traversal.
      *
@@ -138,6 +153,10 @@ public final class OctreeQueue {
      *       parent context</li>
      *   <li>Create and enqueue the child {@link OctreeTask}</li>
      * </ol>
+     *
+     * <p>Children whose Y range does not intersect the surface heightmap
+     * (± {@value #SURFACE_MARGIN_BLOCKS} blocks margin) receive a large
+     * priority penalty so that visible surface sections are processed first.
      *
      * <p>Column context is NOT built here — it is deferred to the worker
      * thread that processes the child, avoiding blocking the parent's
@@ -163,6 +182,11 @@ public final class OctreeQueue {
         int childLevel = parent.level - 1;
         int spawned = 0;
         int pruned = 0;
+
+        // Pre-compute per-octant surface Y ranges from the parent's heightmap
+        // for the surface-intersection check.  null if no heightmap available.
+        float[][] parentRawHm = (parent.columnContext != null)
+                ? parent.columnContext.rawHm() : null;
 
         for (int oct = 0; oct < 8; oct++) {
             if ((occMask & (1 << oct)) == 0) {
@@ -190,6 +214,38 @@ public final class OctreeQueue {
             int playerAtLevel_Z = playerSectionZ >> childLevel;
             int childPriority = Math.abs(cx - playerAtLevel_X)
                               + Math.abs(cz - playerAtLevel_Z);
+
+            // ── Surface-intersection deprioritization ──────────────────
+            // Check whether this child's block-Y range overlaps the
+            // surface height in its XZ sub-region of the parent heightmap.
+            // Non-intersecting children (deep underground or pure sky) get
+            // a large priority penalty so surface chunks render first.
+            if (parentRawHm != null) {
+                int blockStep = 1 << childLevel;
+                int childMinBlockY = cy * 32 * blockStep;
+                int childMaxBlockY = childMinBlockY + 32 * blockStep;
+
+                // Scan the 16×16 sub-region of the parent's 32×32 heightmap
+                // that corresponds to this octant's XZ footprint
+                float surfMin = Float.MAX_VALUE;
+                float surfMax = -Float.MAX_VALUE;
+                for (int rz = offZ; rz < offZ + 16; rz++) {
+                    for (int rx = offX; rx < offX + 16; rx++) {
+                        float h = parentRawHm[rz][rx];
+                        if (h < surfMin) surfMin = h;
+                        if (h > surfMax) surfMax = h;
+                    }
+                }
+
+                // Extend surface range by margin for caves/canopies
+                float rangeMin = surfMin - SURFACE_MARGIN_BLOCKS;
+                float rangeMax = Math.max(surfMax, 62f) + SURFACE_MARGIN_BLOCKS; // include sea level
+
+                // No overlap → this child is entirely underground or sky
+                if (childMaxBlockY <= rangeMin || childMinBlockY >= rangeMax) {
+                    childPriority += NON_SURFACE_PRIORITY_PENALTY;
+                }
+            }
 
             OctreeTask child = new OctreeTask(
                     childLevel, cx, cy, cz, oct, childPriority);
