@@ -5,18 +5,18 @@ import org.junit.jupiter.api.BeforeEach;
 import static org.junit.jupiter.api.Assertions.*;
 
 /**
- * Test class for DiffusionChunkGenerator following TDD principles.
- * Tests chunk generation with diffusion model integration.
+ * Test class for OGNChunkGenerator following TDD principles.
+ * Tests chunk generation with OGN model integration.
  */
-public class DiffusionChunkGeneratorTest {
+public class OGNChunkGeneratorTest {
 
-    private DiffusionChunkGenerator generator;
+    private OGNChunkGenerator generator;
     private int[][] testHeightmap;
     private String[] testBiomes;
 
     @BeforeEach
     void setUp() {
-        generator = new DiffusionChunkGenerator();
+        generator = new OGNChunkGenerator();
         
         // Create test heightmap (16x16)
         testHeightmap = new int[16][16];
@@ -35,14 +35,14 @@ public class DiffusionChunkGeneratorTest {
 
     @Test
     void testConstructor_DefaultLODQuery() {
-        DiffusionChunkGenerator defaultGenerator = new DiffusionChunkGenerator();
+        OGNChunkGenerator defaultGenerator = new OGNChunkGenerator();
         assertNotNull(defaultGenerator);
     }
 
     @Test
     void testConstructor_CustomLODQuery() {
         LODQuery customQuery = new DefaultLODQuery();
-        DiffusionChunkGenerator customGenerator = new DiffusionChunkGenerator(customQuery);
+        OGNChunkGenerator customGenerator = new OGNChunkGenerator(customQuery);
         assertNotNull(customGenerator);
     }
 

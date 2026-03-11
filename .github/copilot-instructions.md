@@ -88,10 +88,10 @@ Local equivalent:
 
 ## 🧠 Mod Responsibilities
 
-### Chunk Generation & Diffusion
-- In `DiffusionChunkGenerator.buildSurface(...)`:
+### Chunk Generation (OGN)
+- In `OGNChunkGenerator.buildSurface(...)`:
   - Sample vanilla heightmap + biomes
-  - Call `DiffusionModel.run(...)`
+  - Delegate to `LodGenerationService` → `OctreeModelRunner`
 - **LOD chaining is required**: each refinement builds on the prior LOD
 - Stubbed multi-channel logic must be test-guided and forward-compatible
 

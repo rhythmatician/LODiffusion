@@ -1,6 +1,6 @@
 package com.rhythmatician.lodiffusion.terrain;
 
-import com.rhythmatician.lodiffusion.DiffusionChunkGenerator;
+import com.rhythmatician.lodiffusion.OGNChunkGenerator;
 
 import net.minecraft.util.math.ChunkPos;
 import net.minecraft.world.chunk.Chunk;
@@ -10,7 +10,7 @@ import net.minecraft.world.chunk.Chunk;
  * Acts as a bridge to maintain existing behavior when ONNX is disabled.
  */
 public final class VanillaLikeTerrainGenerator implements TerrainGenerator {
-    private final DiffusionChunkGenerator diffusionGenerator = new DiffusionChunkGenerator();
+    private final OGNChunkGenerator diffusionGenerator = new OGNChunkGenerator();
 
     @Override
     public void generateChunk(ChunkPos pos, Chunk chunk, long seed) {

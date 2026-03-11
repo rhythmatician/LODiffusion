@@ -3,11 +3,11 @@ package com.rhythmatician.lodiffusion;
 import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.util.math.ChunkPos;
 
-public class DiffusionChunkGenerator {
+public class OGNChunkGenerator {
 
   private final LODQuery lodQuery;
 
-  public DiffusionChunkGenerator() {
+  public OGNChunkGenerator() {
     this.lodQuery = new DefaultLODQuery();
   }
 
@@ -15,7 +15,7 @@ public class DiffusionChunkGenerator {
    * Constructor that allows injection of custom LOD strategy.
    * @param lodQuery The LOD query strategy to use
    */
-  public DiffusionChunkGenerator(LODQuery lodQuery) {
+  public OGNChunkGenerator(LODQuery lodQuery) {
     this.lodQuery = lodQuery;
   }
 
