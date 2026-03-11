@@ -1189,6 +1189,24 @@ public final class LodGenerationService {
             });
             if (claimed.isEmpty()) continue;
 
+            // ── Save-queue backpressure ──────────────────────────────
+            // If Voxy's SectionSavingService is backed up (≥1200 pending
+            // tasks — its internal rate-limiter threshold), pause briefly
+            // so we don't pile up faster than Voxy can persist.
+            {
+                int depth = VoxyCompat.getSaveQueueDepth(writer.getWorldEngine());
+                if (depth >= 1200) {
+                    HelloTerrainMod.LOGGER.warn(
+                            "[LodGen] {} save-queue backpressure: {} pending — throttling 200 ms",
+                            tName, depth);
+                    try {
+                        Thread.sleep(200);
+                    } catch (InterruptedException ie) {
+                        break;
+                    }
+                }
+            }
+
             // ── Ensure column context is set for every task ──────────
             for (OctreeTask task : claimed) {
                 if (task.columnContext == null) {
@@ -1222,7 +1240,7 @@ public final class LodGenerationService {
                     OctreeModelRunner.OctreeOutput output = outputs.get(i);
 
                     // Write to Voxy for progressive visibility.
-                    // L0: split 32³ into 2×2×2 = 8 native 16³ VoxelizedSections.
+                    // L0: write 32³ directly as a single WorldSection at level 0.
                     // L1-L2: write 32³ directly to the Voxy WorldSection at
                     //        native resolution.  L3-L4 are skipped — their
                     //        voxels are too coarse for good visuals, and the

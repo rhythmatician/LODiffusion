@@ -1,5 +1,6 @@
 package com.rhythmatician.lodiffusion.voxy;
 
+import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 
 import org.slf4j.Logger;
@@ -34,6 +35,7 @@ public final class VoxyEngine {
 
     static volatile boolean engineBindingsReady;
     static volatile boolean worldBindingsReady;
+    private static volatile boolean saveQueueBindingsReady;
 
     // ------------------------------------------------------------------ //
     //  Reflected classes (package-private — shared with VoxyWorldBinding)
@@ -58,6 +60,11 @@ public final class VoxyEngine {
     static Method acquireMethod;            // WorldEngine.acquire(int, int, int, int)
     static Method worldSectionReleaseMethod; // WorldSection.release()
     static Method markDirtyMethod;          // WorldEngine.markDirty(WorldSection)
+
+    // Save-queue monitoring (for backpressure)
+    private static Field  instanceInField;       // WorldEngine.instanceIn → VoxyInstance
+    private static Field  savingServiceField;    // VoxyInstance.savingService → SectionSavingService
+    private static Method getTaskCountMethod;    // SectionSavingService.getTaskCount() → int
 
     private VoxyEngine() {}
 
@@ -145,6 +152,47 @@ public final class VoxyEngine {
                 throw new IllegalStateException(
                         "Failed to bind Voxy WorldIdentifier (Minecraft not available?): "
                         + e.getMessage(), e);
+            }
+        }
+    }
+
+    /**
+     * Lazily bind reflection handles for Voxy's save-queue monitoring.
+     *
+     * <p>Path: {@code WorldEngine.instanceIn} (public) →
+     * {@code VoxyInstance.savingService} (protected) →
+     * {@code SectionSavingService.getTaskCount()} (public).
+     *
+     * <p>These are deferred from {@link #ensureEngineBindings()} because they
+     * are not required for basic section writes and may fail on older Voxy
+     * builds that lack these fields.
+     */
+    private static void ensureSaveQueueBindings() {
+        ensureEngineBindings();
+        if (saveQueueBindingsReady) return;
+        synchronized (VoxyEngine.class) {
+            if (saveQueueBindingsReady) return;
+            try {
+                // WorldEngine.instanceIn — public final VoxyInstance
+                instanceInField = worldEngineClass.getField("instanceIn");
+
+                // VoxyInstance.savingService — protected final SectionSavingService
+                Class<?> voxyInstanceClass = Class.forName(VoxyDetection.VOXY_INSTANCE_CLASS);
+                savingServiceField = voxyInstanceClass.getDeclaredField("savingService");
+                savingServiceField.setAccessible(true);
+
+                // SectionSavingService.getTaskCount() — public int
+                Class<?> savingServiceClass = Class.forName(VoxyDetection.SAVING_SERVICE_CLASS);
+                getTaskCountMethod = savingServiceClass.getMethod("getTaskCount");
+
+                saveQueueBindingsReady = true;
+                LOGGER.info("Voxy save-queue bindings resolved");
+            } catch (ClassNotFoundException | NoSuchFieldException
+                     | NoSuchMethodException | LinkageError e) {
+                // Non-fatal — backpressure will simply be unavailable
+                saveQueueBindingsReady = false;
+                LOGGER.warn("Voxy save-queue bindings not available (backpressure disabled): "
+                        + e.getMessage());
             }
         }
     }
@@ -264,6 +312,40 @@ public final class VoxyEngine {
             return ofEngineMethod.invoke(null, world);
         } catch (Exception e) {
             throw new RuntimeException("Failed to get/create WorldEngine", e);
+        }
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Save-queue monitoring (backpressure)
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Query the depth of Voxy's save queue for a given WorldEngine.
+     *
+     * <p>Traverses {@code WorldEngine.instanceIn} → {@code VoxyInstance.savingService}
+     * → {@code SectionSavingService.getTaskCount()}.  Returns {@code -1} if the
+     * bindings could not be resolved or the WorldEngine has no attached VoxyInstance
+     * (e.g., in tests).
+     *
+     * @param worldEngine the Voxy WorldEngine instance
+     * @return number of pending save tasks, or {@code -1} if unavailable
+     */
+    public static int getSaveQueueDepth(Object worldEngine) {
+        try {
+            ensureSaveQueueBindings();
+        } catch (Exception e) {
+            return -1; // bindings failed — backpressure unavailable
+        }
+        if (!saveQueueBindingsReady || worldEngine == null) return -1;
+        try {
+            Object voxyInstance = instanceInField.get(worldEngine);
+            if (voxyInstance == null) return -1;
+            Object savingService = savingServiceField.get(voxyInstance);
+            if (savingService == null) return -1;
+            return (int) getTaskCountMethod.invoke(savingService);
+        } catch (Exception e) {
+            LOGGER.debug("getSaveQueueDepth failed: {}", e.getMessage());
+            return -1;
         }
     }
 }

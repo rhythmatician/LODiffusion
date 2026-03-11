@@ -143,4 +143,16 @@ public final class VoxyCompat {
                                                 int wsX, int wsY, int wsZ) {
         return VoxyWorldBinding.sectionExistsAtLevel(worldEngine, lvl, wsX, wsY, wsZ);
     }
+
+    // ── Save-queue monitoring ──────────────────────────────────────────────
+
+    /**
+     * Returns the number of pending save tasks in Voxy's {@code SectionSavingService},
+     * or {@code -1} if the queue depth cannot be determined.
+     *
+     * @see VoxyEngine#getSaveQueueDepth(Object)
+     */
+    public static int getSaveQueueDepth(Object worldEngine) {
+        return VoxyEngine.getSaveQueueDepth(worldEngine);
+    }
 }

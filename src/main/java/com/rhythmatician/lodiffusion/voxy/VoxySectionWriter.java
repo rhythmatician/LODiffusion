@@ -70,6 +70,9 @@ public final class VoxySectionWriter {
                 worldEngine.getClass().getSimpleName(), voxyMapper.getClass().getSimpleName());
     }
 
+    /** Returns the Voxy WorldEngine instance (or {@code null} in tests). */
+    public Object getWorldEngine() { return worldEngine; }
+
     /**
      * Test constructor for use without a live WorldEngine.
      * Bypasses Voxy runtime requirements.
@@ -575,8 +578,20 @@ public final class VoxySectionWriter {
     }
 
     /**
-     * Write an octree L0 leaf section (32³ voxels at 1m/voxel = 32 blocks) to Voxy
-     * as 2×2×2 = 8 native 16³ VoxelizedSections.
+     * Write an octree L0 leaf section (32³ voxels at 1m/voxel) directly to a
+     * Voxy WorldSection at level 0.
+     *
+     * <p>Previous implementation split the 32³ output into 2×2×2 = 8 native
+     * 16³ {@code VoxelizedSection}s, each requiring {@code createEmptySection},
+     * {@code mipSection}, and {@code insertUpdate}.  This version writes all
+     * 32³ voxels in a single {@code writeFullWorldSection()} call — eliminating
+     * 7 redundant mip computations and 8 section-lifecycle round-trips.
+     *
+     * <p>Parent-level voxel data (L1–L2) is written by separate model passes
+     * via {@link #writeOctreeToLevel}, so the lack of insertUpdate's automatic
+     * L0→L4 mip propagation is not a concern.  The
+     * {@code nonEmptyChildren} existence bits <em>are</em> propagated by
+     * {@code writeFullWorldSection}.
      *
      * <p>Accepts pre-computed argmax IDs to avoid redundant argmax
      * computation (already computed in OctreeModelRunner).
@@ -586,87 +601,40 @@ public final class VoxySectionWriter {
      * @param wsX          octree L0 WorldSection X coordinate
      * @param wsY          octree L0 WorldSection Y coordinate
      * @param wsZ          octree L0 WorldSection Z coordinate
+     * @return number of non-air voxels written, or 0 if section is all-air/already exists
      */
-    public void writeOctreeBlockData(int[][][] blockArgmax,
+    public int writeOctreeBlockData(int[][][] blockArgmax,
                                       int[][] biomeIdx32,
                                       int wsX, int wsY, int wsZ) {
         if (worldEngine == null) {
             throw new IllegalStateException("writeOctreeBlockData requires a live WorldEngine");
         }
-        // L0 section covers 32 blocks = 2 Voxy L0 sections per axis
-        for (int ox = 0; ox < 2; ox++) {
-            for (int oy = 0; oy < 2; oy++) {
-                for (int oz = 0; oz < 2; oz++) {
-                    int l0X = WorldSectionCoord.l0ToVoxySection(wsX, ox);
-                    int l0Y = WorldSectionCoord.l0ToVoxySection(wsY, oy);
-                    int l0Z = WorldSectionCoord.l0ToVoxySection(wsZ, oz);
 
-                    int offY = oy * 16;
-                    int offZ = oz * 16;
-                    int offX = ox * 16;
-
-                    // Pass biomeIdx32 + offsets directly — avoids allocating
-                    // new int[16][16] per octant (8 allocations per L0 section).
-                    // The biome lookup is done inline in writeSubCubeFromArgmax.
-                    writeSubCubeFromArgmax(blockArgmax, biomeIdx32,
-                            offY, offZ, offX, l0X, l0Y, l0Z);
-                }
-            }
-        }
-    }
-
-    /**
-     * Write a 16³ sub-cube from pre-computed argmax IDs to a Voxy L0 section.
-     *
-     * <p>Loop order is {@code y→z→x} to match the Voxy L0 index layout
-     * {@code (y<<8)|(z<<4)|x}, giving sequential memory writes.
-     *
-     * <p>Biome IDs are resolved inline from the full 32×32 canonical biome
-     * grid ({@code biomeIdx32}) using the sub-cube offsets, avoiding an
-     * intermediate {@code int[16][16]} allocation per octant.
-     *
-     * @param blockArgmax  full 32³ argmax in Y,Z,X order
-     * @param biomeIdx32   canonical biome indices [32][32] indexed [z][x]
-     * @param offY         Y offset into the 32³ array (0 or 16)
-     * @param offZ         Z offset into the 32³ array (0 or 16)
-     * @param offX         X offset into the 32³ array (0 or 16)
-     * @param sectionX     Voxy L0 section X
-     * @param sectionY     Voxy L0 section Y
-     * @param sectionZ     Voxy L0 section Z
-     */
-    private void writeSubCubeFromArgmax(int[][][] blockArgmax,
-                                         int[][] biomeIdx32,
-                                         int offY, int offZ, int offX,
-                                         int sectionX, int sectionY, int sectionZ) {
-
-        // Insert-only guard
-        if (VoxyCompat.sectionExists(worldEngine, sectionX, sectionY, sectionZ)) {
+        // Insert-only guard at the WorldSection level
+        if (VoxyCompat.sectionExistsAtLevel(worldEngine, 0, wsX, wsY, wsZ)) {
             if (sectionsWritten.get() < 10) {
-                LOGGER.info("[VoxySectionWriter] Skipping ({},{},{}) — section already exists",
-                        sectionX, sectionY, sectionZ);
+                LOGGER.info("[VoxySectionWriter] Skipping L0 WS ({},{},{}) — already exists",
+                        wsX, wsY, wsZ);
             }
             sectionsWritten.incrementAndGet();
-            return;
+            return 0;
         }
 
-        boolean detailed = sectionsWritten.get() < 5;
+        // Reuse thread-local scratch buffer (same as writeOctreeToLevel)
+        long[] voxels = WS_SCRATCH.get();
+        Arrays.fill(voxels, 0L);
 
-        Object section = VoxyCompat.createEmptySection();
-        VoxyCompat.setSectionPosition(section, sectionX, sectionY, sectionZ);
-        long[] data = VoxyCompat.getSectionData(section);
-
-        // Air-voxel cache: avoids composeVoxel() for the majority-air voxels
+        // Air-voxel cache
         long[] airCache = AIR_CACHE.get();
 
-        int nonAirCount = 0;
+        int nonAir = 0;
 
-        // Fill L0 (16³) — loop order y→z→x matches index (y<<8)|(z<<4)|x
-        // for sequential memory writes
-        for (int y = 0; y < 16; y++) {
-            for (int z = 0; z < 16; z++) {
-                for (int x = 0; x < 16; x++) {
-                    int bestIdx = blockArgmax[offY + y][offZ + z][offX + x];
-                    int biome = blockMapper.getVoxyBiomeId(biomeIdx32[offZ + z][offX + x]);
+        // Fill 32³ voxels — WorldSection index: (y<<10)|(z<<5)|x
+        for (int iy = 0; iy < 32; iy++) {
+            for (int iz = 0; iz < 32; iz++) {
+                for (int ix = 0; ix < 32; ix++) {
+                    int bestIdx = blockArgmax[iy][iz][ix];
+                    int biome = blockMapper.getVoxyBiomeId(biomeIdx32[iz][ix]);
 
                     long voxel;
                     if (bestIdx == 0) {
@@ -683,32 +651,29 @@ public final class VoxySectionWriter {
                     } else {
                         int voxyBlockId = blockMapper.getVoxyBlockId(bestIdx);
                         voxel = VoxyCompat.composeVoxel(voxyBlockId, biome, DEFAULT_LIGHT);
-                        if (voxyBlockId != 0) nonAirCount++;
+                        if (voxyBlockId != 0) nonAir++;
                     }
 
-                    int idx = (y << 8) | (z << 4) | x;
-                    data[idx] = voxel;
+                    voxels[(iy << 10) | (iz << 5) | ix] = voxel;
                 }
             }
         }
 
-        if (nonAirCount == 0) {
-            if (detailed) {
-                LOGGER.warn("[VoxySectionWriter] Skipping all-air section ({},{},{})",
-                        sectionX, sectionY, sectionZ);
-            }
-            sectionsWritten.incrementAndGet();
-            return;
+        if (nonAir == 0) {
+            return 0; // Skip all-air sections
         }
 
-        // Mip + insert
-        VoxyCompat.mipSection(section, voxyMapper);
-        VoxyCompat.insertUpdate(worldEngine, section);
+        VoxyCompat.writeFullWorldSection(worldEngine, 0, wsX, wsY, wsZ, voxels);
 
         int written = sectionsWritten.incrementAndGet();
+        boolean detailed = written < 5;
         if (detailed || written % 100 == 0) {
-            LOGGER.info("[VoxySectionWriter] Wrote section ({},{},{}) — {} solid voxels [total written: {}]",
-                    sectionX, sectionY, sectionZ, nonAirCount, written);
+            LOGGER.info(
+                    "[VoxySectionWriter] Wrote L0 WorldSection ({},{},{}) "
+                    + "— {} solid voxels [total: {}]",
+                    wsX, wsY, wsZ, nonAir, written);
         }
+
+        return nonAir;
     }
 }
