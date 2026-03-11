@@ -464,19 +464,92 @@ public final class VoxySectionWriter {
     }
 
     /**
+     * Write octree model output (32³ voxels) directly to a Voxy WorldSection
+     * at the matching LOD level.  No upsampling — the model's 32³ grid maps
+     * 1:1 to Voxy's 32³ WorldSection at the same level.
+     *
+     * <p>This is the progressive-LOD write path for levels 1–2.  Each level's
+     * voxels are written at native resolution to the sparse octree.  When
+     * finer levels are computed later, Voxy's {@code nonEmptyChildren} bits
+     * guide the GPU to descend from coarse to fine.
+     *
+     * <p>Accepts pre-computed argmax IDs to avoid redundant argmax
+     * computation (already computed in OctreeModelRunner).
+     *
+     * @param blockArgmax  {@code int[32][32][32]} argmax class indices in Y,Z,X order
+     * @param biomeIdx32   {@code int[32][32]} canonical biome indices, indexed [z][x]
+     * @param level        octree level (1–4)
+     * @param wsX          WorldSection X at this level
+     * @param wsY          WorldSection Y at this level
+     * @param wsZ          WorldSection Z at this level
+     * @return number of non-air voxels written, or 0 if section is all-air
+     */
+    public int writeOctreeToLevel(int[][][] blockArgmax,
+                                  int[][] biomeIdx32,
+                                  int level,
+                                  int wsX, int wsY, int wsZ) {
+        if (worldEngine == null) {
+            throw new IllegalStateException("writeOctreeToLevel requires a live WorldEngine");
+        }
+
+        long[] voxels = new long[32 * 32 * 32];
+        int nonAir = 0;
+
+        for (int iy = 0; iy < 32; iy++) {
+            for (int iz = 0; iz < 32; iz++) {
+                for (int ix = 0; ix < 32; ix++) {
+                    int bestIdx = blockArgmax[iy][iz][ix];
+
+                    int biome = blockMapper.getVoxyBiomeId(biomeIdx32[iz][ix]);
+
+                    long voxel;
+                    if (bestIdx == 0) {
+                        voxel = VoxyCompat.composeVoxel(0, biome, DEFAULT_LIGHT);
+                    } else {
+                        int voxyBlockId = blockMapper.getVoxyBlockId(bestIdx);
+                        voxel = VoxyCompat.composeVoxel(voxyBlockId, biome, DEFAULT_LIGHT);
+                        if (voxyBlockId != 0) nonAir++;
+                    }
+
+                    // WorldSection index: (y<<10)|(z<<5)|x
+                    voxels[(iy << 10) | (iz << 5) | ix] = voxel;
+                }
+            }
+        }
+
+        if (nonAir == 0) {
+            return 0; // Skip all-air sections
+        }
+
+        VoxyCompat.writeFullWorldSection(worldEngine, level, wsX, wsY, wsZ, voxels);
+
+        int written = sectionsWritten.incrementAndGet();
+        boolean detailed = written < 5;
+        if (detailed || written % 500 == 0) {
+            LOGGER.info(
+                    "[VoxySectionWriter] Wrote L{} WorldSection ({},{},{}) "
+                    + "— {} solid voxels [total: {}]",
+                    level, wsX, wsY, wsZ, nonAir, written);
+        }
+
+        return nonAir;
+    }
+
+    /**
      * Write an octree L0 leaf section (32³ voxels at 1m/voxel = 32 blocks) to Voxy
      * as 2×2×2 = 8 native 16³ VoxelizedSections.
      *
-     * @param blockLogits  [vocabSize][32][32][32] in Y,Z,X order from OctreeModelRunner
-     * @param biomeIdx32   [32][32] canonical biome indices covering the section footprint
-     * @param vocabSize    number of block classes in the logits
+     * <p>Accepts pre-computed argmax IDs to avoid redundant argmax
+     * computation (already computed in OctreeModelRunner).
+     *
+     * @param blockArgmax  {@code int[32][32][32]} argmax class indices in Y,Z,X order
+     * @param biomeIdx32   {@code int[32][32]} canonical biome indices covering the section footprint
      * @param wsX          octree L0 WorldSection X coordinate
      * @param wsY          octree L0 WorldSection Y coordinate
      * @param wsZ          octree L0 WorldSection Z coordinate
      */
-    public void writeOctreeBlockData(float[][][][] blockLogits,
+    public void writeOctreeBlockData(int[][][] blockArgmax,
                                       int[][] biomeIdx32,
-                                      int vocabSize,
                                       int wsX, int wsY, int wsZ) {
         if (worldEngine == null) {
             throw new IllegalStateException("writeOctreeBlockData requires a live WorldEngine");
@@ -502,22 +575,90 @@ public final class VoxySectionWriter {
                         }
                     }
 
-                    // Wrap the 16³ slice in InferenceResult-compatible format [1][V][16][16][16]
-                    float[][][][][] subLogits = new float[1][vocabSize][16][16][16];
-                    for (int ch = 0; ch < vocabSize; ch++) {
-                        for (int y = 0; y < 16; y++) {
-                            for (int z = 0; z < 16; z++) {
-                                System.arraycopy(
-                                    blockLogits[ch][offY + y][offZ + z], offX,
-                                    subLogits[0][ch][y][z], 0, 16);
-                            }
-                        }
-                    }
-
-                    InferenceResult sliceResult = new InferenceResult(subLogits, 0L);
-                    writeSection(sliceResult, vocabSize, l0X, l0Y, l0Z, biomeVoxyIds);
+                    // Build L0 voxel data for this 16³ sub-cube directly from
+                    // pre-computed argmax — no InferenceResult wrapping needed
+                    writeSubCubeFromArgmax(blockArgmax, biomeVoxyIds,
+                            offY, offZ, offX, l0X, l0Y, l0Z);
                 }
             }
+        }
+    }
+
+    /**
+     * Write a 16³ sub-cube from pre-computed argmax IDs to a Voxy L0 section.
+     *
+     * @param blockArgmax  full 32³ argmax in Y,Z,X order
+     * @param biomeVoxyIds per-column Voxy biome IDs [16][16], indexed [x][z]
+     * @param offY         Y offset into the 32³ array (0 or 16)
+     * @param offZ         Z offset into the 32³ array (0 or 16)
+     * @param offX         X offset into the 32³ array (0 or 16)
+     * @param sectionX     Voxy L0 section X
+     * @param sectionY     Voxy L0 section Y
+     * @param sectionZ     Voxy L0 section Z
+     */
+    private void writeSubCubeFromArgmax(int[][][] blockArgmax,
+                                         int[][] biomeVoxyIds,
+                                         int offY, int offZ, int offX,
+                                         int sectionX, int sectionY, int sectionZ) {
+
+        // Insert-only guard
+        if (VoxyCompat.sectionExists(worldEngine, sectionX, sectionY, sectionZ)) {
+            if (sectionsWritten.get() < 10) {
+                LOGGER.info("[VoxySectionWriter] Skipping ({},{},{}) — section already exists",
+                        sectionX, sectionY, sectionZ);
+            }
+            sectionsWritten.incrementAndGet();
+            return;
+        }
+
+        boolean detailed = sectionsWritten.get() < 5;
+
+        Object section = VoxyCompat.createEmptySection();
+        VoxyCompat.setSectionPosition(section, sectionX, sectionY, sectionZ);
+        long[] data = VoxyCompat.getSectionData(section);
+
+        int nonAirCount = 0;
+
+        // Fill L0 (16³) — model axis convention: d0=Y, d1=Z, d2=X
+        // Voxy l0Index packs as YZX: (y<<8)|(z<<4)|x
+        for (int x = 0; x < 16; x++) {
+            for (int y = 0; y < 16; y++) {
+                for (int z = 0; z < 16; z++) {
+                    int bestIdx = blockArgmax[offY + y][offZ + z][offX + x];
+                    int biome = biomeVoxyIds[x][z];
+
+                    long voxel;
+                    if (bestIdx == 0) {
+                        voxel = VoxyCompat.composeVoxel(0, biome, DEFAULT_LIGHT);
+                    } else {
+                        int voxyBlockId = blockMapper.getVoxyBlockId(bestIdx);
+                        voxel = VoxyCompat.composeVoxel(voxyBlockId, biome, DEFAULT_LIGHT);
+                        if (voxyBlockId != 0) nonAirCount++;
+                    }
+
+                    int idx = (y << 8) | (z << 4) | x;
+                    data[idx] = voxel;
+                }
+            }
+        }
+
+        if (nonAirCount == 0) {
+            if (detailed) {
+                LOGGER.warn("[VoxySectionWriter] Skipping all-air section ({},{},{})",
+                        sectionX, sectionY, sectionZ);
+            }
+            sectionsWritten.incrementAndGet();
+            return;
+        }
+
+        // Mip + insert
+        VoxyCompat.mipSection(section, voxyMapper);
+        VoxyCompat.insertUpdate(worldEngine, section);
+
+        int written = sectionsWritten.incrementAndGet();
+        if (detailed || written % 100 == 0) {
+            LOGGER.info("[VoxySectionWriter] Wrote section ({},{},{}) — {} solid voxels [total written: {}]",
+                    sectionX, sectionY, sectionZ, nonAirCount, written);
         }
     }
 }

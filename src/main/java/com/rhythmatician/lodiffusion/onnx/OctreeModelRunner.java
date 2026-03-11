@@ -98,18 +98,16 @@ public final class OctreeModelRunner implements AutoCloseable {
     /**
      * Result of a single octree inference call.
      *
-     * @param blockLogits  block logits shaped {@code [num_classes][32][32][32]}
-     *                     in Y,Z,X order.  Always non-null.
-     * @param blockArgmax  argmax block IDs {@code [32][32][32]} in Y,Z,X order.
-     *                     Derived from blockLogits for convenience.
+     * @param blockArgmax  argmax block IDs {@code int[32][32][32]} in Y,Z,X order.
+     *                     Computed directly from the flat ONNX logits in a single
+     *                     pass — no intermediate 4D array is allocated.
      * @param occMask      predicted 8-bit occupancy mask (sigmoid > 0.5).
      *                     Always 0 for L0 (leaf) tasks.
      * @param vocabSize    number of block classes in the logits
      * @param elapsedMs    wall time for this inference call
      */
     public record OctreeOutput(
-        float[][][][] blockLogits,    // [num_classes][32][32][32]
-        float[][][] blockArgmax,      // [32][32][32] argmax IDs as float
+        int[][][] blockArgmax,        // [32][32][32] argmax class indices
         byte occMask,
         int vocabSize,
         long elapsedMs
@@ -616,8 +614,7 @@ public final class OctreeModelRunner implements AutoCloseable {
         int vocabSize = (int) shape[1];
 
         float[] flat = blockLogitsTensor.toFloatArray();
-        float[][][][] blockLogits = reshapeLogits(flat, vocabSize);
-        float[][][] blockArgmax = computeArgmax(blockLogits, vocabSize);
+        int[][][] blockArgmax = computeArgmaxDirect(flat, vocabSize);
 
         byte occMask = 0;
         if (hasOccupancy) {
@@ -627,12 +624,15 @@ public final class OctreeModelRunner implements AutoCloseable {
             }
         }
 
-        return new OctreeOutput(blockLogits, blockArgmax, occMask,
+        return new OctreeOutput(blockArgmax, occMask,
                 vocabSize, elapsedMs);
     }
 
     /**
      * Split batched ONNX output into per-sample results.
+     *
+     * <p>Uses {@link #computeArgmaxDirect} to compute argmax directly from
+     * the flat logits slice, avoiding the expensive 4D reshape allocation.
      */
     private List<OctreeOutput> splitBatchOutput(NDList outputs, int batchSize,
                                                 boolean hasOccupancy,
@@ -656,13 +656,9 @@ public final class OctreeModelRunner implements AutoCloseable {
         List<OctreeOutput> results = new ArrayList<>(batchSize);
 
         for (int b = 0; b < batchSize; b++) {
-            // Slice this sample's logits
-            float[] sampleFlat = new float[sampleElements];
-            System.arraycopy(allFlat, b * sampleElements,
-                    sampleFlat, 0, sampleElements);
-
-            float[][][][] blockLogits = reshapeLogits(sampleFlat, vocabSize);
-            float[][][] blockArgmax = computeArgmax(blockLogits, vocabSize);
+            // Compute argmax directly from the flat logits slice
+            int[][][] blockArgmax = computeArgmaxDirect(
+                    allFlat, b * sampleElements, vocabSize);
 
             byte occMask = 0;
             if (allOccFlat != null) {
@@ -671,7 +667,7 @@ public final class OctreeModelRunner implements AutoCloseable {
                 occMask = sigmoidThreshold(sampleOcc);
             }
 
-            results.add(new OctreeOutput(blockLogits, blockArgmax, occMask,
+            results.add(new OctreeOutput(blockArgmax, occMask,
                     vocabSize, perSample));
         }
 
@@ -712,9 +708,66 @@ public final class OctreeModelRunner implements AutoCloseable {
     }
 
     /**
+     * Compute argmax block IDs directly from a flat logits array, without
+     * materializing the intermediate {@code float[vocabSize][32][32][32]}
+     * reshape.  For vocabSize=128 this eliminates a 16 MB allocation per
+     * sample.
+     *
+     * <p>The flat array layout is {@code [C][Y][Z][X]} where C is the
+     * class/channel dimension.  The method iterates in channel-major order
+     * for sequential access and maintains a running {@code bestVal} array
+     * for cache-friendly argmax computation.
+     *
+     * @param flat      flat logits starting at index 0, length ≥ vocabSize × 32³
+     * @param vocabSize number of block classes
+     * @return {@code int[32][32][32]} with the argmax class index at each voxel
+     */
+    static int[][][] computeArgmaxDirect(float[] flat, int vocabSize) {
+        return computeArgmaxDirect(flat, 0, vocabSize);
+    }
+
+    /**
+     * Compute argmax block IDs directly from a slice of a flat logits array.
+     *
+     * @param flat      flat logits array (may contain multiple batched samples)
+     * @param offset    starting index of this sample's logits within {@code flat}
+     * @param vocabSize number of block classes
+     * @return {@code int[32][32][32]} with the argmax class index at each voxel
+     */
+    static int[][][] computeArgmaxDirect(float[] flat, int offset, int vocabSize) {
+        int[][][] argmax = new int[SPATIAL][SPATIAL][SPATIAL];
+        float[][][] bestVal = new float[SPATIAL][SPATIAL][SPATIAL];
+
+        // Initialize with channel 0
+        int idx = offset;
+        for (int y = 0; y < SPATIAL; y++)
+            for (int z = 0; z < SPATIAL; z++)
+                for (int x = 0; x < SPATIAL; x++)
+                    bestVal[y][z][x] = flat[idx++];
+
+        // Scan remaining channels — sequential access through flat array
+        for (int c = 1; c < vocabSize; c++) {
+            for (int y = 0; y < SPATIAL; y++)
+                for (int z = 0; z < SPATIAL; z++)
+                    for (int x = 0; x < SPATIAL; x++) {
+                        float v = flat[idx++];
+                        if (v > bestVal[y][z][x]) {
+                            bestVal[y][z][x] = v;
+                            argmax[y][z][x] = c;
+                        }
+                    }
+        }
+        return argmax;
+    }
+
+    /**
      * Reshape flat logits {@code [vocabSize * 32 * 32 * 32]} into
      * {@code [vocabSize][32][32][32]} in Y,Z,X order.
+     *
+     * @deprecated Use {@link #computeArgmaxDirect} instead — avoids the
+     *             expensive 4D allocation entirely.
      */
+    @Deprecated
     private static float[][][][] reshapeLogits(float[] flat, int vocabSize) {
         float[][][][] out = new float[vocabSize][SPATIAL][SPATIAL][SPATIAL];
         int idx = 0;
@@ -727,14 +780,16 @@ public final class OctreeModelRunner implements AutoCloseable {
     }
 
     /**
-     * Compute argmax block IDs from logits.
+     * Compute argmax block IDs from reshaped logits.
      *
      * @param logits  {@code [vocabSize][32][32][32]}
      * @param vocabSize number of classes
-     * @return {@code float[32][32][32]} with argmax class index (as float)
+     * @return {@code int[32][32][32]} with argmax class index
+     * @deprecated Use {@link #computeArgmaxDirect} instead.
      */
-    static float[][][] computeArgmax(float[][][][] logits, int vocabSize) {
-        float[][][] out = new float[SPATIAL][SPATIAL][SPATIAL];
+    @Deprecated
+    static int[][][] computeArgmax(float[][][][] logits, int vocabSize) {
+        int[][][] out = new int[SPATIAL][SPATIAL][SPATIAL];
         for (int y = 0; y < SPATIAL; y++) {
             for (int z = 0; z < SPATIAL; z++) {
                 for (int x = 0; x < SPATIAL; x++) {

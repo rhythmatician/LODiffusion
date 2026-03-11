@@ -159,7 +159,7 @@ public final class OctreeQueue {
      * @param parent         the parent task that just completed inference
      * @param occMask        8-bit occupancy mask from sigmoid(occ_logits) > 0.5
      * @param blockArgmax    the parent's 32³ argmax block IDs as
-     *                       {@code float[32][32][32]} (Y, Z, X order),
+     *                       {@code int[32][32][32]} (Y, Z, X order),
      *                       already converted from logits
      * @param playerSectionX current player section X (L0 coordinates)
      * @param playerSectionZ current player section Z (L0 coordinates)
@@ -167,7 +167,7 @@ public final class OctreeQueue {
      *         popcount(occMask) if duplicates were detected)
      */
     public int spawnChildren(OctreeTask parent, byte occMask,
-                             float[][][] blockArgmax,
+                             int[][][] blockArgmax,
                              int playerSectionX, int playerSectionZ) {
         if (parent.level <= 0) return 0;
 
@@ -287,7 +287,7 @@ public final class OctreeQueue {
      * @param offX X offset of the octant (0 or 16)
      * @return flat long[32768] containing the upsampled octant block IDs
      */
-    static long[] extractAndUpsampleOctant(float[][][] src,
+    static long[] extractAndUpsampleOctant(int[][][] src,
                                             int offY, int offZ, int offX) {
         long[] dst = new long[32 * 32 * 32];
         int idx = 0;
@@ -297,7 +297,7 @@ public final class OctreeQueue {
                 int srcZ = offZ + (dz >> 1);
                 for (int dx = 0; dx < 32; dx++) {
                     int srcX = offX + (dx >> 1);
-                    dst[idx++] = (long) src[srcY][srcZ][srcX];
+                    dst[idx++] = src[srcY][srcZ][srcX];
                 }
             }
         }

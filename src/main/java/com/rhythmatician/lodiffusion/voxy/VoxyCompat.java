@@ -131,6 +131,13 @@ public final class VoxyCompat {
         return VoxyWorldBinding.writeAtLevel(worldEngine, lvl, sectionX, sectionY, sectionZ, voxels);
     }
 
+    /** @see VoxyWorldBinding#writeFullWorldSection(Object, int, int, int, int, long[]) */
+    public static int writeFullWorldSection(Object worldEngine, int lvl,
+                                             int wsX, int wsY, int wsZ,
+                                             long[] voxels) {
+        return VoxyWorldBinding.writeFullWorldSection(worldEngine, lvl, wsX, wsY, wsZ, voxels);
+    }
+
     /** @see VoxyWorldBinding#sectionExistsAtLevel(Object, int, int, int, int) */
     public static boolean sectionExistsAtLevel(Object worldEngine, int lvl,
                                                 int wsX, int wsY, int wsZ) {

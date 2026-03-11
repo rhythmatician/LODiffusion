@@ -153,7 +153,7 @@ class OctreeQueueSpawnTest {
     void spawnChildren_noOccupancy_spawnsNone() {
         OctreeQueue queue = new OctreeQueue();
         OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
-        float[][][] argmax = new float[32][32][32]; // all zeros
+        int[][][] argmax = new int[32][32][32]; // all zeros
 
         int spawned = queue.spawnChildren(parent, (byte) 0x00, argmax, 0, 0);
         assertEquals(0, spawned, "Zero occMask should spawn no children");
@@ -164,7 +164,7 @@ class OctreeQueueSpawnTest {
         OctreeQueue queue = new OctreeQueue();
         // Use L2 parent at (0,0,0): all 8 L1 children have Y in [0,127] — in-world
         OctreeTask parent = new OctreeTask(2, 0, 0, 0, -1, 0);
-        float[][][] argmax = new float[32][32][32];
+        int[][][] argmax = new int[32][32][32];
 
         int spawned = queue.spawnChildren(parent, (byte) 0xFF, argmax, 0, 0);
         assertEquals(8, spawned, "Full occMask should spawn 8 children");
@@ -174,7 +174,7 @@ class OctreeQueueSpawnTest {
     void spawnChildren_singleOctant() {
         OctreeQueue queue = new OctreeQueue();
         OctreeTask parent = new OctreeTask(3, 0, 0, 0, -1, 0);
-        float[][][] argmax = new float[32][32][32];
+        int[][][] argmax = new int[32][32][32];
 
         // Only octant 5 occupied (bit 5)
         int spawned = queue.spawnChildren(parent, (byte) (1 << 5), argmax, 0, 0);
@@ -191,7 +191,7 @@ class OctreeQueueSpawnTest {
 
         // L4 parent → L3 children
         OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
-        float[][][] argmax = new float[32][32][32];
+        int[][][] argmax = new int[32][32][32];
         queue.spawnChildren(parent, (byte) 0x01, argmax, 0, 0);
         assertEquals(1, queue.levelQueueSize(3),
                 "L4 parent spawns to L3 queue");
@@ -209,7 +209,7 @@ class OctreeQueueSpawnTest {
     void spawnChildren_l0Parent_spawnsNothing() {
         OctreeQueue queue = new OctreeQueue();
         OctreeTask parent = new OctreeTask(0, 0, 0, 0, 0, 0);
-        float[][][] argmax = new float[32][32][32];
+        int[][][] argmax = new int[32][32][32];
 
         int spawned = queue.spawnChildren(parent, (byte) 0xFF, argmax, 0, 0);
         assertEquals(0, spawned, "L0 (leaf) should not spawn children");
@@ -220,7 +220,7 @@ class OctreeQueueSpawnTest {
         OctreeQueue queue = new OctreeQueue();
         // Use L2 parent at (0,0,0): all 8 L1 children have Y in [0,127] — in-world
         OctreeTask parent = new OctreeTask(2, 0, 0, 0, -1, 0);
-        float[][][] argmax = new float[32][32][32];
+        int[][][] argmax = new int[32][32][32];
 
         // First spawn: 8 children
         int first = queue.spawnChildren(parent, (byte) 0xFF, argmax, 0, 0);
@@ -237,7 +237,7 @@ class OctreeQueueSpawnTest {
         // Parent at L4 (5, -1, 7), only octant 7 occupied
         // Child Y = -1*2+1 = -1 at L3 → blocks [-256, -1], overlaps world [-64, 192)
         OctreeTask parent = new OctreeTask(4, 5, -1, 7, -1, 0);
-        float[][][] argmax = new float[32][32][32];
+        int[][][] argmax = new int[32][32][32];
 
         queue.spawnChildren(parent, (byte) (1 << 7), argmax, 0, 0);
 
@@ -260,7 +260,7 @@ class OctreeQueueSpawnTest {
         OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
 
         // Fill argmax with known pattern: class = Y coordinate
-        float[][][] argmax = new float[32][32][32];
+        int[][][] argmax = new int[32][32][32];
         for (int y = 0; y < 32; y++)
             for (int z = 0; z < 32; z++)
                 for (int x = 0; x < 32; x++)
@@ -294,7 +294,7 @@ class OctreeQueueSpawnTest {
 
     @Test
     void extractAndUpsample_outputSize() {
-        float[][][] src = new float[32][32][32];
+        int[][][] src = new int[32][32][32];
         long[] result = OctreeQueue.extractAndUpsampleOctant(src, 0, 0, 0);
         assertEquals(32 * 32 * 32, result.length,
                 "Output must be exactly 32768 elements");
@@ -303,11 +303,11 @@ class OctreeQueueSpawnTest {
     @Test
     void extractAndUpsample_octant0_uniformValue() {
         // Fill entire volume with class 42
-        float[][][] src = new float[32][32][32];
+        int[][][] src = new int[32][32][32];
         for (int y = 0; y < 32; y++)
             for (int z = 0; z < 32; z++)
                 for (int x = 0; x < 32; x++)
-                    src[y][z][x] = 42.0f;
+                    src[y][z][x] = 42;
 
         long[] result = OctreeQueue.extractAndUpsampleOctant(src, 0, 0, 0);
 
@@ -320,7 +320,7 @@ class OctreeQueueSpawnTest {
     @Test
     void extractAndUpsample_nearestNeighbor_2x() {
         // Fill src with gradient: value = x coordinate
-        float[][][] src = new float[32][32][32];
+        int[][][] src = new int[32][32][32];
         for (int y = 0; y < 32; y++)
             for (int z = 0; z < 32; z++)
                 for (int x = 0; x < 32; x++)
@@ -341,13 +341,13 @@ class OctreeQueueSpawnTest {
     void extractAndUpsample_octant7_offsets() {
         // Octant 7: bit0=X=1, bit1=Z=1, bit2=Y=1
         // Offsets: X=16, Z=16, Y=16
-        float[][][] src = new float[32][32][32];
+        int[][][] src = new int[32][32][32];
 
         // Mark only the octant 7 region with value 99
         for (int y = 16; y < 32; y++)
             for (int z = 16; z < 32; z++)
                 for (int x = 16; x < 32; x++)
-                    src[y][z][x] = 99.0f;
+                    src[y][z][x] = 99;
 
         long[] result = OctreeQueue.extractAndUpsampleOctant(src, 16, 16, 16);
 
@@ -360,7 +360,7 @@ class OctreeQueueSpawnTest {
     @Test
     void extractAndUpsample_differentOctants_extractDifferentData() {
         // Fill each octant with a different value
-        float[][][] src = new float[32][32][32];
+        int[][][] src = new int[32][32][32];
         for (int y = 0; y < 32; y++)
             for (int z = 0; z < 32; z++)
                 for (int x = 0; x < 32; x++) {
@@ -389,7 +389,7 @@ class OctreeQueueSpawnTest {
     @Test
     void extractAndUpsample_yGradient_verifyRowMajorYZX() {
         // Verify Y,Z,X row-major ordering in output flat array
-        float[][][] src = new float[32][32][32];
+        int[][][] src = new int[32][32][32];
         for (int y = 0; y < 32; y++)
             for (int z = 0; z < 32; z++)
                 for (int x = 0; x < 32; x++)
@@ -554,7 +554,7 @@ class OctreeQueueSpawnTest {
         OctreeQueue queue = new OctreeQueue();
         // Parent at L4 (-1, 0, -1) — the player's L4 section
         OctreeTask parent = new OctreeTask(4, -1, 0, -1, -1, 0);
-        float[][][] argmax = new float[32][32][32];
+        int[][][] argmax = new int[32][32][32];
 
         // Player at block (-181, -9) → section (-12, -1)
         queue.spawnChildren(parent, (byte) 0xFF, argmax, -12, -1);

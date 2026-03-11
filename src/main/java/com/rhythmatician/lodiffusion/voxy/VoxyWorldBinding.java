@@ -363,6 +363,75 @@ public final class VoxyWorldBinding {
     }
 
     /**
+     * Write all 32³ voxels directly into a Voxy {@code WorldSection} at a
+     * specific LOD level, using WorldSection coordinates (not L0 section coords).
+     *
+     * <p>This is the natural write path for octree model output, whose 32³
+     * grid maps 1:1 to a Voxy WorldSection at the same level.  After writing,
+     * we mark dirty and propagate {@code nonEmptyChildren} bits up to L4 so
+     * the GPU octree traversal can navigate to this data.
+     *
+     * @param worldEngine the Voxy WorldEngine instance
+     * @param lvl         Voxy storage level (0–4)
+     * @param wsX         WorldSection X at this level
+     * @param wsY         WorldSection Y at this level
+     * @param wsZ         WorldSection Z at this level
+     * @param voxels      packed 64-bit voxels, exactly {@code 32*32*32} entries,
+     *                    indexed as {@code (y<<10)|(z<<5)|x}
+     * @return number of non-air voxels written
+     */
+    public static int writeFullWorldSection(Object worldEngine, int lvl,
+                                             int wsX, int wsY, int wsZ,
+                                             long[] voxels) {
+        if (lvl < 0 || lvl > 4) {
+            throw new IllegalArgumentException(
+                    "writeFullWorldSection: lvl must be 0-4, got " + lvl);
+        }
+        if (voxels.length != 32 * 32 * 32) {
+            throw new IllegalArgumentException(
+                    "writeFullWorldSection: expected 32768 voxels, got " + voxels.length);
+        }
+
+        ensureWorldSectionBindings();
+
+        try {
+            Object worldSection = VoxyEngine.acquireMethod.invoke(
+                    worldEngine, lvl, wsX, wsY, wsZ);
+
+            long[] data = (long[]) worldSectionDataField.get(worldSection);
+
+            // Copy all 32³ voxels directly (same index layout)
+            System.arraycopy(voxels, 0, data, 0, 32 * 32 * 32);
+
+            VoxyEngine.markDirtyMethod.invoke(worldEngine, worldSection);
+            VoxyEngine.worldSectionReleaseMethod.invoke(worldSection);
+
+            // Propagate child-existence bits to parent levels so the GPU
+            // octree traversal can navigate down to this data
+            if (lvl < 4) {
+                // Convert WorldSection coords to an equivalent L0 section
+                // coordinate for the existing propagation helper
+                int sectionX = wsX << (lvl + 1);
+                int sectionY = wsY << (lvl + 1);
+                int sectionZ = wsZ << (lvl + 1);
+                propagateChildExistence(worldEngine, lvl, sectionX, sectionY, sectionZ);
+            }
+
+        } catch (Exception e) {
+            throw new RuntimeException(
+                    "writeFullWorldSection failed at lvl=" + lvl
+                    + " ws=(" + wsX + "," + wsY + "," + wsZ + ")", e);
+        }
+
+        // Count non-air (done outside the acquire block)
+        int nonAir = 0;
+        for (long v : voxels) {
+            if (!isAir(v)) nonAir++;
+        }
+        return nonAir;
+    }
+
+    /**
      * Check whether a Voxy {@code WorldSection} exists at a specific level and
      * WorldSection coordinate.
      *

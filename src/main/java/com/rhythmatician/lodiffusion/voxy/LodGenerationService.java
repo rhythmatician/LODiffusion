@@ -95,6 +95,22 @@ public final class LodGenerationService {
     private static final int STAGE_0_PARALLELISM = Config.inferenceThreads();
 
     /**
+     * Worker counts per octree level — inverted pyramid.  L4 has few tasks
+     * (one per root) but each takes ~20s of column-context sampling, so a
+     * single worker keeps things simple.  L0 has the most tasks and benefits
+     * most from parallelism.
+     *
+     * <p>Index is the level: {@code WORKERS_PER_LEVEL[0]} = L0 workers, etc.
+     */
+    private static final int[] WORKERS_PER_LEVEL = {
+        Math.max(Config.inferenceThreads(), 2),  // L0 — most tasks, most workers
+        2,                                        // L1
+        1,                                        // L2
+        1,                                        // L3
+        1                                         // L4 — few tasks, single worker
+    };
+
+    /**
      * Maximum number of sections to batch into a single ONNX inference call.
      * Dynamic-batch ONNX models amortize per-call overhead across the batch,
      * improving throughput significantly.  Empirically, 8–16 gives a good
@@ -970,47 +986,48 @@ public final class LodGenerationService {
         OctreeQueue queue = new OctreeQueue();
         this.activeQueue = null; // octree queue is separate type; kept for fallback compat
 
-        int numWorkers = STAGE_0_PARALLELISM + 4; // L4 pool + L3 + L2 + L1 + L0
-        Thread[] workers = new Thread[numWorkers];
-        java.util.concurrent.atomic.AtomicInteger l4Active =
-                new java.util.concurrent.atomic.AtomicInteger(STAGE_0_PARALLELISM);
+        // Inverted pyramid: more workers at finer levels where there are
+        // more tasks.  WORKERS_PER_LEVEL[lvl] gives the count per level.
+        int numWorkers = 0;
+        for (int wpl : WORKERS_PER_LEVEL) numWorkers += wpl;
 
-        // L4 worker pool (no parent -> safe to parallelise)
-        for (int i = 0; i < STAGE_0_PARALLELISM; i++) {
-            final int idx = i;
-            workers[i] = new Thread(() -> {
-                try {
-                    runOctreeLevelWorker(4, queue, model, writer, blockMapper);
-                } finally {
-                    if (l4Active.decrementAndGet() == 0) {
-                        queue.signalLevelComplete(4);
-                    }
-                }
-            }, "LODiffusion-L4-" + idx);
-            workers[i].setDaemon(true);
+        Thread[] workers = new Thread[numWorkers];
+        @SuppressWarnings("unchecked")
+        java.util.concurrent.atomic.AtomicInteger[] activeCounters =
+                new java.util.concurrent.atomic.AtomicInteger[5];
+        for (int lvl = 0; lvl < 5; lvl++) {
+            activeCounters[lvl] =
+                    new java.util.concurrent.atomic.AtomicInteger(WORKERS_PER_LEVEL[lvl]);
         }
 
-        // L3-L0 workers (single-threaded per level)
-        for (int lvl = 3; lvl >= 0; lvl--) {
-            final int level = lvl;
-            int wIdx = STAGE_0_PARALLELISM + (3 - lvl);
-            workers[wIdx] = new Thread(() -> {
-                try {
-                    runOctreeLevelWorker(level, queue, model, writer, blockMapper);
-                } finally {
-                    queue.signalLevelComplete(level);
-                }
-            }, "LODiffusion-L" + lvl);
-            workers[wIdx].setDaemon(true);
+        int wIdx = 0;
+        for (int lvl = 4; lvl >= 0; lvl--) {
+            for (int i = 0; i < WORKERS_PER_LEVEL[lvl]; i++) {
+                final int level = lvl;
+                final int idx = i;
+                workers[wIdx] = new Thread(() -> {
+                    try {
+                        runOctreeLevelWorker(level, queue, model, writer, blockMapper);
+                    } finally {
+                        if (activeCounters[level].decrementAndGet() == 0) {
+                            queue.signalLevelComplete(level);
+                        }
+                    }
+                }, "LODiffusion-L" + lvl
+                        + (WORKERS_PER_LEVEL[lvl] > 1 ? "-" + idx : ""));
+                workers[wIdx].setDaemon(true);
+                wIdx++;
+            }
         }
 
         for (Thread w : workers) w.start();
 
         HelloTerrainMod.LOGGER.info(
-                "[LodGen] Octree pipeline starting — {} L4 workers (batch {}), "
-                + "L3-L0 single-threaded (batch {}), radius={}, total threads={}",
-                STAGE_0_PARALLELISM, L4_BATCH_SIZE,
-                MAX_BATCH_SIZE, GENERATION_RADIUS, numWorkers);
+                "[LodGen] Octree pipeline starting — workers L4={} L3={} L2={} L1={} L0={}, "
+                + "batch L4={} rest={}, radius={}, total threads={}",
+                WORKERS_PER_LEVEL[4], WORKERS_PER_LEVEL[3], WORKERS_PER_LEVEL[2],
+                WORKERS_PER_LEVEL[1], WORKERS_PER_LEVEL[0],
+                L4_BATCH_SIZE, MAX_BATCH_SIZE, GENERATION_RADIUS, numWorkers);
 
         // Root-population loop
         waitForPlayerPosition();
@@ -1204,12 +1221,22 @@ public final class LodGenerationService {
                     OctreeTask task = claimed.get(i);
                     OctreeModelRunner.OctreeOutput output = outputs.get(i);
 
-                    // Write to Voxy only at the leaf level
+                    // Write to Voxy for progressive visibility.
+                    // L0: split 32³ into 2×2×2 = 8 native 16³ VoxelizedSections.
+                    // L1-L2: write 32³ directly to the Voxy WorldSection at
+                    //        native resolution.  L3-L4 are skipped — their
+                    //        voxels are too coarse for good visuals, and the
+                    //        octree cascade still uses them as parent context.
                     if (level == 0) {
                         writer.writeOctreeBlockData(
-                                output.blockLogits(),
+                                output.blockArgmax(),
                                 task.columnContext.biomeIdx(),
-                                output.vocabSize(),
+                                task.wsX, task.wsY, task.wsZ);
+                    } else if (level <= 2) {
+                        writer.writeOctreeToLevel(
+                                output.blockArgmax(),
+                                task.columnContext.biomeIdx(),
+                                level,
                                 task.wsX, task.wsY, task.wsZ);
                     }
 
