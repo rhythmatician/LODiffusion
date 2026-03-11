@@ -167,6 +167,11 @@ public final class OctreeModelRunner implements AutoCloseable {
         // Validate required files
         validateRequiredFiles(modelDir);
 
+        // Select the best execution provider for this machine (DirectML → CPU).
+        InferenceDeviceSelector.Provider provider =
+                InferenceDeviceSelector.selectProvider();
+        LOGGER.info("[OctreeModelRunner] Execution provider: {}", provider);
+
         // DJL uses ServiceLoader for both EngineProvider (NDManager.newBaseManager)
         // and ZooProvider (Criteria.loadModel).  In Fabric (Knot), those service
         // implementations are loaded by the mod classloader, not the system/bootstrap
@@ -185,15 +190,16 @@ public final class OctreeModelRunner implements AutoCloseable {
                 ModelConfig leafCfg   = ConfigLoader.load(modelDir.resolve(CONFIG_LEAF));
 
                 // Load models (each calls Criteria.loadModel → ZooProvider ServiceLoader)
-                ZooModel<NDList, NDList> init   = loadModel(modelDir, STEM_INIT, manager);
-                ZooModel<NDList, NDList> refine = loadModel(modelDir, STEM_REFINE, manager);
-                ZooModel<NDList, NDList> leaf   = loadModel(modelDir, STEM_LEAF, manager);
+                ZooModel<NDList, NDList> init   = loadModel(modelDir, STEM_INIT,   provider);
+                ZooModel<NDList, NDList> refine = loadModel(modelDir, STEM_REFINE, provider);
+                ZooModel<NDList, NDList> leaf   = loadModel(modelDir, STEM_LEAF,   provider);
 
                 // Use the leaf model's config for vocabulary (finest resolution)
                 BlockVocabulary vocab = BlockVocabulary.fromConfig(leafCfg);
 
                 LOGGER.info("[OctreeModelRunner] All 3 octree models loaded — "
-                        + "vocab=" + vocab.size() + "  dir=" + modelDir);
+                        + "vocab=" + vocab.size() + "  dir=" + modelDir
+                        + "  provider=" + provider);
 
                 return new OctreeModelRunner(manager, init, refine, leaf,
                         initCfg, refineCfg, leafCfg, vocab);
@@ -208,22 +214,70 @@ public final class OctreeModelRunner implements AutoCloseable {
         }
     }
 
+    /**
+     * Load a single ONNX model, attempting the given execution provider first
+     * and transparently falling back to CPU if the provider is unavailable.
+     *
+     * @param dir      directory containing the {@code .onnx} file
+     * @param stem     model file stem (without extension)
+     * @param provider requested execution provider
+     * @return loaded model
+     * @throws IOException if the model cannot be loaded even with CPU fallback
+     */
     private static ZooModel<NDList, NDList> loadModel(Path dir, String stem,
-                                                       NDManager manager)
+                                                       InferenceDeviceSelector.Provider provider)
             throws IOException {
-        Criteria<NDList, NDList> cr = Criteria.builder()
-                .setTypes(NDList.class, NDList.class)
-                .optModelPath(dir)
-                .optModelName(stem)
-                .optTranslator(new NoopTranslator())
-                .build();
+        // Try the requested provider first (if it requires an option)
+        if (!provider.djlOptionValue().isEmpty()) {
+            try {
+                ZooModel<NDList, NDList> model = buildAndLoad(dir, stem,
+                        provider.djlOptionValue());
+                LOGGER.info("[OctreeModelRunner] Loaded {} with provider {}",
+                        stem, provider);
+                return model;
+            } catch (Exception ex) {
+                LOGGER.warn("[OctreeModelRunner] Provider {} unavailable for {} "
+                        + "({}); falling back to CPU",
+                        provider, stem, ex.getMessage());
+            }
+        }
+        // CPU fallback (or initial attempt when provider == CPU)
         try {
-            ZooModel<NDList, NDList> model = cr.loadModel();
-            LOGGER.info("[OctreeModelRunner] Loaded " + stem);
+            ZooModel<NDList, NDList> model = buildAndLoad(dir, stem, null);
+            if (!provider.djlOptionValue().isEmpty()) {
+                LOGGER.info("[OctreeModelRunner] Loaded {} with CPU fallback", stem);
+            } else {
+                LOGGER.info("[OctreeModelRunner] Loaded {} (CPU)", stem);
+            }
             return model;
         } catch (Exception e) {
             throw new IOException("Failed to load " + stem + " from " + dir, e);
         }
+    }
+
+    /**
+     * Build a {@link Criteria} and load a model, optionally setting the
+     * {@code ortDevice} session option for GPU acceleration.
+     *
+     * @param dir         model directory
+     * @param stem        model stem (no extension)
+     * @param ortDevice   value for {@code ortDevice} option, or {@code null}
+     *                    to use the default (CPU) provider
+     * @return loaded model
+     * @throws Exception if loading fails
+     */
+    private static ZooModel<NDList, NDList> buildAndLoad(Path dir, String stem,
+                                                          String ortDevice)
+            throws Exception {
+        Criteria.Builder<NDList, NDList> builder = Criteria.builder()
+                .setTypes(NDList.class, NDList.class)
+                .optModelPath(dir)
+                .optModelName(stem)
+                .optTranslator(new NoopTranslator());
+        if (ortDevice != null && !ortDevice.isEmpty()) {
+            builder.optOption("ortDevice", ortDevice);
+        }
+        return builder.build().loadModel();
     }
 
     /**

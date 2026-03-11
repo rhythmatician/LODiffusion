@@ -86,6 +86,24 @@ public class ConfigSmokeTest {
     }
     
     @Test
+    public void testInferenceDevice() {
+        assertEquals("auto", Config.inferenceDevice(),
+                "Default inferenceDevice should be 'auto'");
+    }
+
+    @Test
+    public void testSetInferenceDevice() {
+        String original = Config.inferenceDevice();
+        try {
+            Config.setInferenceDevice("directml");
+            assertEquals("directml", Config.inferenceDevice(),
+                    "inferenceDevice should be 'directml' after setInferenceDevice");
+        } finally {
+            Config.setInferenceDevice(original);
+        }
+    }
+
+    @Test
     public void testInferenceThreadsBounds() {
         int threads = Config.inferenceThreads();
         int maxCpus = Runtime.getRuntime().availableProcessors();
