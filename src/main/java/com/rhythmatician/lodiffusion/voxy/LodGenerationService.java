@@ -1111,12 +1111,12 @@ public final class LodGenerationService {
             }
 
             if (batch.isEmpty()) {
-                if (queue.isUpstreamDone(level)) {
-                    // Final drain
-                    batch = new ArrayList<>();
-                    OctreeTask last;
-                    while ((last = queue.pollLevel(level)) != null) batch.add(last);
-                    if (batch.isEmpty()) break;
+                // Use tryFinalDrain to atomically check exit conditions and
+                // drain remaining tasks, preventing a race with reprioritise().
+                List<OctreeTask> finalBatch = queue.tryFinalDrain(level);
+                if (finalBatch != null) {
+                    if (finalBatch.isEmpty()) break;
+                    batch = finalBatch;
                 } else {
                     continue;
                 }

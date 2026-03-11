@@ -155,9 +155,9 @@ Render plausible terrain for far chunks via an **octree‑based LOD pipeline** d
 
 | Model | `x_height_planes` | `x_biome` | `x_y_index` | `x_parent` | Output `block_logits` | Output `occ_logits` |
 |-------|------------------|-----------|--------------|------------|---------------------|-------------------|
-| `octree_init`   | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | — | [1,N,1,1,1] | [1,8] |
-| `octree_refine` | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | [1,N,32,32,32] int64* | [1,N,32,32,32] | [1,8] |
-| `octree_leaf`   | [1,5,16,16] float32 | [1,16,16] int64 | [1] int64 | [1,N,32,32,32] int64* | [1,N,32,32,32] | — |
+| `octree_init`   | [1,5,32,32] float32 | [1,32,32] int64 | [1] int64 | — | [1,N,32,32,32] | [1,8] |
+| `octree_refine` | [1,5,32,32] float32 | [1,32,32] int64 | [1] int64 | [1,32,32,32] int64* | [1,N,32,32,32] | [1,8] |
+| `octree_leaf`   | [1,5,32,32] float32 | [1,32,32] int64 | [1] int64 | [1,32,32,32] int64* | [1,N,32,32,32] | — |
 
 *`x_parent` for refine/leaf is upsampled parent octant (32³) as int IDs.
 
@@ -172,7 +172,7 @@ Render plausible terrain for far chunks via an **octree‑based LOD pipeline** d
 **Data flow (per chunk):**
 
 ```
-AnchorSampler.capture() → x_height_planes [1,5,16,16], x_biome [1,16,16], x_y_index [1]
+AnchorSampler.capture() → x_height_planes [1,5,32,32], x_biome [1,32,32], x_y_index [1]
    ↓
 OctreeModelRunner:
    octree_init           → root blocks[32³] + occ_mask[8]

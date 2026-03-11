@@ -88,12 +88,15 @@ Local equivalent:
 
 ## 🧠 Mod Responsibilities
 
-### Chunk Generation (OGN)
-- In `OGNChunkGenerator.buildSurface(...)`:
-  - Sample vanilla heightmap + biomes
-  - Delegate to `LodGenerationService` → `OctreeModelRunner`
-- **LOD chaining is required**: each refinement builds on the prior LOD
-- Stubbed multi-channel logic must be test-guided and forward-compatible
+### Chunk Generation (Octree / OGN)
+- `LodGenerationService` is the runtime entrypoint for terrain generation:
+  - Populates `OctreeQueue` with L4 root tasks
+  - Coordinates per-level worker threads
+  - Delegates inference to `OctreeModelRunner` (init / refine / leaf)
+- `OctreeQueue` manages breadth-first task scheduling with deduplication and priority
+- `OctreeModelRunner` loads `octree_init.onnx`, `octree_refine.onnx`, `octree_leaf.onnx`
+  and runs inference; single-sample calls use thread-local `OctreeInferenceBuffers`
+- **LOD chaining is required**: each refinement builds on the prior LOD's argmax output
 
 ### Distant Horizons Integration
 - Runtime detection only (via `ModDetection.isDistantHorizonsLoaded()`)

@@ -53,6 +53,16 @@ public final class OctreeTask implements Comparable<OctreeTask> {
         CANCELLED
     }
 
+    // ── Key packing constants ────────────────────────────────────────────
+
+    private static final int COORD_BITS = 20;
+    /** Bias added to signed coordinates before packing into 20-bit unsigned field. */
+    static final int COORD_BIAS = 1 << (COORD_BITS - 1); // 524_288
+    /** Minimum representable coordinate value (inclusive). */
+    static final int MIN_COORD = -COORD_BIAS;             // -524_288
+    /** Maximum representable coordinate value (inclusive). */
+    static final int MAX_COORD = COORD_BIAS - 1;          //  524_287
+
     // ── Identity (immutable after construction) ─────────────────────────
 
     /** LOD level: 4 (root) down to 0 (leaf / block-resolution). */
@@ -144,13 +154,35 @@ public final class OctreeTask implements Comparable<OctreeTask> {
      * Pack level + section coordinates into a single long for deduplication.
      *
      * <p>Layout: {@code [3 bits level][20 bits x][20 bits y][20 bits z]}
-     * — supports ±524 287 sections per axis.
+     * — supports the signed range {@code [MIN_COORD, MAX_COORD]} per axis.
+     *
+     * <p>Coordinates are encoded with a bias ({@link #COORD_BIAS}) so the
+     * representable signed range maps to the unsigned 20-bit range
+     * {@code [0, 1_048_575]}. Inputs outside this range throw an
+     * {@link IllegalArgumentException} rather than silently colliding.
      */
     public static long packKey(int level, int x, int y, int z) {
-        return ((long) (level & 0x7) << 60)
-             | ((long) (x & 0xFFFFF) << 40)
-             | ((long) (y & 0xFFFFF) << 20)
-             | (z & 0xFFFFFL);
+        if (level < 0 || level > 7) {
+            throw new IllegalArgumentException("level out of range for packKey: " + level);
+        }
+        if (x < MIN_COORD || x > MAX_COORD) {
+            throw new IllegalArgumentException("x out of range for packKey: " + x);
+        }
+        if (y < MIN_COORD || y > MAX_COORD) {
+            throw new IllegalArgumentException("y out of range for packKey: " + y);
+        }
+        if (z < MIN_COORD || z > MAX_COORD) {
+            throw new IllegalArgumentException("z out of range for packKey: " + z);
+        }
+
+        int bx = x + COORD_BIAS;
+        int by = y + COORD_BIAS;
+        int bz = z + COORD_BIAS;
+
+        return ((long) level << 60)
+             | ((long) bx << 40)
+             | ((long) by << 20)
+             | (long) bz;
     }
 
     // ── State transitions ───────────────────────────────────────────────
