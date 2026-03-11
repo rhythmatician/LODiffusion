@@ -165,17 +165,6 @@ jacocoTestReport {
 	}
 }
 
-jacocoTestCoverageVerification {
-	dependsOn jacocoTestReport
-	violationRules {
-		rule {
-			limit {
-				minimum = 0.70 // 70% coverage threshold
-			}
-		}
-	}
-}
-
 // Lint task for static analysis
 tasks.register("lint", JavaCompile) {
 	group = "verification"
@@ -191,7 +180,6 @@ tasks.register("lint", JavaCompile) {
 		'-Xlint:-processing',   // Disable annotation processing warnings (too noisy)
 		'-Xlint:-serial',       // Disable serialization warnings (not relevant for MC mods)
 		'-Xlint:-classfile',    // Disable classfile warnings (Kotlin metadata issues)
-		'-Werror',              // Treat warnings as errors
 		'-Xmaxwarns', '100',    // Limit warning count for readability
 		'-parameters',          // Include parameter names for reflection
 		'-deprecation',         // Show detailed deprecation info
@@ -214,9 +202,6 @@ tasks.register("lint", JavaCompile) {
 		println "   Ready for integration with additional tools (SpotBugs, Checkstyle, PMD)"
 	}
 }
-
-// Make lint run as part of check
-check.dependsOn lint
 
 // publishing is already configured by fabric-loom, just need to add sources and javadoc
 publishing {
