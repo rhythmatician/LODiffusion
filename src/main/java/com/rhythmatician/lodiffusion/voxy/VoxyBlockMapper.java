@@ -21,8 +21,11 @@ import net.minecraft.world.biome.Biome;
  * <p>Voxy assigns its own numeric IDs to {@link BlockState}s and biomes via
  * its {@code Mapper} class.  This bridge pre-resolves every entry so that
  * output decoding is a simple array lookup.
+ *
+ * <p>Not declared {@code final} to allow mocking in unit tests.
+ * Instantiation is still restricted via the private constructor.
  */
-public final class VoxyBlockMapper {
+public class VoxyBlockMapper {
 
     private static final Logger LOGGER = LoggerFactory.getLogger(VoxyBlockMapper.class);
 

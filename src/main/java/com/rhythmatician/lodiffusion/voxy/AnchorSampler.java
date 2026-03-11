@@ -6,7 +6,8 @@ import net.minecraft.world.biome.Biome;
 import net.minecraft.world.chunk.Chunk;
 import net.minecraft.world.gen.noise.NoiseConfig;
 
-import java.util.logging.Logger;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Computes the v2 anchor conditioning inputs from the Minecraft client world.
@@ -31,7 +32,7 @@ import java.util.logging.Logger;
  */
 public final class AnchorSampler {
 
-    private static final Logger LOGGER = Logger.getLogger(AnchorSampler.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(AnchorSampler.class);
 
     // Router6 channel indices — must match Python training order
     public static final int TEMP_IDX        = 0;
@@ -86,7 +87,7 @@ public final class AnchorSampler {
      */
     @Deprecated
     public static AnchorInputs sample(Chunk chunk, NoiseConfig noiseConfig) {
-        LOGGER.warning("AnchorSampler.sample() uses approximateRouter6 — "
+        LOGGER.warn("AnchorSampler.sample() uses approximateRouter6 — "
                 + "quality will be degraded.  Use sampleFromNoise() for real data.");
         int[][] biomeIdx  = sampleBiomes(chunk);
         float[][] hmap    = sampleHeightmap(chunk);

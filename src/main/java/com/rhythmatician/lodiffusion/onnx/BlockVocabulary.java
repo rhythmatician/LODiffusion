@@ -3,7 +3,9 @@ package com.rhythmatician.lodiffusion.onnx;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
@@ -22,7 +24,7 @@ import net.minecraft.util.Identifier;
  */
 public final class BlockVocabulary {
 
-    private static final Logger LOGGER = Logger.getLogger(BlockVocabulary.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(BlockVocabulary.class);
 
     private final int vocabSize;
     private final BlockState[] indexToState;           // [vocabSize]

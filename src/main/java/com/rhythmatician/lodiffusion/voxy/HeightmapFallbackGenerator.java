@@ -2,7 +2,9 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import java.lang.reflect.Method;
 import java.util.Optional;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
@@ -34,7 +36,7 @@ import net.minecraft.world.biome.Biome;
  */
 public final class HeightmapFallbackGenerator {
 
-    private static final Logger LOGGER = Logger.getLogger(HeightmapFallbackGenerator.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(HeightmapFallbackGenerator.class);
 
     /** Minecraft sea level in block Y coordinates. */
     static final int SEA_LEVEL = 63;
@@ -65,6 +67,8 @@ public final class HeightmapFallbackGenerator {
         RED_SAND,
         /** Gravel — cold/regular ocean floors, stony shores, gravelly hills. */
         GRAVEL,
+        /** Stone for all 3 layers — windswept hills and other rocky formations. */
+        STONE,
         /** Snow layer on top of snowy grass_block over dirt — frozen peaks, snowy plains, taigas, etc. */
         SNOW,
         /** Podzol over dirt — old-growth pine and spruce taigas. */
@@ -162,7 +166,7 @@ public final class HeightmapFallbackGenerator {
             }
 
             if (getIdForBiome == null) {
-                LOGGER.warning("Mapper.getIdForBiome not found — " +
+                LOGGER.warn("Mapper.getIdForBiome not found — " +
                         "falling back to getBiomeEntries (biome tints may be wrong)");
                 return resolveBiomeMappingsLegacy(voxyMapper);
             }
@@ -185,7 +189,7 @@ public final class HeightmapFallbackGenerator {
                     + "/" + BiomeMapping.size() + " canonical biomes with Voxy");
 
         } catch (Exception e) {
-            LOGGER.warning("getIdForBiome failed: " + e.getMessage()
+            LOGGER.warn("getIdForBiome failed: " + e.getMessage()
                     + " — falling back to getBiomeEntries");
             return resolveBiomeMappingsLegacy(voxyMapper);
         }
@@ -203,7 +207,7 @@ public final class HeightmapFallbackGenerator {
             Object[] entries = (Object[]) getBiomeEntries.invoke(voxyMapper);
 
             if (entries == null || entries.length == 0) {
-                LOGGER.warning("No biome entries from Voxy — all biomes map to 0");
+                LOGGER.warn("No biome entries from Voxy — all biomes map to 0");
                 return map;
             }
 
@@ -223,7 +227,7 @@ public final class HeightmapFallbackGenerator {
                     + BiomeMapping.size() + " from " + entries.length + " Voxy entries");
 
         } catch (Exception e) {
-            LOGGER.warning("Legacy biome resolution also failed: " + e.getMessage());
+            LOGGER.warn("Legacy biome resolution also failed: " + e.getMessage());
         }
         return map;
     }
@@ -347,6 +351,10 @@ public final class HeightmapFallbackGenerator {
             // deep_ocean(11), frozen_ocean(17), ocean(29),
             // stony_peaks(43), stony_shore(44), windswept_gravelly_hills(50)
 
+            // Stone — rocky windswept hills
+            case 51 -> SurfaceType.STONE;
+            // windswept_hills(51)
+
             // Snow block — frozen and snowy biomes
             case 18, 19, 20, 21, 22, 39, 40, 41 -> SurfaceType.SNOW;
             // frozen_peaks(18), frozen_river(19), grove(20), ice_spikes(21),
@@ -407,6 +415,7 @@ public final class HeightmapFallbackGenerator {
                 case SAND     -> blockIds.sand();
                 case RED_SAND -> blockIds.redSand();
                 case GRAVEL   -> blockIds.gravel();
+                case STONE    -> blockIds.stone();
                 case SNOW     -> (depth == 0 && !underwater) ? blockIds.snowyGrassBlock() : blockIds.dirt();
                 case PODZOL   -> (depth == 0 && !underwater) ? blockIds.podzol()    : blockIds.dirt();
                 case MYCELIUM -> (depth == 0 && !underwater) ? blockIds.mycelium()  : blockIds.dirt();

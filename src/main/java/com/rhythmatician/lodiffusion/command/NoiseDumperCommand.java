@@ -9,7 +9,9 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
@@ -52,7 +54,7 @@ import net.minecraft.util.math.BlockPos;
  */
 public final class NoiseDumperCommand {
 
-    private static final Logger LOG = Logger.getLogger(NoiseDumperCommand.class.getName());
+    private static final Logger LOG = LoggerFactory.getLogger(NoiseDumperCommand.class);
 
     private NoiseDumperCommand() {}
 
@@ -151,7 +153,7 @@ public final class NoiseDumperCommand {
                         dumpChunkNoise(noise, cx, cz, seed, outDir);
                         dumped.incrementAndGet();
                     } catch (Exception e) {
-                        LOG.warning("[NoiseDumper] Failed chunk (" + cx + "," + cz + "): " + e);
+                        LOG.warn("[NoiseDumper] Failed chunk (" + cx + "," + cz + "): " + e);
                         failed.incrementAndGet();
                     }
 
@@ -177,7 +179,7 @@ public final class NoiseDumperCommand {
                 try {
                     f.get();
                 } catch (Exception e) {
-                    LOG.warning("[NoiseDumper] Future error: " + e);
+                    LOG.warn("[NoiseDumper] Future error: " + e);
                 }
             }
             pool.shutdown();

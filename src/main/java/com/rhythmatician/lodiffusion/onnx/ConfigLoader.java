@@ -6,7 +6,9 @@ import java.nio.file.Path;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -25,26 +27,41 @@ import com.google.gson.reflect.TypeToken;
  */
 public final class ConfigLoader {
 
-    private static final Logger LOGGER = Logger.getLogger(ConfigLoader.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(ConfigLoader.class);
     private static final Gson GSON = new GsonBuilder().create();
 
     private ConfigLoader() {}
 
     /**
      * Load and validate a model config from the given JSON path.
+     * 
+     * @param jsonPath Path to the config JSON file
+     * @return Parsed ModelConfig
+     * @throws IOException If the config is missing the required 'contract' field
+     *         or if parsing fails
      */
     public static ModelConfig load(Path jsonPath) throws IOException {
         String json = Files.readString(jsonPath);
         JsonObject root = JsonParser.parseString(json).getAsJsonObject();
 
-        // Detect contract version
-        boolean isV1 = root.has("contract")
-                && "lodiffusion.v1".equals(root.get("contract").getAsString());
+        // Validate contract field exists to prevent silent mislabeling
+        if (!root.has("contract")) {
+            throw new IOException("Config file " + jsonPath 
+                    + " is missing required 'contract' field; cannot determine version. "
+                    + "Ensure export_octree.py includes the contract field in the sidecar JSON.");
+        }
 
-        if (isV1) {
+        String contract = root.get("contract").getAsString();
+        
+        // Detect contract version
+        if ("lodiffusion.v1".equals(contract)) {
             return loadV1(root, jsonPath);
-        } else {
+        } else if (contract.startsWith("lodiffusion.v")) {
             return loadRich(root, jsonPath);
+        } else {
+            throw new IOException("Config file " + jsonPath 
+                    + " has unknown contract version: " + contract + ". "
+                    + "Expected 'lodiffusion.v1' or 'lodiffusion.v5.octree'.");
         }
     }
 
@@ -145,11 +162,11 @@ public final class ConfigLoader {
                 }
             }
         } catch (Exception e) {
-            LOGGER.fine("Config preprocessing warning for " + jsonPath + ": " + e.getMessage());
+            LOGGER.debug("Config preprocessing warning for " + jsonPath + ": " + e.getMessage());
         }
 
         ModelConfig config = GSON.fromJson(root, ModelConfig.class);
-        if (config == null) {
+        if (config == null) {  // Defensive: should not happen, but GSON might fail
             throw new IOException("Failed to parse config: " + jsonPath);
         }
         config.validate();
