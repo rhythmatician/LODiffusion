@@ -173,8 +173,8 @@ public final class OctreeQueue {
             int offZ = ((oct >> 1) & 1) * 16;
 
             // Upsample 16³ → 32³ via nearest-neighbor, flatten to
-            // float[1 * 32 * 32 * 32] for the ONNX parent_context input
-            float[] childParentFlat = extractAndUpsampleOctant(
+            // long[32 * 32 * 32] for the ONNX parent_blocks input
+            long[] childParentFlat = extractAndUpsampleOctant(
                     blockArgmax, offY, offZ, offX);
 
             OctreeTask child = new OctreeTask(
@@ -203,21 +203,21 @@ public final class OctreeQueue {
 
     /**
      * Extract a 16³ octant from a 32³ volume and upsample 2× via
-     * nearest-neighbor to produce a flat 32³ array.
+     * nearest-neighbor to produce a flat 32³ array of block IDs.
      *
-     * <p>The result is shaped as {@code float[1 * 32 * 32 * 32]} in
-     * row-major Y,Z,X order matching the ONNX parent_context input
-     * layout {@code [N, C=1, 32, 32, 32]}.
+     * <p>The result is shaped as {@code long[32 * 32 * 32]} in
+     * row-major Y,Z,X order matching the ONNX parent_blocks input
+     * layout {@code [N, 32, 32, 32]}.
      *
      * @param src  source 32³ argmax values, indexed [Y][Z][X]
      * @param offY Y offset of the octant (0 or 16)
      * @param offZ Z offset of the octant (0 or 16)
      * @param offX X offset of the octant (0 or 16)
-     * @return flat float[32768] containing the upsampled octant
+     * @return flat long[32768] containing the upsampled octant block IDs
      */
-    static float[] extractAndUpsampleOctant(float[][][] src,
+    static long[] extractAndUpsampleOctant(float[][][] src,
                                             int offY, int offZ, int offX) {
-        float[] dst = new float[32 * 32 * 32];
+        long[] dst = new long[32 * 32 * 32];
         int idx = 0;
         for (int dy = 0; dy < 32; dy++) {
             int srcY = offY + (dy >> 1);  // nearest-neighbor: /2
@@ -225,7 +225,7 @@ public final class OctreeQueue {
                 int srcZ = offZ + (dz >> 1);
                 for (int dx = 0; dx < 32; dx++) {
                     int srcX = offX + (dx >> 1);
-                    dst[idx++] = src[srcY][srcZ][srcX];
+                    dst[idx++] = (long) src[srcY][srcZ][srcX];
                 }
             }
         }

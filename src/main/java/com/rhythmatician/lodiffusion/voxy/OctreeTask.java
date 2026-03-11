@@ -104,13 +104,13 @@ public final class OctreeTask implements Comparable<OctreeTask> {
     /**
      * Parent's block predictions for the octant this task occupies,
      * extracted from the parent's 32³ output and upsampled 2× to 32³ via
-     * nearest-neighbor.  Stored as a flat {@code float[1 * 32 * 32 * 32]}
-     * containing argmax block IDs cast to float (the ONNX model handles
-     * embedding internally).
+     * nearest-neighbor.  Stored as a flat {@code long[32 * 32 * 32]}
+     * containing argmax block IDs as int64 (the ONNX model's baked-in
+     * embedding does the lookup).
      *
      * <p>{@code null} for L4 root tasks (no parent).
      */
-    public volatile float[] parentContextFlat;
+    public volatile long[] parentContextFlat;
 
     /** Failure reason (set when state = FAILED). */
     public volatile String failureMessage;
@@ -168,14 +168,14 @@ public final class OctreeTask implements Comparable<OctreeTask> {
 
     /** Mark as complete (inference done, written to Voxy). */
     public void markReady() {
-        this.parentContextFlat = null;  // free intermediate data
+        this.parentContextFlat = null; // free intermediate data
         state.set(State.READY);
     }
 
     /** Mark as failed with a reason. */
     public void markFailed(String message) {
         this.failureMessage = message;
-        this.parentContextFlat = null;
+        this.parentContextFlat = null; // free intermediate data
         state.set(State.FAILED);
     }
 

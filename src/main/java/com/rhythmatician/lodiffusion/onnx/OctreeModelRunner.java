@@ -35,7 +35,7 @@ import com.rhythmatician.lodiffusion.voxy.OctreeTask;
  *              occ_logits   float32[N,8]
  *
  *   octree_refine.onnx — L3-L1 (shared, level ← input)
- *     Inputs:  parent_context float32[N,1,32,32,32]
+ *     Inputs:  parent_blocks  int64[N,32,32,32]
  *              heightmap      float32[N,5,32,32]
  *              biome          int64[N,32,32]
  *              y_position     int64[N]
@@ -44,7 +44,7 @@ import com.rhythmatician.lodiffusion.voxy.OctreeTask;
  *              occ_logits     float32[N,8]
  *
  *   octree_leaf.onnx   — L0 leaves (no occupancy output)
- *     Inputs:  parent_context float32[N,1,32,32,32]
+ *     Inputs:  parent_blocks  int64[N,32,32,32]
  *              heightmap      float32[N,5,32,32]
  *              biome          int64[N,32,32]
  *              y_position     int64[N]
@@ -302,14 +302,14 @@ public final class OctreeModelRunner implements AutoCloseable {
     /**
      * Run {@code octree_refine.onnx} for a single L3-L1 section.
      *
-     * @param parentContextFlat parent's argmax block IDs, flat
-     *                          {@code float[32768]} (32³), cast to float
+     * @param parentBlocksFlat parent's argmax block IDs, flat
+     *                          {@code long[32768]} (32³)
      * @param ctx               column context with 32×32 heightmap and biome
      * @param yPos              Y position index
      * @param level             current level (1-3)
      * @return inference output with block logits and occupancy mask
      */
-    public OctreeOutput runRefine(float[] parentContextFlat,
+    public OctreeOutput runRefine(long[] parentBlocksFlat,
                                    OctreeColumnContext ctx,
                                    int yPos, int level)
             throws TranslateException {
@@ -317,8 +317,8 @@ public final class OctreeModelRunner implements AutoCloseable {
         long t0 = System.currentTimeMillis();
 
         try (NDManager sub = manager.newSubManager()) {
-            NDArray xParent = sub.create(parentContextFlat,
-                    new Shape(1, 1, SPATIAL, SPATIAL, SPATIAL));
+            NDArray xParent = sub.create(parentBlocksFlat,
+                    new Shape(1, SPATIAL, SPATIAL, SPATIAL));
             NDArray xHp     = sub.create(ctx.flattenHeightmap(), new Shape(1, 5, 32, 32));
             NDArray xBiome  = sub.create(ctx.flattenBiome(), new Shape(1, 32, 32));
             NDArray xY      = sub.create(new long[]{yPos}, new Shape(1));
@@ -335,20 +335,20 @@ public final class OctreeModelRunner implements AutoCloseable {
     /**
      * Run {@code octree_leaf.onnx} for a single L0 leaf section.
      *
-     * @param parentContextFlat parent's argmax block IDs, flat float[32768]
+     * @param parentBlocksFlat parent's argmax block IDs, flat long[32768]
      * @param ctx               column context
      * @param yPos              Y position index
      * @return inference output with block logits (occMask always 0)
      */
-    public OctreeOutput runLeaf(float[] parentContextFlat,
+    public OctreeOutput runLeaf(long[] parentBlocksFlat,
                                  OctreeColumnContext ctx, int yPos)
             throws TranslateException {
 
         long t0 = System.currentTimeMillis();
 
         try (NDManager sub = manager.newSubManager()) {
-            NDArray xParent = sub.create(parentContextFlat,
-                    new Shape(1, 1, SPATIAL, SPATIAL, SPATIAL));
+            NDArray xParent = sub.create(parentBlocksFlat,
+                    new Shape(1, SPATIAL, SPATIAL, SPATIAL));
             NDArray xHp     = sub.create(ctx.flattenHeightmap(), new Shape(1, 5, 32, 32));
             NDArray xBiome  = sub.create(ctx.flattenBiome(), new Shape(1, 32, 32));
             NDArray xY      = sub.create(new long[]{yPos}, new Shape(1));
@@ -413,7 +413,7 @@ public final class OctreeModelRunner implements AutoCloseable {
      * same level (L3-L1).
      *
      * @param level LOD level (1-3) — must be the same for all tasks
-     * @param tasks tasks with column context and parent context set
+     * @param tasks tasks with column context and parent block IDs set
      * @return per-task inference outputs
      */
     public List<OctreeOutput> runRefineBatch(int level, List<OctreeTask> tasks)
@@ -427,7 +427,7 @@ public final class OctreeModelRunner implements AutoCloseable {
         int parentSize = SPATIAL * SPATIAL * SPATIAL;  // 32768
 
         try (NDManager sub = manager.newSubManager()) {
-            float[] parentBatch = new float[n * parentSize];
+            long[]  parentBatch = new long[n * parentSize];
             float[] hpBatch     = new float[n * 5 * 32 * 32];
             long[]  bioBatch    = new long[n * 32 * 32];
             long[]  yBatch      = new long[n];
@@ -446,7 +446,7 @@ public final class OctreeModelRunner implements AutoCloseable {
             }
 
             NDArray xParent = sub.create(parentBatch,
-                    new Shape(n, 1, SPATIAL, SPATIAL, SPATIAL));
+                    new Shape(n, SPATIAL, SPATIAL, SPATIAL));
             NDArray xHp     = sub.create(hpBatch, new Shape(n, 5, 32, 32));
             NDArray xBiome  = sub.create(bioBatch, new Shape(n, 32, 32));
             NDArray xY      = sub.create(yBatch, new Shape(n));
@@ -463,7 +463,7 @@ public final class OctreeModelRunner implements AutoCloseable {
     /**
      * Run batched {@code octree_leaf.onnx} for multiple L0 leaf tasks.
      *
-     * @param tasks tasks with column context and parent context set
+     * @param tasks tasks with column context and parent block IDs set
      * @return per-task inference outputs (occMask always 0)
      */
     public List<OctreeOutput> runLeafBatch(List<OctreeTask> tasks)
@@ -477,7 +477,7 @@ public final class OctreeModelRunner implements AutoCloseable {
         int parentSize = SPATIAL * SPATIAL * SPATIAL;
 
         try (NDManager sub = manager.newSubManager()) {
-            float[] parentBatch = new float[n * parentSize];
+            long[]  parentBatch = new long[n * parentSize];
             float[] hpBatch     = new float[n * 5 * 32 * 32];
             long[]  bioBatch    = new long[n * 32 * 32];
             long[]  yBatch      = new long[n];
@@ -494,7 +494,7 @@ public final class OctreeModelRunner implements AutoCloseable {
             }
 
             NDArray xParent = sub.create(parentBatch,
-                    new Shape(n, 1, SPATIAL, SPATIAL, SPATIAL));
+                    new Shape(n, SPATIAL, SPATIAL, SPATIAL));
             NDArray xHp     = sub.create(hpBatch, new Shape(n, 5, 32, 32));
             NDArray xBiome  = sub.create(bioBatch, new Shape(n, 32, 32));
             NDArray xY      = sub.create(yBatch, new Shape(n));
