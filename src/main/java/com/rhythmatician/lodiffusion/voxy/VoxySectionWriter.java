@@ -485,9 +485,9 @@ public final class VoxySectionWriter {
         for (int ox = 0; ox < 2; ox++) {
             for (int oy = 0; oy < 2; oy++) {
                 for (int oz = 0; oz < 2; oz++) {
-                    int l0X = wsX * 2 + ox;
-                    int l0Y = wsY * 2 + oy;
-                    int l0Z = wsZ * 2 + oz;
+                    int l0X = WorldSectionCoord.l0ToVoxySection(wsX, ox);
+                    int l0Y = WorldSectionCoord.l0ToVoxySection(wsY, oy);
+                    int l0Z = WorldSectionCoord.l0ToVoxySection(wsZ, oz);
 
                     int offY = oy * 16;
                     int offZ = oz * 16;

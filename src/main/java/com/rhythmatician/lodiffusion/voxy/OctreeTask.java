@@ -248,11 +248,8 @@ public final class OctreeTask implements Comparable<OctreeTask> {
      * @param playerSectionZ player chunk Z ({@code blockZ >> 4})
      */
     public void updatePriority(int playerSectionX, int playerSectionZ) {
-        // Scale player position to this task's level:
-        // playerSection is blockX>>4 (16-block), wsX is blockX>>(5+level),
-        // so shift by (level+1) to match.
-        int playerAtLevel_X = playerSectionX >> (level + 1);
-        int playerAtLevel_Z = playerSectionZ >> (level + 1);
+        int playerAtLevel_X = WorldSectionCoord.sectionToWorldSection(playerSectionX, level);
+        int playerAtLevel_Z = WorldSectionCoord.sectionToWorldSection(playerSectionZ, level);
         this.priority = Math.abs(wsX - playerAtLevel_X)
                       + Math.abs(wsZ - playerAtLevel_Z)
                       + basePenalty;
@@ -271,8 +268,8 @@ public final class OctreeTask implements Comparable<OctreeTask> {
     public void updateDirectionalPriority(int playerSectionX, int playerSectionZ,
                                            float headingX, float headingZ,
                                            float coneStrength) {
-        int playerAtLevel_X = playerSectionX >> (level + 1);
-        int playerAtLevel_Z = playerSectionZ >> (level + 1);
+        int playerAtLevel_X = WorldSectionCoord.sectionToWorldSection(playerSectionX, level);
+        int playerAtLevel_Z = WorldSectionCoord.sectionToWorldSection(playerSectionZ, level);
         int dx = wsX - playerAtLevel_X;
         int dz = wsZ - playerAtLevel_Z;
         int manhattan = Math.abs(dx) + Math.abs(dz);
@@ -297,41 +294,25 @@ public final class OctreeTask implements Comparable<OctreeTask> {
                 + ") oct=" + octant + " pri=" + priority + " " + state.get() + "]";
     }
 
-    // ── Coordinate utilities (static) ───────────────────────────────────
+    // ── Coordinate utilities (delegated to WorldSectionCoord) ────────────
 
-    /**
-     * Compute child WorldSection X coordinate from parent coordinates and
-     * octant index.
-     */
+    /** @see WorldSectionCoord#childX(int, int) */
     public static int childX(int parentX, int octant) {
-        return (parentX << 1) + (octant & 1);
+        return WorldSectionCoord.childX(parentX, octant);
     }
 
-    /**
-     * Compute child WorldSection Y coordinate from parent coordinates and
-     * octant index.
-     */
+    /** @see WorldSectionCoord#childY(int, int) */
     public static int childY(int parentY, int octant) {
-        return (parentY << 1) + ((octant >> 2) & 1);
+        return WorldSectionCoord.childY(parentY, octant);
     }
 
-    /**
-     * Compute child WorldSection Z coordinate from parent coordinates and
-     * octant index.
-     */
+    /** @see WorldSectionCoord#childZ(int, int) */
     public static int childZ(int parentZ, int octant) {
-        return (parentZ << 1) + ((octant >> 1) & 1);
+        return WorldSectionCoord.childZ(parentZ, octant);
     }
 
-    /**
-     * Compute octant index from local coordinates within a parent cell.
-     *
-     * @param lx local X (0 or 1)
-     * @param ly local Y (0 or 1)
-     * @param lz local Z (0 or 1)
-     * @return octant index 0-7
-     */
+    /** @see WorldSectionCoord#octantIndex(int, int, int) */
     public static int octantIndex(int lx, int ly, int lz) {
-        return (lx & 1) | ((lz & 1) << 1) | ((ly & 1) << 2);
+        return WorldSectionCoord.octantIndex(lx, ly, lz);
     }
 }

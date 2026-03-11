@@ -120,6 +120,7 @@ public final class LodGenerationService {
 
     /** Updated each tick from the client thread. */
     private volatile int playerSectionX;
+    private volatile int playerSectionY;
     private volatile int playerSectionZ;
 
     /** Tracks which (section) positions we've already generated. Thread-safe. */
@@ -247,8 +248,9 @@ public final class LodGenerationService {
      * Update the player's current section position (called each client tick).
      */
     public void updatePlayerPosition(BlockPos pos) {
-        this.playerSectionX = pos.getX() >> 4;
-        this.playerSectionZ = pos.getZ() >> 4;
+        this.playerSectionX = WorldSectionCoord.blockToSection(pos.getX());
+        this.playerSectionY = WorldSectionCoord.blockToSection(pos.getY());
+        this.playerSectionZ = WorldSectionCoord.blockToSection(pos.getZ());
         if (!positionReady.get()) {
             positionReady.set(true);
             HelloTerrainMod.LOGGER.info("[LodGen] Player position initialized: section ({}, {})",
@@ -995,6 +997,15 @@ public final class LodGenerationService {
             return;
         }
 
+        // Log diagnostic trace so we can verify the coordinate chain from logs
+        {
+            int bx = playerSectionX << 4;  // approximate block X from section
+            int by = playerSectionY << 4;
+            int bz = playerSectionZ << 4;
+            HelloTerrainMod.LOGGER.info("[LodGen] Coordinate trace:\n{}",
+                    WorldSectionCoord.traceBlock(bx, by, bz));
+        }
+
         // L4 sections cover 32 L0-sections per axis -> L4 radius = L0_radius / 32
         int l4Radius = Math.max(1, GENERATION_RADIUS / 32);
 
@@ -1003,33 +1014,49 @@ public final class LodGenerationService {
 
         while (!stopRequested.get()) {
             int px = playerSectionX;
+            int py = playerSectionY;
             int pz = playerSectionZ;
-            int l4Cx = px >> 5; // L0 section -> L4 section coordinate
-            int l4Cz = pz >> 5;
+            int l4Cx = WorldSectionCoord.sectionToWorldSection(px, 4);
+            int l4Cy = WorldSectionCoord.sectionToWorldSection(py, 4);
+            int l4Cz = WorldSectionCoord.sectionToWorldSection(pz, 4);
 
             if (l4Cx != lastCenterX || l4Cz != lastCenterZ) {
                 lastCenterX = l4Cx;
                 lastCenterZ = l4Cz;
 
+                // Collect all roots first, then sort by priority so the
+                // center (closest) roots are enqueued first.  Workers are
+                // already blocking on poll(), so the first roots enqueued
+                // are grabbed immediately — if we enqueue in loop order
+                // (corners first), workers waste 20s on distant L4 roots
+                // before the center roots are even offered to the queue.
+                List<OctreeTask> roots = new ArrayList<>();
+                int wyMin = WorldSectionCoord.sectionToWorldSection(Y_BASE_SECTION, 4);
+                int wyMax = WorldSectionCoord.sectionToWorldSection(Y_BASE_SECTION + Y_SECTIONS - 1, 4);
                 for (int dx = -l4Radius; dx <= l4Radius; dx++) {
                     for (int dz = -l4Radius; dz <= l4Radius; dz++) {
-                        if (stopRequested.get()) break;
                         int wx = l4Cx + dx;
                         int wz = l4Cz + dz;
-                        // Y range: fit the Y_SECTIONS range, converted to L4 coordinates
-                        // Each L4 section covers 32 Voxy sections in Y.  No margins needed—
-                        // sections outside the world are wasted work.
-                        int wyMin = Y_BASE_SECTION >> 5;                             // floor(-4/32) = -1
-                        int wyMax = (Y_BASE_SECTION + Y_SECTIONS - 1) >> 5;          // floor(11/32) = 0
                         for (int wy = wyMin; wy <= wyMax; wy++) {
-                            int priority = Math.abs(dx) + Math.abs(dz);
-                            OctreeTask root = new OctreeTask(4, wx, wy, wz, -1, priority);
-                            // Don't pre-build context here — each L4 root covers 1024 chunks
-                            // of heightmap, and doing it serially on this thread starves all
-                            // four L4 workers.  Workers call buildOctreeColumnContext on demand.
-                            queue.enqueueRoot(root);
+                            int priority = Math.abs(dx) + Math.abs(dz)
+                                         + Math.abs(wy - l4Cy);
+                            roots.add(new OctreeTask(4, wx, wy, wz, -1, priority));
                         }
                     }
+                }
+                roots.sort(null); // natural ordering: lowest priority first
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen] Enqueuing {} L4 roots — first: ({},{},{}) pri={}, last: ({},{},{}) pri={}",
+                        roots.size(),
+                        roots.get(0).wsX, roots.get(0).wsY, roots.get(0).wsZ,
+                        roots.get(0).priority,
+                        roots.get(roots.size() - 1).wsX,
+                        roots.get(roots.size() - 1).wsY,
+                        roots.get(roots.size() - 1).wsZ,
+                        roots.get(roots.size() - 1).priority);
+                for (OctreeTask root : roots) {
+                    if (stopRequested.get()) break;
+                    queue.enqueueRoot(root);
                 }
             }
 

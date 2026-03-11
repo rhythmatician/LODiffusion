@@ -210,10 +210,8 @@ public final class OctreeQueue {
                     blockArgmax, offY, offZ, offX);
 
             // Compute proper distance-based priority from current player pos
-            // playerSectionX is blockX>>4 (16-block), wsX at childLevel is
-            // blockX>>(5+childLevel), so shift by childLevel+1.
-            int playerAtLevel_X = playerSectionX >> (childLevel + 1);
-            int playerAtLevel_Z = playerSectionZ >> (childLevel + 1);
+            int playerAtLevel_X = WorldSectionCoord.sectionToWorldSection(playerSectionX, childLevel);
+            int playerAtLevel_Z = WorldSectionCoord.sectionToWorldSection(playerSectionZ, childLevel);
             int childPriority = Math.abs(cx - playerAtLevel_X)
                               + Math.abs(cz - playerAtLevel_Z);
 
@@ -226,8 +224,8 @@ public final class OctreeQueue {
             int surfacePenalty = 0;
             if (parentRawHm != null) {
                 int blockStep = 1 << childLevel;
-                int childMinBlockY = cy * 32 * blockStep;
-                int childMaxBlockY = childMinBlockY + 32 * blockStep;
+                int childMinBlockY = WorldSectionCoord.worldSectionToBlockMin(cy, childLevel);
+                int childMaxBlockY = WorldSectionCoord.worldSectionToBlockMax(cy, childLevel) + 1;
 
                 // Scan the 16×16 sub-region of the parent's 32×32 heightmap
                 // that corresponds to this octant's XZ footprint
@@ -499,11 +497,12 @@ public final class OctreeQueue {
         int cancelled = 0;
         for (Map.Entry<Long, OctreeTask> entry : allTasks.entrySet()) {
             OctreeTask t = entry.getValue();
-            int playerAtLevel_X = playerSectionX >> (t.level + 1);
-            int playerAtLevel_Z = playerSectionZ >> (t.level + 1);
+            int playerAtLevel_X = WorldSectionCoord.sectionToWorldSection(playerSectionX, t.level);
+            int playerAtLevel_Z = WorldSectionCoord.sectionToWorldSection(playerSectionZ, t.level);
             int dist = Math.abs(t.wsX - playerAtLevel_X)
                      + Math.abs(t.wsZ - playerAtLevel_Z);
-            if (dist > (maxRadius >> (t.level + 1)) && t.cancel()) {
+            int radiusAtLevel = maxRadius >> (t.level + 1);
+            if (dist > radiusAtLevel && t.cancel()) {
                 cancelled++;
             }
         }
