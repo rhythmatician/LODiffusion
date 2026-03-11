@@ -21,6 +21,8 @@ class HeightmapFallbackGeneratorTest {
             HeightmapFallbackGenerator.SurfaceType.RED_SAND;
     private static final HeightmapFallbackGenerator.SurfaceType GRAVEL =
             HeightmapFallbackGenerator.SurfaceType.GRAVEL;
+    private static final HeightmapFallbackGenerator.SurfaceType STONE =
+            HeightmapFallbackGenerator.SurfaceType.STONE;
     private static final HeightmapFallbackGenerator.SurfaceType SNOW =
             HeightmapFallbackGenerator.SurfaceType.SNOW;
     private static final HeightmapFallbackGenerator.SurfaceType PODZOL =
@@ -114,7 +116,12 @@ class HeightmapFallbackGeneratorTest {
     }
 
     @Test
-    @DisplayName("Snowy plains (39) → SNOW")
+    @DisplayName("Windswept hills (51) → STONE")
+    void windsweptHillsIsStone() {
+        assertEquals(STONE, HeightmapFallbackGenerator.surfaceTypeForBiome(51));
+    }
+
+    @Test
     void snowyPlainsIsSnow() {
         assertEquals(SNOW, HeightmapFallbackGenerator.surfaceTypeForBiome(39));
     }
@@ -263,6 +270,28 @@ class HeightmapFallbackGeneratorTest {
                 HeightmapFallbackGenerator.pickBlockId(68, 70, 70, GRAVEL, IDS));
         assertEquals(IDS.gravel(),
                 HeightmapFallbackGenerator.pickBlockId(67, 70, 70, GRAVEL, IDS));
+    }
+
+    // ------------------------------------------------------------------ //
+    //  Block selection — STONE biome
+    // ------------------------------------------------------------------ //
+
+    @Test
+    @DisplayName("STONE: top 3 blocks all stone")
+    void stoneTopThreeIsStone() {
+        assertEquals(IDS.stone(),
+                HeightmapFallbackGenerator.pickBlockId(69, 70, 70, STONE, IDS));
+        assertEquals(IDS.stone(),
+                HeightmapFallbackGenerator.pickBlockId(68, 70, 70, STONE, IDS));
+        assertEquals(IDS.stone(),
+                HeightmapFallbackGenerator.pickBlockId(67, 70, 70, STONE, IDS));
+    }
+
+    @Test
+    @DisplayName("STONE: below top 3 → stone")
+    void stoneBelowTopThreeIsStone() {
+        assertEquals(IDS.stone(),
+                HeightmapFallbackGenerator.pickBlockId(66, 70, 70, STONE, IDS));
     }
 
     // ------------------------------------------------------------------ //

@@ -67,6 +67,8 @@ public final class HeightmapFallbackGenerator {
         RED_SAND,
         /** Gravel — cold/regular ocean floors, stony shores, gravelly hills. */
         GRAVEL,
+        /** Stone for all 3 layers — windswept hills and other rocky formations. */
+        STONE,
         /** Snow layer on top of snowy grass_block over dirt — frozen peaks, snowy plains, taigas, etc. */
         SNOW,
         /** Podzol over dirt — old-growth pine and spruce taigas. */
@@ -349,6 +351,10 @@ public final class HeightmapFallbackGenerator {
             // deep_ocean(11), frozen_ocean(17), ocean(29),
             // stony_peaks(43), stony_shore(44), windswept_gravelly_hills(50)
 
+            // Stone — rocky windswept hills
+            case 51 -> SurfaceType.STONE;
+            // windswept_hills(51)
+
             // Snow block — frozen and snowy biomes
             case 18, 19, 20, 21, 22, 39, 40, 41 -> SurfaceType.SNOW;
             // frozen_peaks(18), frozen_river(19), grove(20), ice_spikes(21),
@@ -409,6 +415,7 @@ public final class HeightmapFallbackGenerator {
                 case SAND     -> blockIds.sand();
                 case RED_SAND -> blockIds.redSand();
                 case GRAVEL   -> blockIds.gravel();
+                case STONE    -> blockIds.stone();
                 case SNOW     -> (depth == 0 && !underwater) ? blockIds.snowyGrassBlock() : blockIds.dirt();
                 case PODZOL   -> (depth == 0 && !underwater) ? blockIds.podzol()    : blockIds.dirt();
                 case MYCELIUM -> (depth == 0 && !underwater) ? blockIds.mycelium()  : blockIds.dirt();
