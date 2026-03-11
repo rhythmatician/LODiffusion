@@ -7,6 +7,7 @@ import java.io.File;
 import java.io.IOException;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.*;
 
 import fixtures.TestWorldFixtures;
 
@@ -14,6 +15,8 @@ public class RealWorldBiomeExtractionTest {
 
     @Test
     public void testRegionFileAccess() throws IOException {
+        assumeTrue(TestWorldFixtures.isTestDataAvailable(),
+            "Skipping: test region files not available in this environment");
         File regionFilePath = TestWorldFixtures.getTestRegionFile("r.-1.0.mca");
         assertTrue(regionFilePath.exists(), "Region file should exist at " + regionFilePath.getAbsolutePath());
         assertTrue(regionFilePath.canRead(), "Region file should be readable");
@@ -28,6 +31,8 @@ public class RealWorldBiomeExtractionTest {
 
     @Test
     public void testExtractBiomesFromRealChunk() throws IOException {
+        assumeTrue(TestWorldFixtures.isTestDataAvailable(),
+            "Skipping: test region files not available in this environment");
         File regionFilePath = TestWorldFixtures.getTestRegionFile("r.-1.0.mca");
         assertTrue(regionFilePath.exists(), "Region file should exist at " + regionFilePath.getAbsolutePath());
 

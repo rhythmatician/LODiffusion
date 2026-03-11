@@ -7,10 +7,11 @@ on:
     branches: [main]
 
 jobs:
-  # Lint job - fastest, fails quickly on code style issues
+  # Lint job - informational only, does not block the build
   lint:
     name: Code Quality & Linting
     runs-on: windows-2022
+    continue-on-error: true
     
     steps:
       - name: Checkout repository

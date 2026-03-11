@@ -8,6 +8,7 @@ import java.io.File;
 import java.io.RandomAccessFile;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.*;
 
 import fixtures.TestWorldFixtures;
 
@@ -21,6 +22,8 @@ public class RawNBTStructureTest {
 
     @Test
     public void testRawRegionFileStructure() throws Exception {
+        assumeTrue(TestWorldFixtures.isTestDataAvailable(),
+            "Skipping: test region files not available in this environment");
         File regionFilePath = TestWorldFixtures.getTestRegionFile("r.0.0.mca");
         assertTrue(regionFilePath.exists(), "Region file should exist at " + regionFilePath.getAbsolutePath());
           LOGGER.info("File exists: {}", regionFilePath.exists());
