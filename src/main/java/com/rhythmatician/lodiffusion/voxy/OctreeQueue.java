@@ -332,6 +332,34 @@ public final class OctreeQueue {
         return isUpstreamDone(level) && levelQueues[level].isEmpty();
     }
 
+    /**
+     * Atomically check exit conditions and drain remaining tasks for a level.
+     *
+     * <p>Holds the {@code reprioritiseLock} during the check-and-drain to
+     * prevent a race where {@link #reprioritise} / {@link #reprioritiseDirectional}
+     * drains the queue (making it appear empty) while a worker decides to exit.
+     *
+     * <p>Workers <em>must</em> use this method instead of separately calling
+     * {@link #isUpstreamDone(int)} and {@link #pollLevel(int)} to avoid
+     * premature termination when a reprioritisation is in progress.
+     *
+     * @param level LOD level (0-4)
+     * @return remaining tasks drained from the queue if upstream is done and
+     *         the queue is empty after draining; {@code null} if the level is
+     *         not yet eligible to exit (upstream not done, or tasks remain)
+     */
+    public List<OctreeTask> tryFinalDrain(int level) {
+        reprioritiseLock.lock();
+        try {
+            if (!isUpstreamDone(level)) return null;
+            List<OctreeTask> remaining = new ArrayList<>();
+            levelQueues[level].drainTo(remaining);
+            return remaining;
+        } finally {
+            reprioritiseLock.unlock();
+        }
+    }
+
     // ── Live re-prioritisation ──────────────────────────────────────────
 
     /**

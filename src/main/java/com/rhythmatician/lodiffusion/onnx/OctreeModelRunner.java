@@ -286,10 +286,12 @@ public final class OctreeModelRunner implements AutoCloseable {
 
         long t0 = System.currentTimeMillis();
         OctreeInferenceBuffers buf = getOrCreateBuffers();
+        ctx.flattenHeightmapInto(buf.hpFlat);
+        ctx.flattenBiomeInto(buf.bioFlat);
 
         try (NDManager sub = manager.newSubManager()) {
-            NDArray xHp    = sub.create(ctx.flattenHeightmap(), new Shape(1, 5, 32, 32));
-            NDArray xBiome = sub.create(ctx.flattenBiome(), new Shape(1, 32, 32));
+            NDArray xHp    = sub.create(buf.hpFlat, new Shape(1, 5, 32, 32));
+            NDArray xBiome = sub.create(buf.bioFlat, new Shape(1, 32, 32));
             NDArray xY     = sub.create(new long[]{yPos}, new Shape(1));
 
             NDList inputs  = new NDList(xHp, xBiome, xY);
@@ -316,12 +318,15 @@ public final class OctreeModelRunner implements AutoCloseable {
             throws TranslateException {
 
         long t0 = System.currentTimeMillis();
+        OctreeInferenceBuffers buf = getOrCreateBuffers();
+        ctx.flattenHeightmapInto(buf.hpFlat);
+        ctx.flattenBiomeInto(buf.bioFlat);
 
         try (NDManager sub = manager.newSubManager()) {
             NDArray xParent = sub.create(parentBlocksFlat,
                     new Shape(1, SPATIAL, SPATIAL, SPATIAL));
-            NDArray xHp     = sub.create(ctx.flattenHeightmap(), new Shape(1, 5, 32, 32));
-            NDArray xBiome  = sub.create(ctx.flattenBiome(), new Shape(1, 32, 32));
+            NDArray xHp     = sub.create(buf.hpFlat, new Shape(1, 5, 32, 32));
+            NDArray xBiome  = sub.create(buf.bioFlat, new Shape(1, 32, 32));
             NDArray xY      = sub.create(new long[]{yPos}, new Shape(1));
             NDArray xLevel  = sub.create(new long[]{level}, new Shape(1));
 
@@ -346,12 +351,15 @@ public final class OctreeModelRunner implements AutoCloseable {
             throws TranslateException {
 
         long t0 = System.currentTimeMillis();
+        OctreeInferenceBuffers buf = getOrCreateBuffers();
+        ctx.flattenHeightmapInto(buf.hpFlat);
+        ctx.flattenBiomeInto(buf.bioFlat);
 
         try (NDManager sub = manager.newSubManager()) {
             NDArray xParent = sub.create(parentBlocksFlat,
                     new Shape(1, SPATIAL, SPATIAL, SPATIAL));
-            NDArray xHp     = sub.create(ctx.flattenHeightmap(), new Shape(1, 5, 32, 32));
-            NDArray xBiome  = sub.create(ctx.flattenBiome(), new Shape(1, 32, 32));
+            NDArray xHp     = sub.create(buf.hpFlat, new Shape(1, 5, 32, 32));
+            NDArray xBiome  = sub.create(buf.bioFlat, new Shape(1, 32, 32));
             NDArray xY      = sub.create(new long[]{yPos}, new Shape(1));
 
             NDList inputs  = new NDList(xParent, xHp, xBiome, xY);
@@ -709,7 +717,7 @@ public final class OctreeModelRunner implements AutoCloseable {
         if (buf == null) {
             buf = new OctreeInferenceBuffers();
             threadBuffers.set(buf);
-            LOGGER.info("[OctreeModelRunner] Allocated inference buffers for thread "
+            LOGGER.debug("[OctreeModelRunner] Allocated inference buffers for thread "
                     + Thread.currentThread().getName());
         }
         return buf;

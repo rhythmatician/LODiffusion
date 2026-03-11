@@ -47,14 +47,25 @@ public record OctreeColumnContext(
      */
     public float[] flattenHeightmap() {
         float[] flat = new float[5 * 32 * 32];
+        flattenHeightmapInto(flat);
+        return flat;
+    }
+
+    /**
+     * Fill a pre-allocated array with the flattened heightmap data.
+     * The array must have length {@code 5 * 32 * 32 = 5120}.
+     * This variant avoids array allocation for performance-sensitive paths.
+     *
+     * @param dst pre-allocated destination array of length 5120
+     */
+    public void flattenHeightmapInto(float[] dst) {
         int idx = 0;
         for (int ch = 0; ch < 5; ch++) {
             for (int r = 0; r < 32; r++) {
-                System.arraycopy(heightmap5[ch][r], 0, flat, idx, 32);
+                System.arraycopy(heightmap5[ch][r], 0, dst, idx, 32);
                 idx += 32;
             }
         }
-        return flat;
     }
 
     /**
@@ -64,12 +75,23 @@ public record OctreeColumnContext(
      */
     public long[] flattenBiome() {
         long[] flat = new long[32 * 32];
+        flattenBiomeInto(flat);
+        return flat;
+    }
+
+    /**
+     * Fill a pre-allocated array with the flattened biome data.
+     * The array must have length {@code 32 * 32 = 1024}.
+     * This variant avoids array allocation for performance-sensitive paths.
+     *
+     * @param dst pre-allocated destination array of length 1024
+     */
+    public void flattenBiomeInto(long[] dst) {
         int idx = 0;
         for (int r = 0; r < 32; r++) {
             for (int c = 0; c < 32; c++) {
-                flat[idx++] = biomeIdx[r][c];
+                dst[idx++] = biomeIdx[r][c];
             }
         }
-        return flat;
     }
 }
