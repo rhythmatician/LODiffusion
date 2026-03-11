@@ -238,17 +238,21 @@ public final class OctreeTask implements Comparable<OctreeTask> {
     /**
      * Update this task's priority based on current player position.
      *
-     * <p>The player position is expressed in L0 section coordinates.
-     * The task's coordinates are at its native level, so we scale the
-     * player position down to match before computing Manhattan distance.
+     * <p>The player position is expressed in 16-block chunk coordinates
+     * ({@code blockX >> 4}).  World sections at level L cover
+     * {@code 32 × 2^L} blocks, so we shift by {@code level + 1} to
+     * convert the player position into the same coordinate space as
+     * this task's {@code wsX / wsZ}.
      *
-     * @param playerSectionX player section X (L0 coordinates)
-     * @param playerSectionZ player section Z (L0 coordinates)
+     * @param playerSectionX player chunk X ({@code blockX >> 4})
+     * @param playerSectionZ player chunk Z ({@code blockZ >> 4})
      */
     public void updatePriority(int playerSectionX, int playerSectionZ) {
-        // Scale player position to this task's level
-        int playerAtLevel_X = playerSectionX >> level;
-        int playerAtLevel_Z = playerSectionZ >> level;
+        // Scale player position to this task's level:
+        // playerSection is blockX>>4 (16-block), wsX is blockX>>(5+level),
+        // so shift by (level+1) to match.
+        int playerAtLevel_X = playerSectionX >> (level + 1);
+        int playerAtLevel_Z = playerSectionZ >> (level + 1);
         this.priority = Math.abs(wsX - playerAtLevel_X)
                       + Math.abs(wsZ - playerAtLevel_Z)
                       + basePenalty;
@@ -258,8 +262,8 @@ public final class OctreeTask implements Comparable<OctreeTask> {
      * Update priority using a direction-weighted distance, biasing toward
      * the player's heading.
      *
-     * @param playerSectionX player section X (L0 coordinates)
-     * @param playerSectionZ player section Z (L0 coordinates)
+     * @param playerSectionX player chunk X ({@code blockX >> 4})
+     * @param playerSectionZ player chunk Z ({@code blockZ >> 4})
      * @param headingX       normalised heading X component
      * @param headingZ       normalised heading Z component
      * @param coneStrength   bias strength (0=pure Manhattan, 1=aggressive cone)
@@ -267,8 +271,8 @@ public final class OctreeTask implements Comparable<OctreeTask> {
     public void updateDirectionalPriority(int playerSectionX, int playerSectionZ,
                                            float headingX, float headingZ,
                                            float coneStrength) {
-        int playerAtLevel_X = playerSectionX >> level;
-        int playerAtLevel_Z = playerSectionZ >> level;
+        int playerAtLevel_X = playerSectionX >> (level + 1);
+        int playerAtLevel_Z = playerSectionZ >> (level + 1);
         int dx = wsX - playerAtLevel_X;
         int dz = wsZ - playerAtLevel_Z;
         int manhattan = Math.abs(dx) + Math.abs(dz);

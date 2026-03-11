@@ -505,4 +505,69 @@ class OctreeQueueSpawnTest {
         assertEquals(1, queue.failedCount());
         assertEquals(3, queue.totalProcessed());
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  Coordinate-scaling regression tests
+    // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Verify that updatePriority correctly maps playerSectionX/Z (16-block
+     * chunk coords) to world-section coordinates at each level.
+     *
+     * <p>Player at block (-181, -9) → playerSection = (-12, -1).
+     * <ul>
+     *   <li>L0 wsX covers 32 blocks → player's L0 wsX = -6 (block -181 / 32)</li>
+     *   <li>L4 wsX covers 512 blocks → player's L4 wsX = -1 (block -181 / 512)</li>
+     * </ul>
+     * A task AT the player's position should get priority 0.
+     */
+    @Test
+    void updatePriority_coordinateScaling() {
+        int playerSectionX = -12;  // blockX=-181 >> 4
+        int playerSectionZ = -1;   // blockZ=-9 >> 4
+
+        // L0: player's wsX = floor(-181/32) = -6, wsZ = floor(-9/32) = -1
+        OctreeTask l0 = new OctreeTask(0, -6, 0, -1, 0, 999);
+        l0.updatePriority(playerSectionX, playerSectionZ);
+        assertEquals(0, l0.priority, "L0 task at player position should have priority 0");
+
+        // L4: player's wsX = floor(-181/512) = -1, wsZ = floor(-9/512) = -1
+        OctreeTask l4 = new OctreeTask(4, -1, 0, -1, -1, 999);
+        l4.updatePriority(playerSectionX, playerSectionZ);
+        assertEquals(0, l4.priority, "L4 task at player position should have priority 0");
+
+        // L0 task 1 section away should have priority 1
+        OctreeTask l0off = new OctreeTask(0, -5, 0, -1, 0, 999);
+        l0off.updatePriority(playerSectionX, playerSectionZ);
+        assertEquals(1, l0off.priority, "L0 task 1 section from player should have priority 1");
+    }
+
+    /**
+     * Verify that spawnChildren computes child priorities using the correct
+     * coordinate mapping (matching updatePriority).
+     */
+    @Test
+    void spawnChildren_priorityUsesCorrectCoordinateScaling() {
+        OctreeQueue queue = new OctreeQueue();
+        // Parent at L4 (-1, 0, -1) — the player's L4 section
+        OctreeTask parent = new OctreeTask(4, -1, 0, -1, -1, 0);
+        float[][][] argmax = new float[32][32][32];
+
+        // Player at block (-181, -9) → section (-12, -1)
+        queue.spawnChildren(parent, (byte) 0xFF, argmax, -12, -1);
+
+        // L3 child at (-1, 0, -1) should be the closest
+        // Player L3 wsX = floor(-181/256) = -1, L3 wsZ = floor(-9/256) = -1
+        // So child (-1, *, -1) should have priority 0
+        boolean foundZeroPriority = false;
+        for (int i = 0; i < 8; i++) {
+            OctreeTask child = queue.pollLevel(3);
+            if (child != null && child.wsX == -1 && child.wsZ == -1) {
+                assertEquals(0, child.priority - child.basePenalty,
+                    "L3 child at (-1,*,-1) should have base distance 0 from player");
+                foundZeroPriority = true;
+            }
+        }
+        assertTrue(foundZeroPriority, "Should find a child with distance priority 0");
+    }
 }

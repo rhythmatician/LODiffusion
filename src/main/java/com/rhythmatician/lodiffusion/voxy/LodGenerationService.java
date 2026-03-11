@@ -84,6 +84,13 @@ public final class LodGenerationService {
     private static final int MAX_BATCH_SIZE = 8;
 
     /**
+     * Batch size for L4 (root) workers.  Kept small (1) so the closest
+     * L4 root produces children immediately instead of being blocked
+     * behind context-building for 7 other tasks in the same batch.
+     */
+    private static final int L4_BATCH_SIZE = 1;
+
+    /**
      * Generation radius (in sections).  All sections within this Manhattan
      * distance from the player are generated, closest first.
      */
@@ -1081,7 +1088,8 @@ public final class LodGenerationService {
         while (!stopRequested.get()) {
             List<OctreeTask> batch;
             try {
-                batch = queue.drainLevel(level, MAX_BATCH_SIZE, 200, TimeUnit.MILLISECONDS);
+                int batchSize = (level == 4) ? L4_BATCH_SIZE : MAX_BATCH_SIZE;
+                batch = queue.drainLevel(level, batchSize, 200, TimeUnit.MILLISECONDS);
             } catch (InterruptedException e) {
                 break;
             }

@@ -210,8 +210,10 @@ public final class OctreeQueue {
                     blockArgmax, offY, offZ, offX);
 
             // Compute proper distance-based priority from current player pos
-            int playerAtLevel_X = playerSectionX >> childLevel;
-            int playerAtLevel_Z = playerSectionZ >> childLevel;
+            // playerSectionX is blockX>>4 (16-block), wsX at childLevel is
+            // blockX>>(5+childLevel), so shift by childLevel+1.
+            int playerAtLevel_X = playerSectionX >> (childLevel + 1);
+            int playerAtLevel_Z = playerSectionZ >> (childLevel + 1);
             int childPriority = Math.abs(cx - playerAtLevel_X)
                               + Math.abs(cz - playerAtLevel_Z);
 
@@ -497,11 +499,11 @@ public final class OctreeQueue {
         int cancelled = 0;
         for (Map.Entry<Long, OctreeTask> entry : allTasks.entrySet()) {
             OctreeTask t = entry.getValue();
-            int playerAtLevel_X = playerSectionX >> t.level;
-            int playerAtLevel_Z = playerSectionZ >> t.level;
+            int playerAtLevel_X = playerSectionX >> (t.level + 1);
+            int playerAtLevel_Z = playerSectionZ >> (t.level + 1);
             int dist = Math.abs(t.wsX - playerAtLevel_X)
                      + Math.abs(t.wsZ - playerAtLevel_Z);
-            if (dist > (maxRadius >> t.level) && t.cancel()) {
+            if (dist > (maxRadius >> (t.level + 1)) && t.cancel()) {
                 cancelled++;
             }
         }
