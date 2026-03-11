@@ -125,6 +125,7 @@ public final class DebugUtils {
         report.append("  Adapter: ").append(Config.adapter()).append("\n");
         report.append("  Inference Threads: ").append(Config.inferenceThreads()).append("\n");
         report.append("  Threshold: ").append(Config.threshold()).append("\n");
+        report.append("  Occ Threshold: ").append(Config.getDouble("occThreshold", 0.3)).append("\n");
         report.append("  Log Timings: ").append(Config.logTimings()).append("\n");
         report.append("  CSV Output: ").append(Config.metricsCsv().map(Path::toString).orElse("disabled")).append("\n");
         report.append("\n");

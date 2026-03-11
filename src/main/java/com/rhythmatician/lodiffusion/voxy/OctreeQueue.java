@@ -77,12 +77,24 @@ public final class OctreeQueue {
      */
     private volatile BiFunction<Integer, OctreeTask, OctreeColumnContext> columnContextBuilder;
 
+    // ── Octree efficiency stats (RocNet-inspired) ─────────────────────
+    // Track how many octants are spawned vs pruned at each level to
+    // measure the efficiency advantage the octree is supposed to buy.
+
+    /** Per-level count of octants spawned (occupied). */
+    private final AtomicInteger[] spawnedPerLevel = new AtomicInteger[NUM_LEVELS];
+
+    /** Per-level count of octants pruned (empty). */
+    private final AtomicInteger[] prunedPerLevel = new AtomicInteger[NUM_LEVELS];
+
     // ── Construction ────────────────────────────────────────────────────
 
     public OctreeQueue() {
         for (int i = 0; i < NUM_LEVELS; i++) {
             levelQueues[i]  = new PriorityBlockingQueue<>();
             levelComplete[i] = new AtomicBoolean();
+            spawnedPerLevel[i] = new AtomicInteger();
+            prunedPerLevel[i]  = new AtomicInteger();
         }
     }
 
@@ -157,9 +169,13 @@ public final class OctreeQueue {
 
         int childLevel = parent.level - 1;
         int spawned = 0;
+        int pruned = 0;
 
         for (int oct = 0; oct < 8; oct++) {
-            if ((occMask & (1 << oct)) == 0) continue;
+            if ((occMask & (1 << oct)) == 0) {
+                pruned++;
+                continue;
+            }
 
             int cx = OctreeTask.childX(parent.wsX, oct);
             int cy = OctreeTask.childY(parent.wsY, oct);
@@ -190,11 +206,16 @@ public final class OctreeQueue {
             }
         }
 
+        if (spawned > 0 || pruned > 0) {
+            spawnedPerLevel[childLevel].addAndGet(spawned);
+            prunedPerLevel[childLevel].addAndGet(pruned);
+        }
+
         if (spawned > 0) {
             HelloTerrainMod.LOGGER.debug(
-                    "[OctreeQueue] Spawned {} children at L{} from parent L{} ({},{},{})",
+                    "[OctreeQueue] Spawned {} children at L{} from parent L{} ({},{},{}) — pruned {}",
                     spawned, childLevel, parent.level,
-                    parent.wsX, parent.wsY, parent.wsZ);
+                    parent.wsX, parent.wsY, parent.wsZ, pruned);
         }
 
         return spawned;
@@ -470,11 +491,46 @@ public final class OctreeQueue {
         return sb.toString();
     }
 
+    /**
+     * Format octree efficiency stats as a compact string for logging.
+     *
+     * <p>RocNet-inspired: this shows how effectively the octree prunes
+     * empty subtrees at each level.  A well-calibrated model should
+     * prune most octants at coarse levels and fewer at fine levels.
+     *
+     * <p>Example: {@code "L3: 120 spawned / 200 pruned (62.5% pruned) |
+     * L2: 480 spawned / 480 pruned (50.0% pruned)"}.
+     *
+     * @return formatted efficiency summary, or empty string if no stats
+     */
+    public String efficiencySummary() {
+        StringBuilder sb = new StringBuilder();
+        for (int lvl = 3; lvl >= 0; lvl--) {
+            int s = spawnedPerLevel[lvl].get();
+            int p = prunedPerLevel[lvl].get();
+            int total = s + p;
+            if (total == 0) continue;
+            if (sb.length() > 0) sb.append(" | ");
+            double prunePct = 100.0 * p / total;
+            sb.append(String.format("L%d: %d spawned / %d pruned (%.1f%% pruned)",
+                    lvl, s, p, prunePct));
+        }
+        return sb.toString();
+    }
+
+    /** Per-level spawn count accessor. */
+    public int spawnedAt(int level) { return spawnedPerLevel[level].get(); }
+
+    /** Per-level prune count accessor. */
+    public int prunedAt(int level) { return prunedPerLevel[level].get(); }
+
     /** Clear all state for reuse or shutdown. */
     public void clear() {
         for (int i = 0; i < NUM_LEVELS; i++) {
             levelQueues[i].clear();
             levelComplete[i].set(false);
+            spawnedPerLevel[i].set(0);
+            prunedPerLevel[i].set(0);
         }
         allTasks.clear();
         completedCount.set(0);

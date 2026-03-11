@@ -79,8 +79,21 @@ public final class OctreeModelRunner implements AutoCloseable {
     /** Spatial size of the model output (32³ for octree). */
     private static final int SPATIAL = 32;
 
-    /** Occupancy logits threshold (sigmoid > this → child is occupied). */
-    private static final float OCC_THRESHOLD = 0.5f;
+    /**
+     * Occupancy logits threshold (sigmoid > this → child is occupied).
+     *
+     * <p>RocNet insight: in recursive octrees, false negatives are
+     * disproportionately expensive — they erase entire subtrees.  A lower
+     * threshold (e.g. 0.3) biases toward recall at the cost of some extra
+     * inference calls, which is the safer trade-off.
+     *
+     * <p>Configurable at runtime via {@code lodiffusion.json} key
+     * {@code "occThreshold"} (0.0–1.0, default 0.3).
+     */
+    private static float occThreshold() {
+        return (float) com.rhythmatician.lodiffusion.Config.getDouble(
+                "occThreshold", 0.3);
+    }
 
     /**
      * Result of a single octree inference call.
@@ -685,7 +698,7 @@ public final class OctreeModelRunner implements AutoCloseable {
         byte mask = 0;
         for (int i = 0; i < 8 && i < occLogits.length; i++) {
             float sigmoid = 1.0f / (1.0f + (float) Math.exp(-occLogits[i]));
-            if (sigmoid > OCC_THRESHOLD) {
+            if (sigmoid > occThreshold()) {
                 mask |= (byte) (1 << i);
             }
         }

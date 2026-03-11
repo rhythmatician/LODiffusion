@@ -130,6 +130,7 @@ public final class Config {
   public static void setUseOnnxTerrain(boolean enabled) { setRuntime("useOnnxTerrain", enabled); }
   public static void setAdapter(String adapterId) { setRuntime("adapter", adapterId); }
   public static void setThreshold(double thr) { setRuntime("threshold", thr); }
+  public static void setOccThreshold(double thr) { setRuntime("occThreshold", thr); }
 
   /**
    * Set the debug.dumpCsv path in the runtime overlay (writes nested object).
