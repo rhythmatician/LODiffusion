@@ -129,8 +129,13 @@ public final class OctreeQueue {
      * Extra margin (in blocks) above and below the surface range when
      * checking intersection, to ensure we don't prune sections
      * containing caves near the surface or tree canopies.
+     *
+     * <p>32 blocks was too generous: with typical MC surface at Y≈63,
+     * it allowed wsY=0 (Y=0–31) to pass through (childMaxBlockY=32 vs
+     * rangeMin=31 — boundary case).  16 blocks is sufficient for
+     * near-surface caves while correctly pruning deep underground octants.
      */
-    private static final int SURFACE_MARGIN_BLOCKS = 32;
+    private static final int SURFACE_MARGIN_BLOCKS = 16;
 
     /**
      * After inference on a parent task, spawn child tasks for each occupied

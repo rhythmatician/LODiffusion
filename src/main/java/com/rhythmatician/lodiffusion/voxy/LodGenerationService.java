@@ -1189,6 +1189,23 @@ public final class LodGenerationService {
             });
             if (claimed.isEmpty()) continue;
 
+            // ── Pre-inference existence check for L0 ─────────────────
+            // Skip L0 tasks that Voxy already has data for (e.g. vanilla
+            // chunks ingested from real terrain).  Avoids burning inference
+            // time before the write-time guard in writeOctreeBlockData fires.
+            if (level == 0) {
+                Object we = writer.getWorldEngine();
+                claimed.removeIf(t -> {
+                    if (we != null && VoxyCompat.sectionExistsAtLevel(we, 0, t.wsX, t.wsY, t.wsZ)) {
+                        t.markReady();
+                        queue.markCompleted();
+                        return true;
+                    }
+                    return false;
+                });
+                if (claimed.isEmpty()) continue;
+            }
+
             // ── Save-queue backpressure ──────────────────────────────
             // If Voxy's SectionSavingService is backed up (≥1200 pending
             // tasks — its internal rate-limiter threshold), pause briefly
@@ -1241,16 +1258,17 @@ public final class LodGenerationService {
 
                     // Write to Voxy for progressive visibility.
                     // L0: write 32³ directly as a single WorldSection at level 0.
-                    // L1-L2: write 32³ directly to the Voxy WorldSection at
-                    //        native resolution.  L3-L4 are skipped — their
-                    //        voxels are too coarse for good visuals, and the
-                    //        octree cascade still uses them as parent context.
+                    // L1: write 32³ at 2-block/voxel resolution — visible quickly,
+                    //     looks acceptable, gets refined by L0 shortly after.
+                    // L2-L4: skipped — 4-block/voxel blobs appear as ugly floating
+                    //         chunks before L0 arrives.  L2+ are used only as parent
+                    //         context for the child inference steps.
                     if (level == 0) {
                         writer.writeOctreeBlockData(
                                 output.blockArgmax(),
                                 task.columnContext.biomeIdx(),
                                 task.wsX, task.wsY, task.wsZ);
-                    } else if (level <= 2) {
+                    } else if (level == 1) {
                         writer.writeOctreeToLevel(
                                 output.blockArgmax(),
                                 task.columnContext.biomeIdx(),
