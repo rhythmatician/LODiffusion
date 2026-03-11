@@ -462,4 +462,62 @@ public final class VoxySectionWriter {
 
         return nonAir;
     }
+
+    /**
+     * Write an octree L0 leaf section (32³ voxels at 1m/voxel = 32 blocks) to Voxy
+     * as 2×2×2 = 8 native 16³ VoxelizedSections.
+     *
+     * @param blockLogits  [vocabSize][32][32][32] in Y,Z,X order from OctreeModelRunner
+     * @param biomeIdx32   [32][32] canonical biome indices covering the section footprint
+     * @param vocabSize    number of block classes in the logits
+     * @param wsX          octree L0 WorldSection X coordinate
+     * @param wsY          octree L0 WorldSection Y coordinate
+     * @param wsZ          octree L0 WorldSection Z coordinate
+     */
+    public void writeOctreeBlockData(float[][][][] blockLogits,
+                                      int[][] biomeIdx32,
+                                      int vocabSize,
+                                      int wsX, int wsY, int wsZ) {
+        if (worldEngine == null) {
+            throw new IllegalStateException("writeOctreeBlockData requires a live WorldEngine");
+        }
+        // L0 section covers 32 blocks = 2 Voxy L0 sections per axis
+        for (int ox = 0; ox < 2; ox++) {
+            for (int oy = 0; oy < 2; oy++) {
+                for (int oz = 0; oz < 2; oz++) {
+                    int l0X = wsX * 2 + ox;
+                    int l0Y = wsY * 2 + oy;
+                    int l0Z = wsZ * 2 + oz;
+
+                    int offY = oy * 16;
+                    int offZ = oz * 16;
+                    int offX = ox * 16;
+
+                    // Extract biomeVoxyIds for this 16×16 sub-region
+                    int[][] biomeVoxyIds = new int[16][16];
+                    for (int x = 0; x < 16; x++) {
+                        for (int z = 0; z < 16; z++) {
+                            int canonicalBiome = biomeIdx32[offZ + z][offX + x];
+                            biomeVoxyIds[x][z] = blockMapper.getVoxyBiomeId(canonicalBiome);
+                        }
+                    }
+
+                    // Wrap the 16³ slice in InferenceResult-compatible format [1][V][16][16][16]
+                    float[][][][][] subLogits = new float[1][vocabSize][16][16][16];
+                    for (int ch = 0; ch < vocabSize; ch++) {
+                        for (int y = 0; y < 16; y++) {
+                            for (int z = 0; z < 16; z++) {
+                                System.arraycopy(
+                                    blockLogits[ch][offY + y][offZ + z], offX,
+                                    subLogits[0][ch][y][z], 0, 16);
+                            }
+                        }
+                    }
+
+                    InferenceResult sliceResult = new InferenceResult(subLogits, 0L);
+                    writeSection(sliceResult, vocabSize, l0X, l0Y, l0Z, biomeVoxyIds);
+                }
+            }
+        }
+    }
 }

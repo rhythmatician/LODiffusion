@@ -463,6 +463,12 @@ public final class VoxyCompat {
             // Release the section
             worldSectionReleaseMethod.invoke(worldSection);
 
+            // Propagate child existence bits to parent WorldSections
+            // so Voxy's GPU octree traversal can navigate down to this data
+            if (lvl < 4) {
+                propagateChildExistence(worldEngine, lvl, sectionX, sectionY, sectionZ);
+            }
+
             return nonAir;
 
         } catch (Exception e) {

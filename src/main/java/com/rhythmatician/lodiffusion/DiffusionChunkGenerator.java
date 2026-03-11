@@ -5,11 +5,9 @@ import net.minecraft.util.math.ChunkPos;
 
 public class DiffusionChunkGenerator {
 
-  private final DiffusionModel diffusionModel;
   private final LODQuery lodQuery;
 
   public DiffusionChunkGenerator() {
-    this.diffusionModel = new DiffusionModel();
     this.lodQuery = new DefaultLODQuery();
   }
 
@@ -18,7 +16,6 @@ public class DiffusionChunkGenerator {
    * @param lodQuery The LOD query strategy to use
    */
   public DiffusionChunkGenerator(LODQuery lodQuery) {
-    this.diffusionModel = new DiffusionModel();
     this.lodQuery = lodQuery;
   }
 
@@ -59,8 +56,7 @@ public class DiffusionChunkGenerator {
       }
     }
 
-    // Now apply sophisticated diffusion processing
-    diffusionModel.run(heightmap, biomes);
+    // Diffusion model processing removed (DiffusionModel deleted)
   }
 
   /**
@@ -78,13 +74,11 @@ public class DiffusionChunkGenerator {
       case 0:
         // Highest detail - apply full diffusion with refinement
         applyBasicModification(chunkX, chunkZ, heightmap);
-        diffusionModel.run(heightmap, biomes);
         applyHighDetailRefinement(heightmap, biomes);
         break;
       case 1:
-        // Medium detail - standard diffusion
+        // Medium detail - standard processing
         applyBasicModification(chunkX, chunkZ, heightmap);
-        diffusionModel.run(heightmap, biomes);
         break;
       case 2:
         // Lower detail - reduced diffusion intensity
@@ -270,8 +264,7 @@ public class DiffusionChunkGenerator {
     // Apply basic modification first
     applyBasicModification(chunkPos.x, chunkPos.z, heightmap);
     
-    // Use LOD-aware multi-channel diffusion
-    diffusionModel.runWithLOD(lod, channels, biomes);
+    // Multi-channel diffusion processing removed (DiffusionModel deleted)
     
     // Convert back to int array and apply LOD-specific refinements
     convertBackToIntArray(channels[0], heightmap);
@@ -308,8 +301,7 @@ public class DiffusionChunkGenerator {
     // Apply basic modification first
     applyBasicModification(chunkX, chunkZ, heightmap);
     
-    // Use LOD-aware multi-channel diffusion
-    diffusionModel.runWithLOD(lod, channels, biomes);
+    // Multi-channel diffusion processing removed (DiffusionModel deleted)
     
     // Convert back to int array
     convertBackToIntArray(channels[0], heightmap);
