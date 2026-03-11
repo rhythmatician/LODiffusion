@@ -1,5 +1,6 @@
 package com.rhythmatician.lodiffusion.voxy;
 
+import java.util.Arrays;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.slf4j.Logger;
@@ -26,6 +27,27 @@ public final class VoxySectionWriter {
 
     /** Default light value: full sky light, no block light → 0x0F. */
     static final int DEFAULT_LIGHT = 0x0F;
+
+    /**
+     * Thread-local scratch buffer for 32³ WorldSection voxel data.
+     * Avoids allocating {@code new long[32768]} on every writeOctreeToLevel call.
+     * Each worker thread gets its own buffer, cleared before each use.
+     */
+    private static final ThreadLocal<long[]> WS_SCRATCH =
+            ThreadLocal.withInitial(() -> new long[32 * 32 * 32]);
+
+    /**
+     * Thread-local cache for air-voxel values per Voxy biome ID.
+     * Avoids calling {@code composeVoxel(0, biome, DEFAULT_LIGHT)} for every
+     * air voxel — typically the majority of all voxels.
+     * Maps: biomeVoxyId → composed air voxel long.  Sized to max biome ID.
+     */
+    private static final ThreadLocal<long[]> AIR_CACHE =
+            ThreadLocal.withInitial(() -> {
+                long[] cache = new long[4096]; // generous upper bound for biome IDs
+                Arrays.fill(cache, Long.MIN_VALUE); // sentinel: not yet computed
+                return cache;
+            });
 
     /** Counter for diagnostic logging — log detail for first N sections. Thread-safe. */
     private final AtomicInteger sectionsWritten = new AtomicInteger();
@@ -492,19 +514,36 @@ public final class VoxySectionWriter {
             throw new IllegalStateException("writeOctreeToLevel requires a live WorldEngine");
         }
 
-        long[] voxels = new long[32 * 32 * 32];
+        // Reuse thread-local scratch buffer instead of allocating 32K longs each call
+        long[] voxels = WS_SCRATCH.get();
+        Arrays.fill(voxels, 0L);
+
+        // Air-voxel cache: avoids composeVoxel() for the majority-air voxels
+        long[] airCache = AIR_CACHE.get();
+
         int nonAir = 0;
 
         for (int iy = 0; iy < 32; iy++) {
             for (int iz = 0; iz < 32; iz++) {
+                int biome = blockMapper.getVoxyBiomeId(biomeIdx32[iz][0]);
+                // Pre-fetch air voxel for this biome column (biome only varies by z,x)
                 for (int ix = 0; ix < 32; ix++) {
                     int bestIdx = blockArgmax[iy][iz][ix];
 
-                    int biome = blockMapper.getVoxyBiomeId(biomeIdx32[iz][ix]);
+                    biome = blockMapper.getVoxyBiomeId(biomeIdx32[iz][ix]);
 
                     long voxel;
                     if (bestIdx == 0) {
-                        voxel = VoxyCompat.composeVoxel(0, biome, DEFAULT_LIGHT);
+                        // Cached air voxel lookup
+                        if (biome >= 0 && biome < airCache.length
+                                && airCache[biome] != Long.MIN_VALUE) {
+                            voxel = airCache[biome];
+                        } else {
+                            voxel = VoxyCompat.composeVoxel(0, biome, DEFAULT_LIGHT);
+                            if (biome >= 0 && biome < airCache.length) {
+                                airCache[biome] = voxel;
+                            }
+                        }
                     } else {
                         int voxyBlockId = blockMapper.getVoxyBlockId(bestIdx);
                         voxel = VoxyCompat.composeVoxel(voxyBlockId, biome, DEFAULT_LIGHT);
@@ -566,18 +605,10 @@ public final class VoxySectionWriter {
                     int offZ = oz * 16;
                     int offX = ox * 16;
 
-                    // Extract biomeVoxyIds for this 16×16 sub-region
-                    int[][] biomeVoxyIds = new int[16][16];
-                    for (int x = 0; x < 16; x++) {
-                        for (int z = 0; z < 16; z++) {
-                            int canonicalBiome = biomeIdx32[offZ + z][offX + x];
-                            biomeVoxyIds[x][z] = blockMapper.getVoxyBiomeId(canonicalBiome);
-                        }
-                    }
-
-                    // Build L0 voxel data for this 16³ sub-cube directly from
-                    // pre-computed argmax — no InferenceResult wrapping needed
-                    writeSubCubeFromArgmax(blockArgmax, biomeVoxyIds,
+                    // Pass biomeIdx32 + offsets directly — avoids allocating
+                    // new int[16][16] per octant (8 allocations per L0 section).
+                    // The biome lookup is done inline in writeSubCubeFromArgmax.
+                    writeSubCubeFromArgmax(blockArgmax, biomeIdx32,
                             offY, offZ, offX, l0X, l0Y, l0Z);
                 }
             }
@@ -587,8 +618,15 @@ public final class VoxySectionWriter {
     /**
      * Write a 16³ sub-cube from pre-computed argmax IDs to a Voxy L0 section.
      *
+     * <p>Loop order is {@code y→z→x} to match the Voxy L0 index layout
+     * {@code (y<<8)|(z<<4)|x}, giving sequential memory writes.
+     *
+     * <p>Biome IDs are resolved inline from the full 32×32 canonical biome
+     * grid ({@code biomeIdx32}) using the sub-cube offsets, avoiding an
+     * intermediate {@code int[16][16]} allocation per octant.
+     *
      * @param blockArgmax  full 32³ argmax in Y,Z,X order
-     * @param biomeVoxyIds per-column Voxy biome IDs [16][16], indexed [x][z]
+     * @param biomeIdx32   canonical biome indices [32][32] indexed [z][x]
      * @param offY         Y offset into the 32³ array (0 or 16)
      * @param offZ         Z offset into the 32³ array (0 or 16)
      * @param offX         X offset into the 32³ array (0 or 16)
@@ -597,7 +635,7 @@ public final class VoxySectionWriter {
      * @param sectionZ     Voxy L0 section Z
      */
     private void writeSubCubeFromArgmax(int[][][] blockArgmax,
-                                         int[][] biomeVoxyIds,
+                                         int[][] biomeIdx32,
                                          int offY, int offZ, int offX,
                                          int sectionX, int sectionY, int sectionZ) {
 
@@ -617,19 +655,31 @@ public final class VoxySectionWriter {
         VoxyCompat.setSectionPosition(section, sectionX, sectionY, sectionZ);
         long[] data = VoxyCompat.getSectionData(section);
 
+        // Air-voxel cache: avoids composeVoxel() for the majority-air voxels
+        long[] airCache = AIR_CACHE.get();
+
         int nonAirCount = 0;
 
-        // Fill L0 (16³) — model axis convention: d0=Y, d1=Z, d2=X
-        // Voxy l0Index packs as YZX: (y<<8)|(z<<4)|x
-        for (int x = 0; x < 16; x++) {
-            for (int y = 0; y < 16; y++) {
-                for (int z = 0; z < 16; z++) {
+        // Fill L0 (16³) — loop order y→z→x matches index (y<<8)|(z<<4)|x
+        // for sequential memory writes
+        for (int y = 0; y < 16; y++) {
+            for (int z = 0; z < 16; z++) {
+                for (int x = 0; x < 16; x++) {
                     int bestIdx = blockArgmax[offY + y][offZ + z][offX + x];
-                    int biome = biomeVoxyIds[x][z];
+                    int biome = blockMapper.getVoxyBiomeId(biomeIdx32[offZ + z][offX + x]);
 
                     long voxel;
                     if (bestIdx == 0) {
-                        voxel = VoxyCompat.composeVoxel(0, biome, DEFAULT_LIGHT);
+                        // Cached air voxel lookup
+                        if (biome >= 0 && biome < airCache.length
+                                && airCache[biome] != Long.MIN_VALUE) {
+                            voxel = airCache[biome];
+                        } else {
+                            voxel = VoxyCompat.composeVoxel(0, biome, DEFAULT_LIGHT);
+                            if (biome >= 0 && biome < airCache.length) {
+                                airCache[biome] = voxel;
+                            }
+                        }
                     } else {
                         int voxyBlockId = blockMapper.getVoxyBlockId(bestIdx);
                         voxel = VoxyCompat.composeVoxel(voxyBlockId, biome, DEFAULT_LIGHT);

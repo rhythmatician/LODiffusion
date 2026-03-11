@@ -275,6 +275,11 @@ public final class OctreeModelRunner implements AutoCloseable {
         if (ortDevice != null && !ortDevice.isEmpty()) {
             builder.optOption("ortDevice", ortDevice);
         }
+        // Thread control: we run single-batch inference on dedicated worker
+        // threads, so inter-op parallelism just wastes threads.  Intra-op
+        // parallelism helps with large Conv3d ops on the CPU fallback path.
+        builder.optOption("interOpNumThreads", "1");
+        builder.optOption("intraOpNumThreads", "4");
         return builder.build().loadModel();
     }
 
