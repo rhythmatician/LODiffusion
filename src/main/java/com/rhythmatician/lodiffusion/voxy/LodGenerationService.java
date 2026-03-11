@@ -12,9 +12,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
-import com.rhythmatician.lodiffusion.onnx.ModelConfig;
-import com.rhythmatician.lodiffusion.onnx.BlockVocabulary;
-import com.rhythmatician.lodiffusion.onnx.InferenceResult;
 import com.rhythmatician.lodiffusion.onnx.OctreeModelRunner;
 import java.util.HashMap;
 
@@ -59,13 +56,6 @@ public final class LodGenerationService {
      */
     private static final int SURFACE_MARGIN = 1;  // 1 section = 16 blocks
 
-    /**
-     * When true, force argmax to air (class 0) for voxels above the
-     * surface heightmap.  This compensates for undertrained models that
-     * predict all-solid, preventing terrain from extending above the
-     * real surface.  Can be disabled once the model learns air boundaries.
-     */
-    private static final boolean HEIGHTMAP_CLIP = true;
 
     /**
      * Debug/testing override: when true, treat every voxel as 1×1 blocks
@@ -106,20 +96,7 @@ public final class LodGenerationService {
      */
     private static final int CANCEL_MARGIN = Config.getInt("cancelMargin", 4);
 
-    /**
-     * How strongly to bias generation toward the player's heading
-     * direction.  0.0 = pure Manhattan (360° fill), 1.0 = aggressive
-     * forward cone.  See {@link ChunkScheduler} for details.
-     */
-    private static final float CONE_STRENGTH =
-            (float) Config.getDouble("coneStrength", 0.5);
 
-    /**
-     * Back-pressure cap: stop enqueuing when the queue exceeds this
-     * many tracked tasks.  Prevents runaway memory when the player
-     * moves faster than inference can process.
-     */
-    private static final int MAX_QUEUE_SIZE = Config.getInt("maxQueueSize", 5000);
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
@@ -375,54 +352,10 @@ public final class LodGenerationService {
      * @param sectionY  L0 section Y coordinate
      * @param voxyLvl   Voxy storage level (1-4)
      */
-    private static void applyHeightmapClipScaled(float[][][][][] logits, float[][] rawHm,
-                                                   int sectionY, int voxyLvl) {
-        // Optionally force full-resolution voxels (1 block per voxel)
-        int effLevel = FORCE_FULL_RES ? 0 : voxyLvl;
-        int cellsPerAxis = 16 >> effLevel;  // 16,8,4,2,1 for effLevel 0..4
-        int blocksPerVoxel = 1 << effLevel; // 1,2,4,8,16
-
-        for (int lx = 0; lx < cellsPerAxis; lx++) {
-            for (int lz = 0; lz < cellsPerAxis; lz++) {
-                // Conservative sampling: use the HIGHEST surface Y within this
-                // voxel's XZ footprint.  Using the centre sample (previous
-                // behaviour) produced visible seams equal to the voxel size
-                // (e.g. 4 blocks) when the heightmap varied inside the voxel.
-                int hmX0 = lx * blocksPerVoxel;
-                int hmZ0 = lz * blocksPerVoxel;
-                int hmX1 = Math.min(hmX0 + blocksPerVoxel, 16);
-                int hmZ1 = Math.min(hmZ0 + blocksPerVoxel, 16);
-                float surfaceY = -Float.MAX_VALUE;
-                for (int hx = hmX0; hx < hmX1; hx++) {
-                    for (int hz = hmZ0; hz < hmZ1; hz++) {
-                        surfaceY = Math.max(surfaceY, rawHm[hx][hz]);
-                    }
-                }
-
-                for (int ly = 0; ly < cellsPerAxis; ly++) {
-                    // Lowest block Y covered by this voxel
-                    int worldY = sectionY * 16 + ly * blocksPerVoxel;
-                    if (worldY >= surfaceY) {
-                        logits[0][0][ly][lz][lx] = 100f;
-                    }
-                }
-            }
-        }
-    }
 
     /**
      * Translate canonical biome IDs to Voxy biome IDs for a column.
      */
-    private static int[][] buildBiomeVoxyIds(int[][] biomeIdx,
-                                              VoxyBlockMapper blockMapper) {
-        int[][] biomeVoxyIds = new int[16][16];
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                biomeVoxyIds[lx][lz] = blockMapper.getVoxyBiomeId(biomeIdx[lx][lz]);
-            }
-        }
-        return biomeVoxyIds;
-    }
 
     /** Counter for detailed diagnostics (reset per LOD pass). Thread-safe. */
     private final AtomicInteger diagnosticCount = new AtomicInteger();
@@ -530,71 +463,6 @@ public final class LodGenerationService {
     // ------------------------------------------------------------------ //
 
 
-        private void logDiagnostics(InferenceResult result,
-                                 ModelConfig config,
-                                 BlockVocabulary vocabulary,
-                                 VoxyBlockMapper blockMapper,
-                                 int sectionX, int sectionY, int sectionZ,
-                                 long elapsedMs, int lod,
-                                 int yIndex, int parentSolid) {
-        float[][][][][] logits = result.blockLogits();
-        int vocabSize = config.effectiveBlockVocabSize();
-
-        // Argmax solid count (air = class 0)
-        int solidCount = 0;
-        for (int d0 = 0; d0 < 16; d0++)
-            for (int d1 = 0; d1 < 16; d1++)
-                for (int d2 = 0; d2 < 16; d2++) {
-                    int best = 0;
-                    float bestVal = logits[0][0][d0][d1][d2];
-                    for (int b = 1; b < Math.min(vocabSize, logits[0].length); b++) {
-                        float v = logits[0][b][d0][d1][d2];
-                        if (v > bestVal) {
-                            bestVal = v;
-                            best = b;
-                        }
-                    }
-                    if (best > 0) solidCount++;
-                }
-
-        // Block logit stats
-        float logitMin = Float.MAX_VALUE, logitMax = -Float.MAX_VALUE;
-        for (int b = 0; b < Math.min(vocabSize, logits[0].length); b++)
-            for (int d0 = 0; d0 < 16; d0++)
-                for (int d1 = 0; d1 < 16; d1++)
-                    for (int d2 = 0; d2 < 16; d2++) {
-                        float v = logits[0][b][d0][d1][d2];
-                        if (v < logitMin) logitMin = v;
-                        if (v > logitMax) logitMax = v;
-                    }
-
-        // Top predicted block at center voxel (8,8,8)
-        int centerBest = 0;
-        float centerBestVal = logits[0][0][8][8][8];
-        for (int b = 1; b < Math.min(vocabSize, logits[0].length); b++) {
-            float v = logits[0][b][8][8][8];
-            if (v > centerBestVal) {
-                centerBestVal = v;
-                centerBest = b;
-            }
-        }
-
-        int voxyId = blockMapper.getVoxyBlockId(centerBest);
-        String blockName = centerBest < vocabulary.size()
-                ? vocabulary.getName(centerBest) : "???";
-
-        HelloTerrainMod.LOGGER.info(
-                "[LodGen] DIAG stage {} ({},{},{}): " +
-                "yIdx={} | solid={}/4096 | " +
-                "logit range=[{},{}] | " +
-                "center: idx={} '{}' voxyId={} | " +
-                "{}ms",
-                lod, sectionX, sectionY, sectionZ,
-                yIndex, solidCount,
-                logitMin, logitMax,
-                centerBest, blockName, voxyId,
-                elapsedMs);
-    }
 
     // ------------------------------------------------------------------ //
     //  Input building (position-dependent synthetic conditioning)
@@ -1072,10 +940,6 @@ public final class LodGenerationService {
         OctreeQueue queue = new OctreeQueue();
         this.activeQueue = null; // octree queue is separate type; kept for fallback compat
 
-        // Register column-context builder for child tasks spawned by OctreeQueue
-        queue.setColumnContextBuilder((level, task) ->
-                buildOctreeColumnContext(level, task.wsX, task.wsY, task.wsZ));
-
         int numWorkers = STAGE_0_PARALLELISM + 4; // L4 pool + L3 + L2 + L1 + L0
         Thread[] workers = new Thread[numWorkers];
         java.util.concurrent.atomic.AtomicInteger l4Active =
@@ -1150,12 +1014,18 @@ public final class LodGenerationService {
                         for (int wy = wyMin; wy <= wyMax; wy++) {
                             int priority = Math.abs(dx) + Math.abs(dz);
                             OctreeTask root = new OctreeTask(4, wx, wy, wz, -1, priority);
-                            root.columnContext = buildOctreeColumnContext(4, wx, wy, wz);
+                            // Don't pre-build context here — each L4 root covers 1024 chunks
+                            // of heightmap, and doing it serially on this thread starves all
+                            // four L4 workers.  Workers call buildOctreeColumnContext on demand.
                             queue.enqueueRoot(root);
                         }
                     }
                 }
             }
+
+            // Re-prioritise all pending tasks based on current player position
+            // so the closest tasks are always processed first
+            queue.reprioritise(px, pz);
 
             // Cancel tasks beyond radius
             queue.cancelBeyondRadius(px, pz, GENERATION_RADIUS + CANCEL_MARGIN);
@@ -1282,7 +1152,8 @@ public final class LodGenerationService {
 
         // Spawn children for non-leaf levels
         if (task.level > 0) {
-            int spawned = queue.spawnChildren(task, output.occMask(), output.blockArgmax());
+            int spawned = queue.spawnChildren(task, output.occMask(), output.blockArgmax(),
+                    playerSectionX, playerSectionZ);
             if (diagnosticCount.get() < 10) {
                 HelloTerrainMod.LOGGER.info(
                         "[LodGen] L{} ({},{},{}) — occMask=0x{} spawned={} {}ms",

@@ -9,7 +9,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.BiFunction;
 
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 
@@ -70,12 +69,7 @@ public final class OctreeQueue {
      */
     private final ReentrantLock reprioritiseLock = new ReentrantLock();
 
-    /**
-     * Callback for building column context for child tasks.
-     * {@code (childLevel, childTask) → OctreeColumnContext}.
-     * Set via {@link #setColumnContextBuilder}.
-     */
-    private volatile BiFunction<Integer, OctreeTask, OctreeColumnContext> columnContextBuilder;
+
 
     // ── Octree efficiency stats (RocNet-inspired) ─────────────────────
     // Track how many octants are spawned vs pruned at each level to
@@ -98,14 +92,7 @@ public final class OctreeQueue {
         }
     }
 
-    /**
-     * Set the callback used by {@link #spawnChildren} to build column
-     * context for child tasks.  Must be called before the pipeline starts.
-     */
-    public void setColumnContextBuilder(
-            BiFunction<Integer, OctreeTask, OctreeColumnContext> builder) {
-        this.columnContextBuilder = builder;
-    }
+
 
     // ── Enqueue ─────────────────────────────────────────────────────────
 
@@ -149,22 +136,28 @@ public final class OctreeQueue {
      *       predictions</li>
      *   <li>Upsample 16³ → 32³ via nearest-neighbor to produce the child's
      *       parent context</li>
-     *   <li>Build column context for the child's footprint</li>
      *   <li>Create and enqueue the child {@link OctreeTask}</li>
      * </ol>
      *
+     * <p>Column context is NOT built here — it is deferred to the worker
+     * thread that processes the child, avoiding blocking the parent's
+     * inference thread on noise sampling.
+     *
      * <p>Does nothing if the parent is at L0 (leaves have no children).
      *
-     * @param parent      the parent task that just completed inference
-     * @param occMask     8-bit occupancy mask from sigmoid(occ_logits) > 0.5
-     * @param blockArgmax the parent's 32³ argmax block IDs as
-     *                    {@code float[32][32][32]} (Y, Z, X order),
-     *                    already converted from logits
+     * @param parent         the parent task that just completed inference
+     * @param occMask        8-bit occupancy mask from sigmoid(occ_logits) > 0.5
+     * @param blockArgmax    the parent's 32³ argmax block IDs as
+     *                       {@code float[32][32][32]} (Y, Z, X order),
+     *                       already converted from logits
+     * @param playerSectionX current player section X (L0 coordinates)
+     * @param playerSectionZ current player section Z (L0 coordinates)
      * @return number of children actually enqueued (may be less than
      *         popcount(occMask) if duplicates were detected)
      */
     public int spawnChildren(OctreeTask parent, byte occMask,
-                             float[][][] blockArgmax) {
+                             float[][][] blockArgmax,
+                             int playerSectionX, int playerSectionZ) {
         if (parent.level <= 0) return 0;
 
         int childLevel = parent.level - 1;
@@ -192,14 +185,18 @@ public final class OctreeQueue {
             long[] childParentFlat = extractAndUpsampleOctant(
                     blockArgmax, offY, offZ, offX);
 
+            // Compute proper distance-based priority from current player pos
+            int playerAtLevel_X = playerSectionX >> childLevel;
+            int playerAtLevel_Z = playerSectionZ >> childLevel;
+            int childPriority = Math.abs(cx - playerAtLevel_X)
+                              + Math.abs(cz - playerAtLevel_Z);
+
             OctreeTask child = new OctreeTask(
-                    childLevel, cx, cy, cz, oct, parent.priority);
+                    childLevel, cx, cy, cz, oct, childPriority);
             child.parentContextFlat = childParentFlat;
 
-            // Build column context for the child's geographic footprint
-            if (columnContextBuilder != null) {
-                child.columnContext = columnContextBuilder.apply(childLevel, child);
-            }
+            // Column context is built lazily by the processing worker
+            // (not here) to avoid blocking the inference thread on noise sampling
 
             if (enqueueChild(child)) {
                 spawned++;
