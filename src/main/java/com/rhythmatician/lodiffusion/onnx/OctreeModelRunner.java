@@ -167,44 +167,44 @@ public final class OctreeModelRunner implements AutoCloseable {
         // Validate required files
         validateRequiredFiles(modelDir);
 
-        // DJL's Engine.initEngine() uses ServiceLoader with the thread's
-        // context classloader.  In Fabric (Knot), the ORT engine JARs are
-        // loaded by the mod classloader, not the system classloader that is
-        // active on ForkJoinPool worker threads.  Swap the context CL
-        // temporarily so that ServiceLoader can see OrtEngineProvider.
+        // DJL uses ServiceLoader for both EngineProvider (NDManager.newBaseManager)
+        // and ZooProvider (Criteria.loadModel).  In Fabric (Knot), those service
+        // implementations are loaded by the mod classloader, not the system/bootstrap
+        // classloader that ForkJoinPool worker threads inherit as their context CL.
+        // Hold the swap for the entire DJL initialization block so that every
+        // internal ServiceLoader call sees the correct classloader.
         ClassLoader prevCl = Thread.currentThread().getContextClassLoader();
         Thread.currentThread().setContextClassLoader(
                 OctreeModelRunner.class.getClassLoader());
-        NDManager manager;
         try {
-            manager = NDManager.newBaseManager();
+            NDManager manager = NDManager.newBaseManager();
+            try {
+                // Load configs
+                ModelConfig initCfg   = ConfigLoader.load(modelDir.resolve(CONFIG_INIT));
+                ModelConfig refineCfg = ConfigLoader.load(modelDir.resolve(CONFIG_REFINE));
+                ModelConfig leafCfg   = ConfigLoader.load(modelDir.resolve(CONFIG_LEAF));
+
+                // Load models (each calls Criteria.loadModel → ZooProvider ServiceLoader)
+                ZooModel<NDList, NDList> init   = loadModel(modelDir, STEM_INIT, manager);
+                ZooModel<NDList, NDList> refine = loadModel(modelDir, STEM_REFINE, manager);
+                ZooModel<NDList, NDList> leaf   = loadModel(modelDir, STEM_LEAF, manager);
+
+                // Use the leaf model's config for vocabulary (finest resolution)
+                BlockVocabulary vocab = BlockVocabulary.fromConfig(leafCfg);
+
+                LOGGER.info("[OctreeModelRunner] All 3 octree models loaded — "
+                        + "vocab=" + vocab.size() + "  dir=" + modelDir);
+
+                return new OctreeModelRunner(manager, init, refine, leaf,
+                        initCfg, refineCfg, leafCfg, vocab);
+
+            } catch (Exception e) {
+                manager.close();
+                if (e instanceof IOException) throw (IOException) e;
+                throw new IOException("Failed to load octree models from " + modelDir, e);
+            }
         } finally {
             Thread.currentThread().setContextClassLoader(prevCl);
-        }
-        try {
-            // Load configs
-            ModelConfig initCfg   = ConfigLoader.load(modelDir.resolve(CONFIG_INIT));
-            ModelConfig refineCfg = ConfigLoader.load(modelDir.resolve(CONFIG_REFINE));
-            ModelConfig leafCfg   = ConfigLoader.load(modelDir.resolve(CONFIG_LEAF));
-
-            // Load models
-            ZooModel<NDList, NDList> init   = loadModel(modelDir, STEM_INIT, manager);
-            ZooModel<NDList, NDList> refine = loadModel(modelDir, STEM_REFINE, manager);
-            ZooModel<NDList, NDList> leaf   = loadModel(modelDir, STEM_LEAF, manager);
-
-            // Use the leaf model's config for vocabulary (finest resolution)
-            BlockVocabulary vocab = BlockVocabulary.fromConfig(leafCfg);
-
-            LOGGER.info("[OctreeModelRunner] All 3 octree models loaded — "
-                    + "vocab=" + vocab.size() + "  dir=" + modelDir);
-
-            return new OctreeModelRunner(manager, init, refine, leaf,
-                    initCfg, refineCfg, leafCfg, vocab);
-
-        } catch (Exception e) {
-            manager.close();
-            if (e instanceof IOException) throw (IOException) e;
-            throw new IOException("Failed to load octree models from " + modelDir, e);
         }
     }
 
