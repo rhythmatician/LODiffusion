@@ -5,7 +5,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDList;
@@ -62,8 +64,7 @@ import com.rhythmatician.lodiffusion.voxy.OctreeTask;
  */
 public final class OctreeModelRunner implements AutoCloseable {
 
-    private static final Logger LOGGER =
-            Logger.getLogger(OctreeModelRunner.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(OctreeModelRunner.class);
 
     /** ONNX file stems (no extension). */
     private static final String STEM_INIT   = "octree_init";
@@ -617,7 +618,7 @@ public final class OctreeModelRunner implements AutoCloseable {
             long[] s = t.getShape().getShape();
             if (s.length == 1 && s[0] == 8) return t;
         }
-        LOGGER.warning("[OctreeModelRunner] occ_logits not found in output — "
+        LOGGER.warn("[OctreeModelRunner] occ_logits not found in output — "
                 + "defaulting to no occupancy");
         return null;
     }

@@ -1,7 +1,9 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 import java.lang.reflect.Method;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Responsible for detecting whether the Voxy LOD mod is present on the classpath.
@@ -17,7 +19,7 @@ import java.util.logging.Logger;
  */
 public final class VoxyDetection {
 
-    private static final Logger LOGGER = Logger.getLogger(VoxyDetection.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(VoxyDetection.class);
 
     // ------------------------------------------------------------------ //
     //  Voxy fully-qualified class name constants

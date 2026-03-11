@@ -1,7 +1,9 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 import java.lang.reflect.Method;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Manages reflection-based bindings to Voxy's engine-level API and exposes the primary
@@ -24,7 +26,7 @@ import java.util.logging.Logger;
  */
 public final class VoxyEngine {
 
-    private static final Logger LOGGER = Logger.getLogger(VoxyEngine.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(VoxyEngine.class);
 
     // ------------------------------------------------------------------ //
     //  Binding-ready flags (package-private — checked by VoxyWorldBinding)
@@ -227,7 +229,7 @@ public final class VoxyEngine {
             }
             return false;
         } catch (Exception e) {
-            LOGGER.warning("sectionExists check failed: " + e.getMessage());
+            LOGGER.warn("sectionExists check failed: " + e.getMessage());
             return false;  // fail open — allow generation
         }
     }
@@ -243,7 +245,7 @@ public final class VoxyEngine {
         try {
             return ofEngineNullableMethod.invoke(null, world);
         } catch (Exception e) {
-            LOGGER.warning("Failed to get WorldEngine: " + e.getMessage());
+            LOGGER.warn("Failed to get WorldEngine: " + e.getMessage());
             return null;
         }
     }

@@ -1,7 +1,9 @@
 package com.rhythmatician.lodiffusion.voxy;
 
 import java.lang.reflect.Field;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /**
  * Manages direct field-level access to Voxy's internal {@code WorldSection} storage arrays
@@ -25,7 +27,7 @@ import java.util.logging.Logger;
  */
 public final class VoxyWorldBinding {
 
-    private static final Logger LOGGER = Logger.getLogger(VoxyWorldBinding.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(VoxyWorldBinding.class);
 
     // ------------------------------------------------------------------ //
     //  WorldSection field bindings (package-private — resolved lazily)
@@ -355,7 +357,7 @@ public final class VoxyWorldBinding {
                 VoxyEngine.worldSectionReleaseMethod.invoke(parentSection);
             }
         } catch (Exception e) {
-            LOGGER.warning("propagateChildExistence failed at writtenLvl="
+            LOGGER.warn("propagateChildExistence failed at writtenLvl="
                     + writtenLvl + ": " + e.getMessage());
         }
     }
@@ -383,7 +385,7 @@ public final class VoxyWorldBinding {
             }
             return false;
         } catch (Exception e) {
-            LOGGER.warning("sectionExistsAtLevel check failed: " + e.getMessage());
+            LOGGER.warn("sectionExistsAtLevel check failed: " + e.getMessage());
             return false;
         }
     }

@@ -2,7 +2,9 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import java.lang.reflect.Method;
 import java.util.Optional;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
@@ -34,7 +36,7 @@ import net.minecraft.world.biome.Biome;
  */
 public final class HeightmapFallbackGenerator {
 
-    private static final Logger LOGGER = Logger.getLogger(HeightmapFallbackGenerator.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(HeightmapFallbackGenerator.class);
 
     /** Minecraft sea level in block Y coordinates. */
     static final int SEA_LEVEL = 63;
@@ -162,7 +164,7 @@ public final class HeightmapFallbackGenerator {
             }
 
             if (getIdForBiome == null) {
-                LOGGER.warning("Mapper.getIdForBiome not found — " +
+                LOGGER.warn("Mapper.getIdForBiome not found — " +
                         "falling back to getBiomeEntries (biome tints may be wrong)");
                 return resolveBiomeMappingsLegacy(voxyMapper);
             }
@@ -185,7 +187,7 @@ public final class HeightmapFallbackGenerator {
                     + "/" + BiomeMapping.size() + " canonical biomes with Voxy");
 
         } catch (Exception e) {
-            LOGGER.warning("getIdForBiome failed: " + e.getMessage()
+            LOGGER.warn("getIdForBiome failed: " + e.getMessage()
                     + " — falling back to getBiomeEntries");
             return resolveBiomeMappingsLegacy(voxyMapper);
         }
@@ -203,7 +205,7 @@ public final class HeightmapFallbackGenerator {
             Object[] entries = (Object[]) getBiomeEntries.invoke(voxyMapper);
 
             if (entries == null || entries.length == 0) {
-                LOGGER.warning("No biome entries from Voxy — all biomes map to 0");
+                LOGGER.warn("No biome entries from Voxy — all biomes map to 0");
                 return map;
             }
 
@@ -223,7 +225,7 @@ public final class HeightmapFallbackGenerator {
                     + BiomeMapping.size() + " from " + entries.length + " Voxy entries");
 
         } catch (Exception e) {
-            LOGGER.warning("Legacy biome resolution also failed: " + e.getMessage());
+            LOGGER.warn("Legacy biome resolution also failed: " + e.getMessage());
         }
         return map;
     }

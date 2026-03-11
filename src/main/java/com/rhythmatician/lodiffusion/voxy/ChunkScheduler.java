@@ -2,7 +2,9 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import java.util.Set;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.logging.Logger;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import net.minecraft.world.World;
 
@@ -39,7 +41,7 @@ import net.minecraft.world.World;
  */
 public final class ChunkScheduler {
 
-    private static final Logger LOGGER = Logger.getLogger(ChunkScheduler.class.getName());
+    private static final Logger LOGGER = LoggerFactory.getLogger(ChunkScheduler.class);
 
     /** How often the scheduler checks for player movement (ms). */
     private static final int TICK_INTERVAL_MS = 100;
