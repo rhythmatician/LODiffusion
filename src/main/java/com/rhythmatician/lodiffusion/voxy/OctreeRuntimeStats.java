@@ -178,7 +178,7 @@ public record OctreeRuntimeStats(
 
     /** Helper: append a labelled row with one value per level L4→L0. */
     private void appendRow(StringBuilder sb, String label,
-                            java.util.function.IntFunction<String> valueFn) {
+                            IntFunction<String> valueFn) {
         sb.append(label);
         for (int lvl = 4; lvl >= 0; lvl--) {
             sb.append(String.format("  L%d:%s", lvl, valueFn.apply(lvl)));
