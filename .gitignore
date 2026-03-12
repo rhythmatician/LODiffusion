@@ -77,6 +77,7 @@ saves/
 resourcepacks/
 shaderpacks/
 config/
+!config/checkstyle/checkstyle.xml
 mods/
 *.log
 *.log.*
