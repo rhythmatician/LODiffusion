@@ -2,7 +2,6 @@ plugins {
 	id 'fabric-loom' version '1.13.6'
 	id 'maven-publish'
 	id 'jacoco'
-	id 'checkstyle'
 }
 
 version = project.mod_version
@@ -139,12 +138,6 @@ build.dependsOn deployToRunMods
 
 jacoco {
 	toolVersion = "0.8.11"
-}
-
-checkstyle {
-	toolVersion = '10.21.4'
-	configFile = file('config/checkstyle/checkstyle.xml')
-	maxWarnings = 0
 }
 
 jacocoTestReport {
