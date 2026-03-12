@@ -298,7 +298,7 @@ public final class OctreeTask implements Comparable<OctreeTask> {
     public String toString() {
         return "OctreeTask[L" + level + " (" + wsX + "," + wsY + "," + wsZ
                 + ") oct=" + octant + " pri=" + priority
-                + (nearVanilla ? " VB" : "") + " " + state.get() + "]";;
+                + (nearVanilla ? " VB" : "") + " " + state.get() + "]";
     }
 
     // ── Coordinate utilities (delegated to WorldSectionCoord) ────────────

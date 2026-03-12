@@ -2,12 +2,17 @@ package com.rhythmatician.lodiffusion;
 
 import com.rhythmatician.lodiffusion.voxy.LodGenerationService;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
+import com.rhythmatician.lodiffusion.voxy.VoxyDebugState;
+
 
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.api.EnvType;
 import net.fabricmc.api.Environment;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.networking.v1.ClientPlayConnectionEvents;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandManager;
+import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
+import net.minecraft.text.Text;
 
 /**
  * Client-side entrypoint for LODiffusion.
@@ -70,6 +75,23 @@ public class LodiffusionClient implements ClientModInitializer {
             if (LOD_SERVICE.isRunning() && client.player != null) {
                 LOD_SERVICE.updatePlayerPosition(client.player.getBlockPos());
             }
+        });
+
+        // register debug toggle command in our own namespace
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
+            dispatcher.register(
+                ClientCommandManager.literal("voxygen")
+                    .then(ClientCommandManager.literal("debug")
+                        .executes(ctx -> {
+                            int next = VoxyDebugState.occlusionDebugState == 0 ? 1 : 0;
+                            VoxyDebugState.occlusionDebugState = next;
+                            ctx.getSource().sendFeedback(
+                                Text.literal("Voxy occlusion debug " + (next != 0 ? "enabled" : "disabled"))
+                            );
+                            return 1;
+                        })
+                    )
+            );
         });
 
         HelloTerrainMod.LOGGER.info("[LODiffusion] Client initializer complete");
