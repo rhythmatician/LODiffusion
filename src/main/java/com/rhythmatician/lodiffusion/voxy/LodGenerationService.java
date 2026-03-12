@@ -1277,6 +1277,7 @@ public final class LodGenerationService {
      * uneven queue-filling phases without risking coarse-level starvation —
      * L4/L3 tasks are cheap scaffold and will not be monopolised by L0 workers.
      */
+    @SuppressWarnings("try")
     private void runOctreeLevelWorker(int level, OctreeQueue queue,
                                        OctreeModelRunner model,
                                        VoxySectionWriter writer,
