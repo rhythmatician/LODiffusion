@@ -20,10 +20,8 @@ import net.minecraft.world.gen.chunk.ChunkGeneratorSettings;
 import net.minecraft.world.gen.chunk.ChunkNoiseSampler;
 import net.minecraft.world.gen.chunk.GenerationShapeConfig;
 import net.minecraft.world.gen.chunk.NoiseChunkGenerator;
-import net.minecraft.world.gen.densityfunction.DensityFunction;
 import net.minecraft.world.gen.densityfunction.DensityFunctionTypes;
 import net.minecraft.world.gen.noise.NoiseConfig;
-import net.minecraft.world.gen.noise.NoiseRouter;
 
 import java.util.Arrays;
 import java.util.function.Predicate;
@@ -52,31 +50,14 @@ public final class WorldNoiseAccess {
     private final ServerWorld serverWorld;
     private final ChunkGenerator generator;
     private final NoiseConfig noiseConfig;
-    private final NoiseRouter router;
     private final BiomeSource biomeSource;
-
-    // Cached density functions for the 6 router channels
-    private final DensityFunction temperature;
-    private final DensityFunction vegetation;
-    private final DensityFunction continents;
-    private final DensityFunction erosion;
-    private final DensityFunction depth;
-    private final DensityFunction ridges;
 
     private WorldNoiseAccess(ServerWorld serverWorld, ChunkGenerator generator,
                              NoiseConfig noiseConfig) {
         this.serverWorld = serverWorld;
         this.generator = generator;
         this.noiseConfig = noiseConfig;
-        this.router = noiseConfig.getNoiseRouter();
         this.biomeSource = generator.getBiomeSource();
-
-        this.temperature  = router.temperature();
-        this.vegetation   = router.vegetation();
-        this.continents   = router.continents();
-        this.erosion      = router.erosion();
-        this.depth        = router.depth();
-        this.ridges       = router.ridges();
     }
 
     // ------------------------------------------------------------------
@@ -328,52 +309,6 @@ public final class WorldNoiseAccess {
             }
         }
         return hm;
-    }
-
-    // ------------------------------------------------------------------
-    // Router6 sampling (real density function values)
-    // ------------------------------------------------------------------
-
-    /**
-     * Sample the 6 CORE router density functions at the surface level
-     * for a 16×16 section column.
-     *
-     * <p>Uses {@link DensityFunction#sample(DensityFunction.NoisePos)}
-     * with {@link DensityFunction.UnblendedNoisePos} — pure computation,
-     * no chunk needed.
-     *
-     * <p>Router channels: temperature, vegetation, continents, erosion,
-     * depth, ridges — same order as the training data.
-     *
-     * @param sectionX section X coordinate
-     * @param sectionZ section Z coordinate
-     * @param heightmap the surface heightmap (used to sample at surface Y)
-     * @return float[6][256] in row-major order (channel, lx*16+lz)
-     */
-    public float[][] sampleRouter6(int sectionX, int sectionZ, float[][] heightmap) {
-        float[][] r6 = new float[6][256];
-        int baseX = sectionX * 16;
-        int baseZ = sectionZ * 16;
-
-        DensityFunction[] fns = {
-            temperature, vegetation, continents, erosion, depth, ridges
-        };
-
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                int idx = lx * 16 + lz;
-                int bx = baseX + lx;
-                int bz = baseZ + lz;
-                // Sample at surface Y for this column
-                int surfaceY = (int) heightmap[lx][lz];
-                var noisePos = new DensityFunction.UnblendedNoisePos(bx, surfaceY, bz);
-
-                for (int ch = 0; ch < 6; ch++) {
-                    r6[ch][idx] = (float) fns[ch].sample(noisePos);
-                }
-            }
-        }
-        return r6;
     }
 
     // ------------------------------------------------------------------

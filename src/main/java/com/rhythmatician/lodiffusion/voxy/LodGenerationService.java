@@ -419,7 +419,6 @@ public final class LodGenerationService {
         float[][] rawHm,          // [16][16] surface heightmap in block Y
         int[][]   biomeIdx,       // [16][16] biome indices
         float[][] hp5,            // [5][256] height-planes (row-major)
-        float[][] r6,             // [6][256] router6 values (row-major)
         float[][] oceanFloorHm    // [16][16] ocean/river floor block-Y (may be null)
     ) {}
 
@@ -429,9 +428,9 @@ public final class LodGenerationService {
      *
      * <p>Priority:
      * <ol>
-     *   <li>{@link WorldNoiseAccess} — real heightmap + router6 + biome
-     *       at any coordinate (no chunk needed)</li>
-     *   <li>Loaded chunk — real heightmap + biome, approximate router6</li>
+     *   <li>{@link WorldNoiseAccess} — real heightmap + biome at any coordinate
+     *       (no chunk needed)</li>
+     *   <li>Loaded chunk — real heightmap + biome</li>
      *   <li>Synthetic — sine-wave heightmap + constant biome (last resort)</li>
      * </ol>
      */
@@ -439,25 +438,23 @@ public final class LodGenerationService {
         float[][] rawHm;
         int[][]   biomeIdx;
         float[][] hp5;
-        float[][] r6;
         float[][] oceanFloorHm = null;
 
         if (noiseAccess != null) {
             // *** PRIMARY PATH: Real noise data at any coordinate ***
-            // sampleFromNoise() now returns rawHm inside AnchorInputs — no second
+            // sampleFromNoise() returns rawHm inside AnchorInputs — no second
             // sampleHeightmap() call needed (eliminates 256 duplicate getHeight() calls).
             AnchorSampler.AnchorInputs anchor =
                     AnchorSampler.sampleFromNoise(noiseAccess, sectionX, sectionZ);
             rawHm        = anchor.rawHm();
             biomeIdx     = anchor.biomeIdx();
             hp5          = anchor.heightPlanes5();
-            r6           = anchor.router6();
             oceanFloorHm = anchor.oceanFloorHm();
             noiseAccessSections.incrementAndGet();
             if (diagnosticCount.get() < 3) {
                 HelloTerrainMod.LOGGER.info(
                         "[LodGen] Using NOISE ACCESS data for column ({},{}) — " +
-                        "real heightmap + router6 + biome",
+                        "real heightmap + biome",
                         sectionX, sectionZ);
             }
         } else {
@@ -468,8 +465,7 @@ public final class LodGenerationService {
                 realDataSections.incrementAndGet();
                 if (diagnosticCount.get() < 3) {
                     HelloTerrainMod.LOGGER.info(
-                            "[LodGen] Using REAL chunk data for column ({},{})"
-                            + " — WARNING: router6 is APPROXIMATE (no noise access)",
+                            "[LodGen] Using REAL chunk data for column ({},{})",
                             sectionX, sectionZ);
                 }
             } else {
@@ -481,18 +477,14 @@ public final class LodGenerationService {
                 if (diagnosticCount.get() < 3) {
                     HelloTerrainMod.LOGGER.info(
                             "[LodGen] Using SYNTHETIC data for column ({},{}) — " +
-                            "chunk not loaded, no noise access.  " +
-                            "Router6 is APPROXIMATE — quality WILL be degraded.",
+                            "chunk not loaded, no noise access.",
                             sectionX, sectionZ);
                 }
             }
             hp5 = AnchorSampler.computeHeightPlanes(rawHm, null);  // no ocean floor in synthetic path
-            @SuppressWarnings("deprecation")
-            float[][] approxR6 = AnchorSampler.approximateRouter6(biomeIdx, rawHm);
-            r6 = approxR6;
         }
 
-        return new ColumnContext(rawHm, biomeIdx, hp5, r6, oceanFloorHm);
+        return new ColumnContext(rawHm, biomeIdx, hp5, oceanFloorHm);
     }
 
     /**
