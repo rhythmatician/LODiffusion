@@ -96,19 +96,34 @@ public final class LodGenerationService {
     private static final int STAGE_0_PARALLELISM = Config.inferenceThreads();
 
     /**
-     * Worker counts per octree level — inverted pyramid.  L4 has few tasks
-     * (one per root) but each takes ~20s of column-context sampling, so a
-     * single worker keeps things simple.  L0 has the most tasks and benefits
-     * most from parallelism.
+     * Worker counts per octree level — inverted pyramid reflecting actual task
+     * volume and visual importance.
      *
-     * <p>Index is the level: {@code WORKERS_PER_LEVEL[0]} = L0 workers, etc.
+     * <p><b>Rationale for this split:</b>
+     * <ul>
+     *   <li><b>L4 (1 worker)</b>: Coarsest scaffold — few tasks, but each is
+     *       expensive (column-context sampling).  One worker keeps things
+     *       simple; the first finished root seeds the entire cascade.</li>
+     *   <li><b>L3 (1 worker)</b>: Still coarse scaffold.  Volume is 8× L4
+     *       at most; one worker keeps up easily.</li>
+     *   <li><b>L2 (2 workers)</b>: Transition level.  64× L4 task volume
+     *       possible; two workers ensure the scaffold builds ahead of finer
+     *       levels.</li>
+     *   <li><b>L1 (3 workers)</b>: Visual fidelity starts here.  Task volume
+     *       can be 512× L4; 3 workers keep throughput ahead of L0 spawning.</li>
+     *   <li><b>L0 (5 workers)</b>: Leaf / block-resolution — dominates total
+     *       task count.  5 workers maximise throughput without starving coarser
+     *       levels; L0 is never allowed to monopolise the thread pool.</li>
+     * </ul>
+     *
+     * <p>Total: 12 octree workers.  Index 0 = L0 workers, …, index 4 = L4 workers.
      */
     private static final int[] WORKERS_PER_LEVEL = {
-        Math.max(Config.inferenceThreads(), 2),  // L0 — most tasks, most workers
-        2,                                        // L1
-        1,                                        // L2
-        1,                                        // L3
-        1                                         // L4 — few tasks, single worker
+        5,  // L0 — leaf/block-resolution, highest task volume
+        3,  // L1 — fine detail, significant queue pressure
+        2,  // L2 — transition level
+        1,  // L3 — coarse scaffold
+        1   // L4 — root scaffold, single worker keeps seeding simple
     };
 
     /**
@@ -142,7 +157,31 @@ public final class LodGenerationService {
      */
     private static final int CANCEL_MARGIN = Config.getInt("cancelMargin", 4);
 
+    /**
+     * Mod-wide singleton reference — set by {@code LodiffusionClient} during
+     * client initialisation.  {@code null} in dedicated-server contexts where
+     * the client-side code is absent.  Commands and other server-side code
+     * must guard against null before calling instance methods.
+     *
+     * <p>Uses {@link java.util.concurrent.atomic.AtomicReference} for safe
+     * publication: {@code setInstance} is called exactly once on the client
+     * init thread, and any subsequent reads from other threads are guaranteed
+     * to see the published value.
+     */
+    private static final java.util.concurrent.atomic.AtomicReference<LodGenerationService>
+            INSTANCE_REF = new java.util.concurrent.atomic.AtomicReference<>(null);
 
+    /** Called by {@code LodiffusionClient} to register the singleton. */
+    public static void setInstance(LodGenerationService svc) {
+        INSTANCE_REF.set(svc);
+    }
+
+    /**
+     * Return the singleton service, or {@code null} if not yet initialised.
+     */
+    public static LodGenerationService getInstance() {
+        return INSTANCE_REF.get();
+    }
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
@@ -170,6 +209,25 @@ public final class LodGenerationService {
 
     /** Active pipeline queue (set during pipeline execution). */
     private volatile LodGenerationQueue activeQueue;
+
+    /** Active octree queue — set when the ONNX pipeline is running, null otherwise. */
+    private volatile OctreeQueue activeOctreeQueue;
+
+    /** Wall-clock ms when the current octree pipeline started (for rate calculation). */
+    private volatile long octreePipelineStartMs;
+
+    /** Per-level active worker count (updated atomically by worker threads). */
+    private final java.util.concurrent.atomic.AtomicInteger[] activeWorkersPerLevel =
+            new java.util.concurrent.atomic.AtomicInteger[5];
+
+    {
+        for (int i = 0; i < activeWorkersPerLevel.length; i++) {
+            activeWorkersPerLevel[i] = new java.util.concurrent.atomic.AtomicInteger(0);
+        }
+    }
+
+    /** Whether the octree (ONNX) pipeline is currently active. */
+    private volatile boolean onnxPipelineActive;
 
     /** Stats: how many sections used real vs synthetic conditioning data. Thread-safe. */
     private final AtomicInteger realDataSections = new AtomicInteger();
@@ -240,6 +298,10 @@ public final class LodGenerationService {
         generatedSections.clear();
         columnContextCache.clear();
         activeQueue = null;
+        activeOctreeQueue = null;
+        octreePipelineStartMs = 0L;
+        onnxPipelineActive = false;
+        for (var ctr : activeWorkersPerLevel) ctr.set(0);
         realDataSections.set(0);
         syntheticDataSections.set(0);
         noiseAccessSections.set(0);
@@ -297,6 +359,27 @@ public final class LodGenerationService {
 
     public boolean isRunning() {
         return running.get();
+    }
+
+    /**
+     * Collect and return a snapshot of the current octree pipeline metrics.
+     *
+     * <p>Safe to call from any thread.  Returns a snapshot with all-zero
+     * per-level stats if the pipeline has not yet started.
+     */
+    public OctreeRuntimeStats getOctreeRuntimeStats() {
+        int[] workerSnapshot = new int[5];
+        for (int i = 0; i < 5; i++) {
+            workerSnapshot[i] = activeWorkersPerLevel[i].get();
+        }
+        return OctreeRuntimeStats.collect(
+                activeOctreeQueue,
+                workerSnapshot,
+                playerSectionX,
+                playerSectionZ,
+                GENERATION_RADIUS,
+                onnxPipelineActive,
+                octreePipelineStartMs);
     }
 
     // ------------------------------------------------------------------ //
@@ -978,9 +1061,14 @@ public final class LodGenerationService {
                                     VoxySectionWriter writer, VoxyBlockMapper blockMapper) {
         OctreeQueue queue = new OctreeQueue();
         this.activeQueue = null; // octree queue is separate type; kept for fallback compat
+        this.activeOctreeQueue = queue;
+        this.octreePipelineStartMs = System.currentTimeMillis();
+        this.onnxPipelineActive = true;
 
-        // Inverted pyramid: more workers at finer levels where there are
-        // more tasks.  WORKERS_PER_LEVEL[lvl] gives the count per level.
+        // Pyramid: more workers at finer levels where there are more tasks.
+        // L4/L3 are cheap scaffold; L2 is transition; L1/L0 dominate queue volume.
+        // L0 is given the most workers but is never allowed to monopolise the pool.
+        // See WORKERS_PER_LEVEL Javadoc for the full rationale.
         int numWorkers = 0;
         for (int wpl : WORKERS_PER_LEVEL) numWorkers += wpl;
 
@@ -991,6 +1079,7 @@ public final class LodGenerationService {
         for (int lvl = 0; lvl < 5; lvl++) {
             activeCounters[lvl] =
                     new java.util.concurrent.atomic.AtomicInteger(WORKERS_PER_LEVEL[lvl]);
+            activeWorkersPerLevel[lvl].set(WORKERS_PER_LEVEL[lvl]);
         }
 
         int wIdx = 0;
@@ -1002,6 +1091,7 @@ public final class LodGenerationService {
                     try {
                         runOctreeLevelWorker(level, queue, model, writer, blockMapper);
                     } finally {
+                        activeWorkersPerLevel[level].decrementAndGet();
                         if (activeCounters[level].decrementAndGet() == 0) {
                             queue.signalLevelComplete(level);
                         }
@@ -1135,9 +1225,39 @@ public final class LodGenerationService {
             }
         }
 
+        this.onnxPipelineActive = false;
+        this.activeOctreeQueue = null;
+
         HelloTerrainMod.LOGGER.info(
                 "[LodGen] Octree pipeline complete — {} done, {} failed",
                 queue.completedCount(), queue.failedCount());
+    }
+
+    /**
+     * Returns the LOD levels that a worker at {@code level} is allowed to
+     * steal work from when its own queue is empty.
+     *
+     * <p>Stealing rules (adjacent levels only):
+     * <ul>
+     *   <li>L4 may steal L3 (already idle once roots are done)</li>
+     *   <li>L3 may steal L2 or L4</li>
+     *   <li>L2 may steal L1 or L3</li>
+     *   <li>L1 may steal L0 or L2</li>
+     *   <li>L0 may steal L1 only — L0 must not starve coarser levels</li>
+     * </ul>
+     *
+     * @param level the worker's primary level (0-4)
+     * @return levels to try in preference order, or empty array if none
+     */
+    static int[] stealableLevels(int level) {
+        return switch (level) {
+            case 4 -> new int[]{3};
+            case 3 -> new int[]{2, 4};
+            case 2 -> new int[]{1, 3};
+            case 1 -> new int[]{0, 2};
+            case 0 -> new int[]{1};
+            default -> new int[]{};
+        };
     }
 
     /**
@@ -1148,7 +1268,16 @@ public final class LodGenerationService {
      * <p>Batch inference amortizes per-call ONNX overhead and enables better
      * CPU vectorization, giving 2-4× throughput improvement over single-sample
      * calls.
+     *
+     * <p>When the primary level queue is empty, the worker first checks exit
+     * conditions (via {@link OctreeQueue#tryFinalDrain}). Only if the level is
+     * not yet done does it attempt <em>adjacent-level work stealing</em>: a
+     * single non-blocking poll from each allowed adjacent level (see
+     * {@link #stealableLevels}).  This keeps all workers busy during
+     * uneven queue-filling phases without risking coarse-level starvation —
+     * L4/L3 tasks are cheap scaffold and will not be monopolised by L0 workers.
      */
+    @SuppressWarnings("try")
     private void runOctreeLevelWorker(int level, OctreeQueue queue,
                                        OctreeModelRunner model,
                                        VoxySectionWriter writer,
@@ -1164,6 +1293,9 @@ public final class LodGenerationService {
 
         while (!stopRequested.get()) {
             List<OctreeTask> batch;
+            // effectiveLevel tracks which level the batch actually came from.
+            // Normally equals `level`; differs when a worker steals an adjacent task.
+            int effectiveLevel = level;
             try {
                 int batchSize = (level == 4) ? L4_BATCH_SIZE : MAX_BATCH_SIZE;
                 batch = queue.drainLevel(level, batchSize, 200, TimeUnit.MILLISECONDS);
@@ -1179,7 +1311,22 @@ public final class LodGenerationService {
                     if (finalBatch.isEmpty()) break;
                     batch = finalBatch;
                 } else {
-                    continue;
+                    // Level not yet done — try stealing from an adjacent level
+                    // so this worker stays productive while its queue refills.
+                    OctreeTask stolen = null;
+                    for (int steal : stealableLevels(level)) {
+                        stolen = queue.pollLevel(steal);
+                        if (stolen != null) {
+                            effectiveLevel = steal;
+                            break;
+                        }
+                    }
+                    if (stolen != null) {
+                        batch = new ArrayList<>(1);
+                        batch.add(stolen);
+                    } else {
+                        continue;
+                    }
                 }
             }
 
@@ -1193,7 +1340,7 @@ public final class LodGenerationService {
             claimed.removeIf(t -> {
                 if (isOutOfWorldY(t.level, t.wsY)) {
                     t.markReady();
-                    queue.markCompleted();
+                    queue.markCompleted(t.level);
                     queue.propagateAdjacency(t);
                     return true;
                 }
@@ -1212,7 +1359,7 @@ public final class LodGenerationService {
                 claimed.removeIf(t -> {
                     if (we != null && VoxyCompat.allOctantsPopulated(we, t.level, t.wsX, t.wsY, t.wsZ)) {
                         t.markReady();
-                        queue.markCompleted();
+                        queue.markCompleted(t.level);
                         queue.propagateAdjacency(t);
                         return true;
                     }
@@ -1268,8 +1415,8 @@ public final class LodGenerationService {
                     OctreeTask task = it.next();
                     float[][] taskRawHm = task.columnContext.rawHm();
                     if (taskRawHm == null) continue;
-                    int taskMinBlockY = WorldSectionCoord.worldSectionToBlockMin(task.wsY, level);
-                    int taskMaxBlockY = WorldSectionCoord.worldSectionToBlockMax(task.wsY, level) + 1;
+                    int taskMinBlockY = WorldSectionCoord.worldSectionToBlockMin(task.wsY, task.level);
+                    int taskMaxBlockY = WorldSectionCoord.worldSectionToBlockMax(task.wsY, task.level) + 1;
                     float surfMin = Float.MAX_VALUE;
                     float surfMax = -Float.MAX_VALUE;
                     for (float[] row : taskRawHm) {
@@ -1280,7 +1427,7 @@ public final class LodGenerationService {
                     }
                     if (taskMaxBlockY < surfMin || taskMinBlockY >= surfMax) {
                         task.markReady();
-                        queue.markCompleted();
+                        queue.markCompleted(task.level);
                         queue.propagateAdjacency(task);
                         it.remove();
                     }
@@ -1289,12 +1436,16 @@ public final class LodGenerationService {
             }
 
             // ── Batched inference ────────────────────────────────────
-            try {
+            // Use effectiveLevel (which may differ from level if we stole a task)
+            // to select the correct model call.
+            try (var timing = com.rhythmatician.lodiffusion.util.PerformanceMonitor
+                    .startLevelTiming(effectiveLevel,
+                            com.rhythmatician.lodiffusion.util.PerformanceMonitor.MODEL_INFERENCE_TIME)) {
                 List<OctreeModelRunner.OctreeOutput> outputs;
-                if (level == 4) {
+                if (effectiveLevel == 4) {
                     outputs = model.runInitBatch(claimed);
-                } else if (level > 0) {
-                    outputs = model.runRefineBatch(level, claimed);
+                } else if (effectiveLevel > 0) {
+                    outputs = model.runRefineBatch(effectiveLevel, claimed);
                 } else {
                     outputs = model.runLeafBatch(claimed);
                 }
@@ -1313,7 +1464,7 @@ public final class LodGenerationService {
                     //     parent nodes and stops descending, making far-distance
                     //     LOD invisible.  Coarse levels (L4/L3) are progressively
                     //     replaced by finer data as the octree expands.
-                    if (level == 0) {
+                    if (task.level == 0) {
                         writer.writeOctreeBlockData(
                                 output.blockArgmax(),
                                 task.columnContext.biomeIdx(),
@@ -1322,12 +1473,12 @@ public final class LodGenerationService {
                         writer.writeOctreeToLevel(
                                 output.blockArgmax(),
                                 task.columnContext.biomeIdx(),
-                                level,
+                                task.level,
                                 task.wsX, task.wsY, task.wsZ);
                     }
 
                     // Spawn children for non-leaf levels
-                    if (level > 0) {
+                    if (task.level > 0) {
                         int spawned = queue.spawnChildren(task, output.occMask(),
                                 output.blockArgmax(),
                                 playerSectionX, playerSectionZ);
@@ -1343,7 +1494,7 @@ public final class LodGenerationService {
                     }
 
                     task.markReady();
-                    queue.markCompleted();
+                    queue.markCompleted(task.level);
                     queue.propagateAdjacency(task);
                     processed++;
                 }
@@ -1354,7 +1505,7 @@ public final class LodGenerationService {
                 for (OctreeTask task : claimed) {
                     if (task.state() == OctreeTask.State.PROCESSING) {
                         task.markFailed(e.getMessage());
-                        queue.markFailed();
+                        queue.markFailed(task.level);
                     }
                 }
                 if (!stopRequested.get()) {

@@ -6,6 +6,8 @@ import com.rhythmatician.lodiffusion.Config;
 import java.nio.file.Files;
 import com.rhythmatician.lodiffusion.util.DebugUtils;
 import com.rhythmatician.lodiffusion.util.PerformanceMonitor;
+import com.rhythmatician.lodiffusion.voxy.LodGenerationService;
+import com.rhythmatician.lodiffusion.voxy.OctreeRuntimeStats;
 
 import net.minecraft.command.permission.Permission;
 import net.minecraft.command.permission.PermissionLevel;
@@ -37,6 +39,10 @@ public final class LodiffusionCommand {
             // Performance report
             .then(CommandManager.literal("performance")
                 .executes(context -> executePerformance(context)))
+            
+            // Octree live stats (per-LOD backlog, throughput, worker allocation)
+            .then(CommandManager.literal("octree")
+                .executes(context -> executeOctreeStats(context)))
             
             // Reset metrics
             .then(CommandManager.literal("reset")
@@ -107,6 +113,44 @@ public final class LodiffusionCommand {
             }
         }
         
+        return 1;
+    }
+
+    /**
+     * Display live per-LOD octree pipeline statistics.
+     *
+     * <p>Output (example):
+     * <pre>
+     * === LODiffusion Octree Stats ===
+     * mode: ONNX  player section: (12, -4)  radius: 32  uptime: 45s
+     * queue sizes   L4:1  L3:5  L2:20  L1:80  L0:300
+     * oldest age    L4:0ms  L3:200ms  L2:1s  L1:3s  L0:8s
+     * enq/sec       L4:0.0  L3:0.1  L2:0.4  L1:1.2  L0:5.0
+     * cmp/sec       L4:0.0  L3:0.1  L2:0.4  L1:1.2  L0:5.0
+     * workers       L4:1  L3:1  L2:2  L1:3  L0:5
+     * avg latency   L4:0ms  L3:0ms  L2:0ms  L1:0ms  L0:0ms
+     * </pre>
+     */
+    private static int executeOctreeStats(CommandContext<ServerCommandSource> context) {
+        ServerCommandSource source = context.getSource();
+
+        LodGenerationService svc = LodGenerationService.getInstance();
+        if (svc == null) {
+            source.sendFeedback(() -> Text.literal("§cLOD generation service not available.§r"), false);
+            return 0;
+        }
+        OctreeRuntimeStats stats = svc.getOctreeRuntimeStats();
+
+        source.sendFeedback(() -> Text.literal("§6=== LODiffusion Octree Stats ===§r"), false);
+
+        String display = stats.toDisplayString();
+        for (String line : display.split("\n")) {
+            if (!line.trim().isEmpty()) {
+                final String fLine = line;
+                source.sendFeedback(() -> Text.literal("§7" + fLine + "§r"), false);
+            }
+        }
+
         return 1;
     }
     

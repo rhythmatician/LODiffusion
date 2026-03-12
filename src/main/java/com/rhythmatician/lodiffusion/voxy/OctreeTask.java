@@ -148,6 +148,12 @@ public final class OctreeTask implements Comparable<OctreeTask> {
     /** Failure reason (set when state = FAILED). */
     public volatile String failureMessage;
 
+    /**
+     * Approximate wall-clock time (ms) when this task was created/enqueued.
+     * Used for oldest-pending-age metrics — approximate is fine.
+     */
+    public final long enqueuedAtMs = System.currentTimeMillis();
+
     // ── Construction ────────────────────────────────────────────────────
 
     /**
