@@ -31,6 +31,9 @@ public class LodiffusionClient implements ClientModInitializer {
     public void onInitializeClient() {
         HelloTerrainMod.LOGGER.info("[LODiffusion] Client initializer starting");
 
+        // Publish the singleton so server-side command handlers can query stats.
+        LodGenerationService.setInstance(LOD_SERVICE);
+
         // --- Connection init: pre-load ONNX models during "Logging in..." screen ---
         ClientPlayConnectionEvents.INIT.register((handler, client) -> {
             if (VoxyCompat.isAvailable() && Config.useOnnxTerrain()) {

@@ -8,6 +8,7 @@ import java.util.concurrent.PriorityBlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.locks.ReentrantLock;
 
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
@@ -89,6 +90,19 @@ public final class OctreeQueue {
     /** Per-level count of octants pruned (empty). */
     private final AtomicInteger[] prunedPerLevel = new AtomicInteger[NUM_LEVELS];
 
+    // ── Per-level throughput counters (for telemetry) ────────────────
+    // These are lock-free atomic counters incremented on each enqueue /
+    // completion / failure so the command can report live rates.
+
+    /** Total tasks enqueued per level since the queue was created. */
+    private final AtomicLong[] enqueuedCountPerLevel = new AtomicLong[NUM_LEVELS];
+
+    /** Total tasks completed (ready) per level. */
+    private final AtomicLong[] completedCountPerLevel = new AtomicLong[NUM_LEVELS];
+
+    /** Total tasks failed per level. */
+    private final AtomicLong[] failedCountPerLevel = new AtomicLong[NUM_LEVELS];
+
     // ── Construction ────────────────────────────────────────────────────
 
     public OctreeQueue() {
@@ -97,6 +111,9 @@ public final class OctreeQueue {
             levelComplete[i] = new AtomicBoolean();
             spawnedPerLevel[i] = new AtomicInteger();
             prunedPerLevel[i]  = new AtomicInteger();
+            enqueuedCountPerLevel[i]   = new AtomicLong();
+            completedCountPerLevel[i]  = new AtomicLong();
+            failedCountPerLevel[i]     = new AtomicLong();
         }
     }
 
@@ -117,6 +134,7 @@ public final class OctreeQueue {
         }
         if (allTasks.putIfAbsent(task.wsKey, task) != null) return false;
         levelQueues[4].add(task);
+        enqueuedCountPerLevel[4].incrementAndGet();
         return true;
     }
 
@@ -128,6 +146,7 @@ public final class OctreeQueue {
     boolean enqueueChild(OctreeTask task) {
         if (allTasks.putIfAbsent(task.wsKey, task) != null) return false;
         levelQueues[task.level].add(task);
+        enqueuedCountPerLevel[task.level].incrementAndGet();
         return true;
     }
 
@@ -422,6 +441,17 @@ public final class OctreeQueue {
     public void markCompleted() { completedCount.incrementAndGet(); }
 
     /**
+     * Increment the completed-task counter for a specific LOD level.
+     * Also increments the global counter.
+     */
+    public void markCompleted(int level) {
+        completedCount.incrementAndGet();
+        if (level >= 0 && level < NUM_LEVELS) {
+            completedCountPerLevel[level].incrementAndGet();
+        }
+    }
+
+    /**
      * When a task transitions to READY, call this to boost any nearby
      * pending tasks so the processing frontier expands outward one ring at a time.
      *
@@ -451,6 +481,17 @@ public final class OctreeQueue {
 
     /** Increment the failed-task counter. */
     public void markFailed() { failedCount.incrementAndGet(); }
+
+    /**
+     * Increment the failed-task counter for a specific LOD level.
+     * Also increments the global counter.
+     */
+    public void markFailed(int level) {
+        failedCount.incrementAndGet();
+        if (level >= 0 && level < NUM_LEVELS) {
+            failedCountPerLevel[level].incrementAndGet();
+        }
+    }
 
     /**
      * Check whether a level worker should exit because no more tasks
@@ -598,6 +639,49 @@ public final class OctreeQueue {
     public int levelQueueSize(int level) { return levelQueues[level].size(); }
     public int trackedTaskCount() { return allTasks.size(); }
 
+    // ── Per-level telemetry accessors ───────────────────────────────────
+
+    /** Total tasks enqueued at {@code level} since construction. */
+    public long enqueuedCountAt(int level) {
+        return enqueuedCountPerLevel[level].get();
+    }
+
+    /** Total tasks completed at {@code level} since construction. */
+    public long completedCountAt(int level) {
+        return completedCountPerLevel[level].get();
+    }
+
+    /** Total tasks failed at {@code level} since construction. */
+    public long failedCountAt(int level) {
+        return failedCountPerLevel[level].get();
+    }
+
+    /**
+     * Return the queue size (pending tasks) at {@code level}.
+     * Alias for {@link #levelQueueSize(int)} for API clarity.
+     */
+    public int queueSize(int level) {
+        return levelQueues[level].size();
+    }
+
+    /**
+     * Approximate age (ms) of the oldest pending task at {@code level}.
+     *
+     * <p>Scans the live priority queue to find the minimum
+     * {@link OctreeTask#enqueuedAtMs}.  This is O(n) and approximate —
+     * acceptable for an infrequently-called status command.
+     *
+     * @return age in ms, or 0 if the queue is empty
+     */
+    public long oldestPendingAgeMillis(int level) {
+        long now = System.currentTimeMillis();
+        long oldest = Long.MAX_VALUE;
+        for (OctreeTask t : levelQueues[level]) {
+            if (t.enqueuedAtMs < oldest) oldest = t.enqueuedAtMs;
+        }
+        return oldest == Long.MAX_VALUE ? 0L : now - oldest;
+    }
+
     /**
      * Format queue sizes as a compact string for logging:
      * {@code "L4:12|L3:45|L2:100|L1:230|L0:500"}.
@@ -651,6 +735,9 @@ public final class OctreeQueue {
             levelComplete[i].set(false);
             spawnedPerLevel[i].set(0);
             prunedPerLevel[i].set(0);
+            enqueuedCountPerLevel[i].set(0);
+            completedCountPerLevel[i].set(0);
+            failedCountPerLevel[i].set(0);
         }
         allTasks.clear();
         completedCount.set(0);
