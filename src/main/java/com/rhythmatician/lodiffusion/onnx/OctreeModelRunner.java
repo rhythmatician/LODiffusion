@@ -79,24 +79,35 @@ public final class OctreeModelRunner implements AutoCloseable {
     /** Spatial size of the model output (32³ for octree). */
     private static final int SPATIAL = 32;
 
-    /** Occupancy logits threshold (sigmoid > this → child is occupied). */
-    private static final float OCC_THRESHOLD = 0.5f;
+    /**
+     * Occupancy logits threshold (sigmoid > this → child is occupied).
+     *
+     * <p>RocNet insight: in recursive octrees, false negatives are
+     * disproportionately expensive — they erase entire subtrees.  A lower
+     * threshold (e.g. 0.3) biases toward recall at the cost of some extra
+     * inference calls, which is the safer trade-off.
+     *
+     * <p>Configurable at runtime via {@code lodiffusion.json} key
+     * {@code "occThreshold"} (0.0–1.0, default 0.3).
+     */
+    private static float occThreshold() {
+        return (float) com.rhythmatician.lodiffusion.Config.getDouble(
+                "occThreshold", 0.3);
+    }
 
     /**
      * Result of a single octree inference call.
      *
-     * @param blockLogits  block logits shaped {@code [num_classes][32][32][32]}
-     *                     in Y,Z,X order.  Always non-null.
-     * @param blockArgmax  argmax block IDs {@code [32][32][32]} in Y,Z,X order.
-     *                     Derived from blockLogits for convenience.
+     * @param blockArgmax  argmax block IDs {@code int[32][32][32]} in Y,Z,X order.
+     *                     Computed directly from the flat ONNX logits in a single
+     *                     pass — no intermediate 4D array is allocated.
      * @param occMask      predicted 8-bit occupancy mask (sigmoid > 0.5).
      *                     Always 0 for L0 (leaf) tasks.
      * @param vocabSize    number of block classes in the logits
      * @param elapsedMs    wall time for this inference call
      */
     public record OctreeOutput(
-        float[][][][] blockLogits,    // [num_classes][32][32][32]
-        float[][][] blockArgmax,      // [32][32][32] argmax IDs as float
+        int[][][] blockArgmax,        // [32][32][32] argmax class indices
         byte occMask,
         int vocabSize,
         long elapsedMs
@@ -154,50 +165,122 @@ public final class OctreeModelRunner implements AutoCloseable {
         // Validate required files
         validateRequiredFiles(modelDir);
 
-        NDManager manager = NDManager.newBaseManager();
+        // Select the best execution provider for this machine (DirectML → CPU).
+        InferenceDeviceSelector.Provider provider =
+                InferenceDeviceSelector.selectProvider();
+        LOGGER.info("[OctreeModelRunner] Execution provider: {}", provider);
+
+        // DJL uses ServiceLoader for both EngineProvider (NDManager.newBaseManager)
+        // and ZooProvider (Criteria.loadModel).  In Fabric (Knot), those service
+        // implementations are loaded by the mod classloader, not the system/bootstrap
+        // classloader that ForkJoinPool worker threads inherit as their context CL.
+        // Hold the swap for the entire DJL initialization block so that every
+        // internal ServiceLoader call sees the correct classloader.
+        ClassLoader prevCl = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(
+                OctreeModelRunner.class.getClassLoader());
         try {
-            // Load configs
-            ModelConfig initCfg   = ConfigLoader.load(modelDir.resolve(CONFIG_INIT));
-            ModelConfig refineCfg = ConfigLoader.load(modelDir.resolve(CONFIG_REFINE));
-            ModelConfig leafCfg   = ConfigLoader.load(modelDir.resolve(CONFIG_LEAF));
+            NDManager manager = NDManager.newBaseManager();
+            try {
+                // Load configs
+                ModelConfig initCfg   = ConfigLoader.load(modelDir.resolve(CONFIG_INIT));
+                ModelConfig refineCfg = ConfigLoader.load(modelDir.resolve(CONFIG_REFINE));
+                ModelConfig leafCfg   = ConfigLoader.load(modelDir.resolve(CONFIG_LEAF));
 
-            // Load models
-            ZooModel<NDList, NDList> init   = loadModel(modelDir, STEM_INIT, manager);
-            ZooModel<NDList, NDList> refine = loadModel(modelDir, STEM_REFINE, manager);
-            ZooModel<NDList, NDList> leaf   = loadModel(modelDir, STEM_LEAF, manager);
+                // Load models (each calls Criteria.loadModel → ZooProvider ServiceLoader)
+                ZooModel<NDList, NDList> init   = loadModel(modelDir, STEM_INIT,   provider);
+                ZooModel<NDList, NDList> refine = loadModel(modelDir, STEM_REFINE, provider);
+                ZooModel<NDList, NDList> leaf   = loadModel(modelDir, STEM_LEAF,   provider);
 
-            // Use the leaf model's config for vocabulary (finest resolution)
-            BlockVocabulary vocab = BlockVocabulary.fromConfig(leafCfg);
+                // Use the leaf model's config for vocabulary (finest resolution)
+                BlockVocabulary vocab = BlockVocabulary.fromConfig(leafCfg);
 
-            LOGGER.info("[OctreeModelRunner] All 3 octree models loaded — "
-                    + "vocab=" + vocab.size() + "  dir=" + modelDir);
+                LOGGER.info("[OctreeModelRunner] All 3 octree models loaded — "
+                        + "vocab=" + vocab.size() + "  dir=" + modelDir
+                        + "  provider=" + provider);
 
-            return new OctreeModelRunner(manager, init, refine, leaf,
-                    initCfg, refineCfg, leafCfg, vocab);
+                return new OctreeModelRunner(manager, init, refine, leaf,
+                        initCfg, refineCfg, leafCfg, vocab);
 
-        } catch (Exception e) {
-            manager.close();
-            if (e instanceof IOException) throw (IOException) e;
-            throw new IOException("Failed to load octree models from " + modelDir, e);
+            } catch (Exception e) {
+                manager.close();
+                if (e instanceof IOException) throw (IOException) e;
+                throw new IOException("Failed to load octree models from " + modelDir, e);
+            }
+        } finally {
+            Thread.currentThread().setContextClassLoader(prevCl);
         }
     }
 
+    /**
+     * Load a single ONNX model, attempting the given execution provider first
+     * and transparently falling back to CPU if the provider is unavailable.
+     *
+     * @param dir      directory containing the {@code .onnx} file
+     * @param stem     model file stem (without extension)
+     * @param provider requested execution provider
+     * @return loaded model
+     * @throws IOException if the model cannot be loaded even with CPU fallback
+     */
     private static ZooModel<NDList, NDList> loadModel(Path dir, String stem,
-                                                       NDManager manager)
+                                                       InferenceDeviceSelector.Provider provider)
             throws IOException {
-        Criteria<NDList, NDList> cr = Criteria.builder()
-                .setTypes(NDList.class, NDList.class)
-                .optModelPath(dir)
-                .optModelName(stem)
-                .optTranslator(new NoopTranslator())
-                .build();
+        // Try the requested provider first (if it requires an option)
+        if (!provider.djlOptionValue().isEmpty()) {
+            try {
+                ZooModel<NDList, NDList> model = buildAndLoad(dir, stem,
+                        provider.djlOptionValue());
+                LOGGER.info("[OctreeModelRunner] Loaded {} with provider {}",
+                        stem, provider);
+                return model;
+            } catch (Exception ex) {
+                LOGGER.warn("[OctreeModelRunner] Provider {} unavailable for {} "
+                        + "({}); falling back to CPU",
+                        provider, stem, ex.getMessage());
+            }
+        }
+        // CPU fallback (or initial attempt when provider == CPU)
         try {
-            ZooModel<NDList, NDList> model = cr.loadModel();
-            LOGGER.info("[OctreeModelRunner] Loaded " + stem);
+            ZooModel<NDList, NDList> model = buildAndLoad(dir, stem, null);
+            if (!provider.djlOptionValue().isEmpty()) {
+                LOGGER.info("[OctreeModelRunner] Loaded {} with CPU fallback", stem);
+            } else {
+                LOGGER.info("[OctreeModelRunner] Loaded {} (CPU)", stem);
+            }
             return model;
         } catch (Exception e) {
             throw new IOException("Failed to load " + stem + " from " + dir, e);
         }
+    }
+
+    /**
+     * Build a {@link Criteria} and load a model, optionally setting the
+     * {@code ortDevice} session option for GPU acceleration.
+     *
+     * @param dir         model directory
+     * @param stem        model stem (no extension)
+     * @param ortDevice   value for {@code ortDevice} option, or {@code null}
+     *                    to use the default (CPU) provider
+     * @return loaded model
+     * @throws Exception if loading fails
+     */
+    private static ZooModel<NDList, NDList> buildAndLoad(Path dir, String stem,
+                                                          String ortDevice)
+            throws Exception {
+        Criteria.Builder<NDList, NDList> builder = Criteria.builder()
+                .setTypes(NDList.class, NDList.class)
+                .optModelPath(dir)
+                .optModelName(stem)
+                .optTranslator(new NoopTranslator());
+        if (ortDevice != null && !ortDevice.isEmpty()) {
+            builder.optOption("ortDevice", ortDevice);
+        }
+        // Thread control: we run single-batch inference on dedicated worker
+        // threads, so inter-op parallelism just wastes threads.  Intra-op
+        // parallelism helps with large Conv3d ops on the CPU fallback path.
+        builder.optOption("interOpNumThreads", "1");
+        builder.optOption("intraOpNumThreads", "4");
+        return builder.build().loadModel();
     }
 
     /**
@@ -536,8 +619,7 @@ public final class OctreeModelRunner implements AutoCloseable {
         int vocabSize = (int) shape[1];
 
         float[] flat = blockLogitsTensor.toFloatArray();
-        float[][][][] blockLogits = reshapeLogits(flat, vocabSize);
-        float[][][] blockArgmax = computeArgmax(blockLogits, vocabSize);
+        int[][][] blockArgmax = computeArgmaxDirect(flat, vocabSize);
 
         byte occMask = 0;
         if (hasOccupancy) {
@@ -547,12 +629,15 @@ public final class OctreeModelRunner implements AutoCloseable {
             }
         }
 
-        return new OctreeOutput(blockLogits, blockArgmax, occMask,
+        return new OctreeOutput(blockArgmax, occMask,
                 vocabSize, elapsedMs);
     }
 
     /**
      * Split batched ONNX output into per-sample results.
+     *
+     * <p>Uses {@link #computeArgmaxDirect} to compute argmax directly from
+     * the flat logits slice, avoiding the expensive 4D reshape allocation.
      */
     private List<OctreeOutput> splitBatchOutput(NDList outputs, int batchSize,
                                                 boolean hasOccupancy,
@@ -576,13 +661,9 @@ public final class OctreeModelRunner implements AutoCloseable {
         List<OctreeOutput> results = new ArrayList<>(batchSize);
 
         for (int b = 0; b < batchSize; b++) {
-            // Slice this sample's logits
-            float[] sampleFlat = new float[sampleElements];
-            System.arraycopy(allFlat, b * sampleElements,
-                    sampleFlat, 0, sampleElements);
-
-            float[][][][] blockLogits = reshapeLogits(sampleFlat, vocabSize);
-            float[][][] blockArgmax = computeArgmax(blockLogits, vocabSize);
+            // Compute argmax directly from the flat logits slice
+            int[][][] blockArgmax = computeArgmaxDirect(
+                    allFlat, b * sampleElements, vocabSize);
 
             byte occMask = 0;
             if (allOccFlat != null) {
@@ -591,7 +672,7 @@ public final class OctreeModelRunner implements AutoCloseable {
                 occMask = sigmoidThreshold(sampleOcc);
             }
 
-            results.add(new OctreeOutput(blockLogits, blockArgmax, occMask,
+            results.add(new OctreeOutput(blockArgmax, occMask,
                     vocabSize, perSample));
         }
 
@@ -632,9 +713,66 @@ public final class OctreeModelRunner implements AutoCloseable {
     }
 
     /**
+     * Compute argmax block IDs directly from a flat logits array, without
+     * materializing the intermediate {@code float[vocabSize][32][32][32]}
+     * reshape.  For vocabSize=128 this eliminates a 16 MB allocation per
+     * sample.
+     *
+     * <p>The flat array layout is {@code [C][Y][Z][X]} where C is the
+     * class/channel dimension.  The method iterates in channel-major order
+     * for sequential access and maintains a running {@code bestVal} array
+     * for cache-friendly argmax computation.
+     *
+     * @param flat      flat logits starting at index 0, length ≥ vocabSize × 32³
+     * @param vocabSize number of block classes
+     * @return {@code int[32][32][32]} with the argmax class index at each voxel
+     */
+    static int[][][] computeArgmaxDirect(float[] flat, int vocabSize) {
+        return computeArgmaxDirect(flat, 0, vocabSize);
+    }
+
+    /**
+     * Compute argmax block IDs directly from a slice of a flat logits array.
+     *
+     * @param flat      flat logits array (may contain multiple batched samples)
+     * @param offset    starting index of this sample's logits within {@code flat}
+     * @param vocabSize number of block classes
+     * @return {@code int[32][32][32]} with the argmax class index at each voxel
+     */
+    static int[][][] computeArgmaxDirect(float[] flat, int offset, int vocabSize) {
+        int[][][] argmax = new int[SPATIAL][SPATIAL][SPATIAL];
+        float[][][] bestVal = new float[SPATIAL][SPATIAL][SPATIAL];
+
+        // Initialize with channel 0
+        int idx = offset;
+        for (int y = 0; y < SPATIAL; y++)
+            for (int z = 0; z < SPATIAL; z++)
+                for (int x = 0; x < SPATIAL; x++)
+                    bestVal[y][z][x] = flat[idx++];
+
+        // Scan remaining channels — sequential access through flat array
+        for (int c = 1; c < vocabSize; c++) {
+            for (int y = 0; y < SPATIAL; y++)
+                for (int z = 0; z < SPATIAL; z++)
+                    for (int x = 0; x < SPATIAL; x++) {
+                        float v = flat[idx++];
+                        if (v > bestVal[y][z][x]) {
+                            bestVal[y][z][x] = v;
+                            argmax[y][z][x] = c;
+                        }
+                    }
+        }
+        return argmax;
+    }
+
+    /**
      * Reshape flat logits {@code [vocabSize * 32 * 32 * 32]} into
      * {@code [vocabSize][32][32][32]} in Y,Z,X order.
+     *
+     * @deprecated Use {@link #computeArgmaxDirect} instead — avoids the
+     *             expensive 4D allocation entirely.
      */
+    @Deprecated
     private static float[][][][] reshapeLogits(float[] flat, int vocabSize) {
         float[][][][] out = new float[vocabSize][SPATIAL][SPATIAL][SPATIAL];
         int idx = 0;
@@ -647,14 +785,16 @@ public final class OctreeModelRunner implements AutoCloseable {
     }
 
     /**
-     * Compute argmax block IDs from logits.
+     * Compute argmax block IDs from reshaped logits.
      *
      * @param logits  {@code [vocabSize][32][32][32]}
      * @param vocabSize number of classes
-     * @return {@code float[32][32][32]} with argmax class index (as float)
+     * @return {@code int[32][32][32]} with argmax class index
+     * @deprecated Use {@link #computeArgmaxDirect} instead.
      */
-    static float[][][] computeArgmax(float[][][][] logits, int vocabSize) {
-        float[][][] out = new float[SPATIAL][SPATIAL][SPATIAL];
+    @Deprecated
+    static int[][][] computeArgmax(float[][][][] logits, int vocabSize) {
+        int[][][] out = new int[SPATIAL][SPATIAL][SPATIAL];
         for (int y = 0; y < SPATIAL; y++) {
             for (int z = 0; z < SPATIAL; z++) {
                 for (int x = 0; x < SPATIAL; x++) {
@@ -679,13 +819,13 @@ public final class OctreeModelRunner implements AutoCloseable {
      * an 8-bit mask.
      *
      * @param occLogits raw logits {@code float[8]}
-     * @return byte mask where bit i is set if sigmoid(occLogits[i]) > 0.5
+     * @return byte mask where bit i is set if sigmoid(occLogits[i]) > {@link #occThreshold()}
      */
     static byte sigmoidThreshold(float[] occLogits) {
         byte mask = 0;
         for (int i = 0; i < 8 && i < occLogits.length; i++) {
             float sigmoid = 1.0f / (1.0f + (float) Math.exp(-occLogits[i]));
-            if (sigmoid > OCC_THRESHOLD) {
+            if (sigmoid > occThreshold()) {
                 mask |= (byte) (1 << i);
             }
         }

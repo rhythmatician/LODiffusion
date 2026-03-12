@@ -131,9 +131,41 @@ public final class VoxyCompat {
         return VoxyWorldBinding.writeAtLevel(worldEngine, lvl, sectionX, sectionY, sectionZ, voxels);
     }
 
+    /** @see VoxyWorldBinding#writeFullWorldSection(Object, int, int, int, int, long[]) */
+    public static int writeFullWorldSection(Object worldEngine, int lvl,
+                                             int wsX, int wsY, int wsZ,
+                                             long[] voxels) {
+        return VoxyWorldBinding.writeFullWorldSection(worldEngine, lvl, wsX, wsY, wsZ, voxels);
+    }
+
     /** @see VoxyWorldBinding#sectionExistsAtLevel(Object, int, int, int, int) */
     public static boolean sectionExistsAtLevel(Object worldEngine, int lvl,
                                                 int wsX, int wsY, int wsZ) {
         return VoxyWorldBinding.sectionExistsAtLevel(worldEngine, lvl, wsX, wsY, wsZ);
+    }
+
+    /**
+     * Returns {@code true} if Voxy has fully claimed all 8 octants
+     * ({@code nonEmptyChildren == 0xFF}).  Use this as the upstream inference
+     * guard: if all octants are already populated by real chunk data, there is
+     * nothing for LODiffusion to contribute so the task can be skipped entirely.
+     *
+     * @see VoxyWorldBinding#allOctantsPopulated(Object, int, int, int, int)
+     */
+    public static boolean allOctantsPopulated(Object worldEngine, int lvl,
+                                               int wsX, int wsY, int wsZ) {
+        return VoxyWorldBinding.allOctantsPopulated(worldEngine, lvl, wsX, wsY, wsZ);
+    }
+
+    // ── Save-queue monitoring ──────────────────────────────────────────────
+
+    /**
+     * Returns the number of pending save tasks in Voxy's {@code SectionSavingService},
+     * or {@code -1} if the queue depth cannot be determined.
+     *
+     * @see VoxyEngine#getSaveQueueDepth(Object)
+     */
+    public static int getSaveQueueDepth(Object worldEngine) {
+        return VoxyEngine.getSaveQueueDepth(worldEngine);
     }
 }

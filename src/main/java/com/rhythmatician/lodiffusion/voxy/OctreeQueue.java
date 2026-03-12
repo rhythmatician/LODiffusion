@@ -9,7 +9,6 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
-import java.util.function.BiFunction;
 
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 
@@ -23,6 +22,14 @@ import com.rhythmatician.lodiffusion.HelloTerrainMod;
  * <h3>Threading model</h3>
  * <p>Multiple worker threads may drain different levels concurrently.
  * The queue provides thread-safe enqueue, drain, and child-spawning.
+ *
+ * <h3>Priority boosting</h3>
+ * <p>A task may receive a constant priority reduction if it lies adjacent
+ * to a vanilla-loaded chunk (set by the generation service when roots are
+ * enqueued).  Newly added in this revision, we also track adjacency to
+ * *processed* sections and propagate a similar boost outward as each
+ * section completes.  This produces a ring-expanding frontier that keeps
+ * generation focused just beyond the visible boundary.
  *
  * <h3>Shutdown</h3>
  * <p>Shutdown cascades top-down: when L4 is done generating, its completion
@@ -70,12 +77,17 @@ public final class OctreeQueue {
      */
     private final ReentrantLock reprioritiseLock = new ReentrantLock();
 
-    /**
-     * Callback for building column context for child tasks.
-     * {@code (childLevel, childTask) → OctreeColumnContext}.
-     * Set via {@link #setColumnContextBuilder}.
-     */
-    private volatile BiFunction<Integer, OctreeTask, OctreeColumnContext> columnContextBuilder;
+
+
+    // ── Octree efficiency stats (RocNet-inspired) ─────────────────────
+    // Track how many octants are spawned vs pruned at each level to
+    // measure the efficiency advantage the octree is supposed to buy.
+
+    /** Per-level count of octants spawned (occupied). */
+    private final AtomicInteger[] spawnedPerLevel = new AtomicInteger[NUM_LEVELS];
+
+    /** Per-level count of octants pruned (empty). */
+    private final AtomicInteger[] prunedPerLevel = new AtomicInteger[NUM_LEVELS];
 
     // ── Construction ────────────────────────────────────────────────────
 
@@ -83,17 +95,12 @@ public final class OctreeQueue {
         for (int i = 0; i < NUM_LEVELS; i++) {
             levelQueues[i]  = new PriorityBlockingQueue<>();
             levelComplete[i] = new AtomicBoolean();
+            spawnedPerLevel[i] = new AtomicInteger();
+            prunedPerLevel[i]  = new AtomicInteger();
         }
     }
 
-    /**
-     * Set the callback used by {@link #spawnChildren} to build column
-     * context for child tasks.  Must be called before the pipeline starts.
-     */
-    public void setColumnContextBuilder(
-            BiFunction<Integer, OctreeTask, OctreeColumnContext> builder) {
-        this.columnContextBuilder = builder;
-    }
+
 
     // ── Enqueue ─────────────────────────────────────────────────────────
 
@@ -126,6 +133,11 @@ public final class OctreeQueue {
 
     // ── Child spawning ──────────────────────────────────────────────────
 
+    // No margin constant — surface pruning is now zero-margin.
+    // Heightmap values are "first air Y" (topSolid + 1).
+    // Prune if entirely above (minBlockY >= surfMax) or
+    // entirely below (maxBlockY_excl < surfMin).
+
     /**
      * After inference on a parent task, spawn child tasks for each occupied
      * octant.  This is the core of the octree traversal.
@@ -137,33 +149,59 @@ public final class OctreeQueue {
      *       predictions</li>
      *   <li>Upsample 16³ → 32³ via nearest-neighbor to produce the child's
      *       parent context</li>
-     *   <li>Build column context for the child's footprint</li>
      *   <li>Create and enqueue the child {@link OctreeTask}</li>
      * </ol>
      *
+     * <p>Children whose Y range does not intersect the surface heightmap
+     * are pruned entirely — only surface-intersecting children are refined.
+     * Pruning uses zero margin: any child entirely above or below the
+     * heightmap surface ("first air Y" values) is skipped.
+     *
+     * <p>Column context is NOT built here — it is deferred to the worker
+     * thread that processes the child, avoiding blocking the parent's
+     * inference thread on noise sampling.
+     *
      * <p>Does nothing if the parent is at L0 (leaves have no children).
      *
-     * @param parent      the parent task that just completed inference
-     * @param occMask     8-bit occupancy mask from sigmoid(occ_logits) > 0.5
-     * @param blockArgmax the parent's 32³ argmax block IDs as
-     *                    {@code float[32][32][32]} (Y, Z, X order),
-     *                    already converted from logits
+     * @param parent         the parent task that just completed inference
+     * @param occMask        8-bit occupancy mask from sigmoid(occ_logits) > 0.5
+     * @param blockArgmax    the parent's 32³ argmax block IDs as
+     *                       {@code int[32][32][32]} (Y, Z, X order),
+     *                       already converted from logits
+     * @param playerSectionX current player section X (L0 coordinates)
+     * @param playerSectionZ current player section Z (L0 coordinates)
      * @return number of children actually enqueued (may be less than
      *         popcount(occMask) if duplicates were detected)
      */
     public int spawnChildren(OctreeTask parent, byte occMask,
-                             float[][][] blockArgmax) {
+                             int[][][] blockArgmax,
+                             int playerSectionX, int playerSectionZ) {
         if (parent.level <= 0) return 0;
 
         int childLevel = parent.level - 1;
         int spawned = 0;
+        int pruned = 0;
+
+        // Pre-compute per-octant surface Y ranges from the parent's heightmap
+        // for the surface-intersection check.  null if no heightmap available.
+        float[][] parentRawHm = (parent.columnContext != null)
+                ? parent.columnContext.rawHm() : null;
 
         for (int oct = 0; oct < 8; oct++) {
-            if ((occMask & (1 << oct)) == 0) continue;
+            if ((occMask & (1 << oct)) == 0) {
+                pruned++;
+                continue;
+            }
 
             int cx = OctreeTask.childX(parent.wsX, oct);
             int cy = OctreeTask.childY(parent.wsY, oct);
             int cz = OctreeTask.childZ(parent.wsZ, oct);
+
+            // Skip children whose Y range is entirely outside the world
+            if (LodGenerationService.isOutOfWorldY(childLevel, cy)) {
+                pruned++;
+                continue;
+            }
 
             // Extract the 16³ octant from the parent's 32³ predictions
             // Octant bits: bit0=X, bit1=Z, bit2=Y
@@ -176,25 +214,69 @@ public final class OctreeQueue {
             long[] childParentFlat = extractAndUpsampleOctant(
                     blockArgmax, offY, offZ, offX);
 
-            OctreeTask child = new OctreeTask(
-                    childLevel, cx, cy, cz, oct, parent.priority);
-            child.parentContextFlat = childParentFlat;
+            // Compute proper distance-based priority from current player pos
+            int playerAtLevel_X = WorldSectionCoord.sectionToWorldSection(playerSectionX, childLevel);
+            int playerAtLevel_Z = WorldSectionCoord.sectionToWorldSection(playerSectionZ, childLevel);
+            int childPriority = Math.abs(cx - playerAtLevel_X)
+                              + Math.abs(cz - playerAtLevel_Z);
 
-            // Build column context for the child's geographic footprint
-            if (columnContextBuilder != null) {
-                child.columnContext = columnContextBuilder.apply(childLevel, child);
+            // ── Surface-intersection pruning (zero-margin) ─────────────
+            // Heightmap values are "first air Y" (topSolid + 1).
+            // - surfMin = lowest first-air-Y in this octant's XZ footprint
+            // - surfMax = highest first-air-Y
+            // Prune if the child's block-Y range is entirely above the
+            // surface (childMinBlockY >= surfMax → all air) or entirely
+            // below it (childMaxBlockY_excl < surfMin → all underground).
+            // This aggressively skips both sky and deep-underground
+            // octants.  May clip some treetops in heavily forested biomes
+            // (noise-based heightmap doesn't include trees/structures),
+            // but the speed gain is large.
+            if (parentRawHm != null) {
+                int childMinBlockY = WorldSectionCoord.worldSectionToBlockMin(cy, childLevel);
+                int childMaxBlockY = WorldSectionCoord.worldSectionToBlockMax(cy, childLevel) + 1;
+
+                // Scan the 16×16 sub-region of the parent's 32×32 heightmap
+                // that corresponds to this octant's XZ footprint
+                float surfMin = Float.MAX_VALUE;
+                float surfMax = -Float.MAX_VALUE;
+                for (int rz = offZ; rz < offZ + 16; rz++) {
+                    for (int rx = offX; rx < offX + 16; rx++) {
+                        float h = parentRawHm[rz][rx];
+                        if (h < surfMin) surfMin = h;
+                        if (h > surfMax) surfMax = h;
+                    }
+                }
+
+                // Zero-margin: prune if entirely above OR entirely below surface
+                if (childMaxBlockY < surfMin || childMinBlockY >= surfMax) {
+                    pruned++;
+                    continue;
+                }
             }
+
+            OctreeTask child = new OctreeTask(
+                    childLevel, cx, cy, cz, oct, childPriority);
+            child.parentContextFlat = childParentFlat;
+            child.nearVanilla = parent.nearVanilla;  // propagate boost down octree
+
+            // Column context is built lazily by the processing worker
+            // (not here) to avoid blocking the inference thread on noise sampling
 
             if (enqueueChild(child)) {
                 spawned++;
             }
         }
 
+        if (spawned > 0 || pruned > 0) {
+            spawnedPerLevel[childLevel].addAndGet(spawned);
+            prunedPerLevel[childLevel].addAndGet(pruned);
+        }
+
         if (spawned > 0) {
             HelloTerrainMod.LOGGER.debug(
-                    "[OctreeQueue] Spawned {} children at L{} from parent L{} ({},{},{})",
+                    "[OctreeQueue] Spawned {} children at L{} from parent L{} ({},{},{}) — pruned {}",
                     spawned, childLevel, parent.level,
-                    parent.wsX, parent.wsY, parent.wsZ);
+                    parent.wsX, parent.wsY, parent.wsZ, pruned);
         }
 
         return spawned;
@@ -214,7 +296,7 @@ public final class OctreeQueue {
      * @param offX X offset of the octant (0 or 16)
      * @return flat long[32768] containing the upsampled octant block IDs
      */
-    static long[] extractAndUpsampleOctant(float[][][] src,
+    static long[] extractAndUpsampleOctant(int[][][] src,
                                             int offY, int offZ, int offX) {
         long[] dst = new long[32 * 32 * 32];
         int idx = 0;
@@ -224,7 +306,7 @@ public final class OctreeQueue {
                 int srcZ = offZ + (dz >> 1);
                 for (int dx = 0; dx < 32; dx++) {
                     int srcX = offX + (dx >> 1);
-                    dst[idx++] = (long) src[srcY][srcZ][srcX];
+                    dst[idx++] = src[srcY][srcZ][srcX];
                 }
             }
         }
@@ -260,11 +342,26 @@ public final class OctreeQueue {
     }
 
     /**
+     * Settling delay (ms) for the first greedy poll after a blocking poll
+     * wakes on an empty-to-non-empty queue transition.  Gives
+     * {@link #spawnChildren} time to add all sibling tasks so the
+     * priority queue can return them in true distance order.
+     *
+     * <p>Without this, the blocking poll returns oct-0 (the first child
+     * added by the loop in spawnChildren) — which is usually NOT the
+     * closest sibling.  50 ms is negligible vs 8+ seconds of context
+     * building per task.
+     */
+    private static final long SIBLING_SETTLE_MS = 50;
+
+    /**
      * Drain up to {@code maxBatch} tasks from a specific level's queue.
      *
      * <p>Performs a blocking poll with timeout for the first task, then
-     * greedily drains additional tasks without blocking.  This enables
-     * batched inference per level.
+     * waits briefly ({@value #SIBLING_SETTLE_MS} ms) for sibling tasks
+     * from {@link #spawnChildren} to accumulate before greedily draining
+     * additional tasks.  This ensures the batch contains the closest
+     * tasks from the full sibling set, not just the first one added.
      *
      * @param level    LOD level (0-4)
      * @param maxBatch maximum tasks to return
@@ -280,6 +377,21 @@ public final class OctreeQueue {
         OctreeTask first = levelQueues[level].poll(timeout, unit);
         if (first == null) return batch;
         batch.add(first);
+
+        // Brief settling delay: let sibling tasks from spawnChildren
+        // accumulate in the priority queue.  Re-insert the first task
+        // so all siblings compete fairly in priority order.
+        if (level < 4 && SIBLING_SETTLE_MS > 0) {
+            Thread.sleep(SIBLING_SETTLE_MS);
+            if (!levelQueues[level].isEmpty()) {
+                // Siblings arrived — re-insert first and drain in true
+                // priority order so we batch the closest tasks together
+                levelQueues[level].add(first);
+                batch.clear();
+                levelQueues[level].drainTo(batch, maxBatch);
+                return batch;
+            }
+        }
 
         while (batch.size() < maxBatch) {
             OctreeTask next = levelQueues[level].poll();
@@ -308,6 +420,34 @@ public final class OctreeQueue {
 
     /** Increment the completed-task counter (called after Voxy write). */
     public void markCompleted() { completedCount.incrementAndGet(); }
+
+    /**
+     * When a task transitions to READY, call this to boost any nearby
+     * pending tasks so the processing frontier expands outward one ring at a time.
+     *
+     * <p>We only consider horizontal neighbours (±1 in X/Z) because
+     * priority ignores Y; vertical propagation would behave the same but
+     * offer little benefit and complicate test scenarios.  The method is
+     * idempotent – marking an already-boosted task again has no effect.
+     */
+    public void propagateAdjacency(OctreeTask completed) {
+        int lvl = completed.level;
+        // four cardinal directions in XZ
+        int[][] deltas = {{1,0,0},{-1,0,0},{0,0,1},{0,0,-1}};
+        for (int[] d : deltas) {
+            int nx = completed.wsX + d[0];
+            int ny = completed.wsY + d[1];
+            int nz = completed.wsZ + d[2];
+            // pack key and look up
+            long key = OctreeTask.packKey(lvl, nx, ny, nz);
+            OctreeTask neighbour = allTasks.get(key);
+            if (neighbour == null) continue;
+            // only boost pending tasks that haven't already been marked
+            if (!neighbour.isCancelled() && !neighbour.nearProcessed) {
+                neighbour.nearProcessed = true;
+            }
+        }
+    }
 
     /** Increment the failed-task counter. */
     public void markFailed() { failedCount.incrementAndGet(); }
@@ -420,11 +560,12 @@ public final class OctreeQueue {
         int cancelled = 0;
         for (Map.Entry<Long, OctreeTask> entry : allTasks.entrySet()) {
             OctreeTask t = entry.getValue();
-            int playerAtLevel_X = playerSectionX >> t.level;
-            int playerAtLevel_Z = playerSectionZ >> t.level;
+            int playerAtLevel_X = WorldSectionCoord.sectionToWorldSection(playerSectionX, t.level);
+            int playerAtLevel_Z = WorldSectionCoord.sectionToWorldSection(playerSectionZ, t.level);
             int dist = Math.abs(t.wsX - playerAtLevel_X)
                      + Math.abs(t.wsZ - playerAtLevel_Z);
-            if (dist > (maxRadius >> t.level) && t.cancel()) {
+            int radiusAtLevel = maxRadius >> (t.level + 1);
+            if (dist > radiusAtLevel && t.cancel()) {
                 cancelled++;
             }
         }
@@ -470,11 +611,46 @@ public final class OctreeQueue {
         return sb.toString();
     }
 
+    /**
+     * Format octree efficiency stats as a compact string for logging.
+     *
+     * <p>RocNet-inspired: this shows how effectively the octree prunes
+     * empty subtrees at each level.  A well-calibrated model should
+     * prune most octants at coarse levels and fewer at fine levels.
+     *
+     * <p>Example: {@code "L3: 120 spawned / 200 pruned (62.5% pruned) |
+     * L2: 480 spawned / 480 pruned (50.0% pruned)"}.
+     *
+     * @return formatted efficiency summary, or empty string if no stats
+     */
+    public String efficiencySummary() {
+        StringBuilder sb = new StringBuilder();
+        for (int lvl = 3; lvl >= 0; lvl--) {
+            int s = spawnedPerLevel[lvl].get();
+            int p = prunedPerLevel[lvl].get();
+            int total = s + p;
+            if (total == 0) continue;
+            if (sb.length() > 0) sb.append(" | ");
+            double prunePct = 100.0 * p / total;
+            sb.append(String.format("L%d: %d spawned / %d pruned (%.1f%% pruned)",
+                    lvl, s, p, prunePct));
+        }
+        return sb.toString();
+    }
+
+    /** Per-level spawn count accessor. */
+    public int spawnedAt(int level) { return spawnedPerLevel[level].get(); }
+
+    /** Per-level prune count accessor. */
+    public int prunedAt(int level) { return prunedPerLevel[level].get(); }
+
     /** Clear all state for reuse or shutdown. */
     public void clear() {
         for (int i = 0; i < NUM_LEVELS; i++) {
             levelQueues[i].clear();
             levelComplete[i].set(false);
+            spawnedPerLevel[i].set(0);
+            prunedPerLevel[i].set(0);
         }
         allTasks.clear();
         completedCount.set(0);

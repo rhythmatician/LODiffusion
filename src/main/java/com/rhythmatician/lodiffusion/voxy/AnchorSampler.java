@@ -4,43 +4,26 @@ import net.minecraft.registry.entry.RegistryEntry;
 import net.minecraft.world.Heightmap;
 import net.minecraft.world.biome.Biome;
 import net.minecraft.world.chunk.Chunk;
-import net.minecraft.world.gen.noise.NoiseConfig;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 /**
- * Computes the v2 anchor conditioning inputs from the Minecraft client world.
+ * Computes the v5 anchor conditioning inputs from the Minecraft world.
  *
- * <p>The v2 contract requires:
+ * <p>The v5 octree contract requires:
  * <ul>
- *   <li>{@code x_height_planes} [1, 5, 16, 16] float32 — 5-plane heightmap
- *       (surface, ocean_floor, slope_x, slope_z, curvature), normalised [0..1]</li>
- *   <li>{@code x_router6} [1, 6, 16, 16] float32 — 6-channel CORE router values
- *       (temperature, vegetation, continents, erosion, depth, ridges), z-scored</li>
- *   <li>{@code x_biome} [1, 16, 16] int64 — biome integer index per column</li>
+ *   <li>{@code heightmap} [N, 5, 32, 32] float32 — 5-plane heightmap
+ *       (surface, ocean_floor, slope_x, slope_z, curvature), normalised</li>
+ *   <li>{@code biome} [N, 32, 32] int64 — biome index per column</li>
+ *   <li>{@code y_position} [N] int64 — vertical slab position</li>
  * </ul>
  *
- * <p>On the client side we do not have access to the full DensityFunction pipeline.
- * We therefore <em>approximate</em> router6 from the information that is available:
- * biome IDs and the heightmap.  This matches the fallback used during training
- * ({@code approximate_router6_from_biome} in Python).
+ * <p>Router6 (temperature, vegetation, continentalness, erosion, depth, ridges)
+ * was dropped entirely — biome + heightmap already encode the relevant
+ * information.  See {@code docs/NOISE-DESIGN.md} for rationale.
  *
- * <p>If a server-side {@link com.rhythmatician.lodiffusion.world.noise.NoiseTap.Cache}
- * is available (e.g., when running an integrated server), the real router values
- * are used instead.
+ * <p>This class retains the 16×16 sampling helpers used by the heightmap
+ * fallback pipeline and the {@code OctreeColumnContext} builder.
  */
 public final class AnchorSampler {
-
-    private static final Logger LOGGER = LoggerFactory.getLogger(AnchorSampler.class);
-
-    // Router6 channel indices — must match Python training order
-    public static final int TEMP_IDX        = 0;
-    public static final int VEGETATION_IDX  = 1;
-    public static final int CONTINENTS_IDX  = 2;
-    public static final int EROSION_IDX     = 3;
-    public static final int DEPTH_IDX       = 4;
-    public static final int RIDGES_IDX      = 5;
 
     /** MC sea level — used to normalise heights. */
     private static final float SEA_LEVEL = 62f;
@@ -53,56 +36,19 @@ public final class AnchorSampler {
     // Public API
     // ------------------------------------------------------------------
 
-    /** Container for all v2 anchor inputs for one 16×16 chunk column. */
+    /** Container for anchor inputs for one 16×16 chunk column. */
     public record AnchorInputs(
         float[][]  heightPlanes5,  // [5][256] row-major (will be reshaped to [5,16,16])
-        float[][]  router6,        // [6][256] row-major (will be reshaped to [6,16,16])
         int[][]    biomeIdx,       // [16][16]
-        float[][]  rawHm,          // [16][16] surface block-Y (may be null for chunk/synth path)
+        float[][]  rawHm,          // [16][16] surface block-Y
         float[][]  oceanFloorHm    // [16][16] ocean/river floor block-Y (may be null)
-    ) {
-        /** Backwards-compat constructor (rawHm and oceanFloorHm not available). */
-        public AnchorInputs(float[][] heightPlanes5, float[][] router6, int[][] biomeIdx) {
-            this(heightPlanes5, router6, biomeIdx, null, null);
-        }
-
-        /** Backwards-compat constructor (oceanFloorHm not available). */
-        public AnchorInputs(float[][] heightPlanes5, float[][] router6,
-                            int[][] biomeIdx, float[][] rawHm) {
-            this(heightPlanes5, router6, biomeIdx, rawHm, null);
-        }
-    }
+    ) {}
 
     /**
-     * Sample v2 anchor inputs for the 16×16 section at the given chunk coordinates.
+     * Sample anchor inputs using the server-side noise pipeline.
      *
-     * <p><strong>DEPRECATED:</strong> This method uses {@link #approximateRouter6}
-     * which produces a distribution mismatch vs real noise-router values.
-     * Prefer {@link #sampleFromNoise} which uses real DensityFunction data.
-     *
-     * @param chunk       the Minecraft chunk (or null if not loaded — falls back to zeros)
-     * @param noiseConfig server-side noise config (currently unused — for future real-noise path)
-     * @return an {@link AnchorInputs} record with APPROXIMATE router6 data
-     * @deprecated Use {@link #sampleFromNoise(WorldNoiseAccess, int, int)} instead
-     */
-    @Deprecated
-    public static AnchorInputs sample(Chunk chunk, NoiseConfig noiseConfig) {
-        LOGGER.warn("AnchorSampler.sample() uses approximateRouter6 — "
-                + "quality will be degraded.  Use sampleFromNoise() for real data.");
-        int[][] biomeIdx  = sampleBiomes(chunk);
-        float[][] hmap    = sampleHeightmap(chunk);
-        float[][] heightPlanes = computeHeightPlanes(hmap, null);  // no ocean floor available from chunk path
-        float[][] router6 = approximateRouter6(biomeIdx, hmap);
-        return new AnchorInputs(heightPlanes, router6, biomeIdx);
-    }
-
-    /**
-     * Sample v2 anchor inputs using the server-side noise pipeline.
-     *
-     * <p>This produces <em>real</em> heightmap, router6, and biome data
-     * for any (sectionX, sectionZ) coordinate — no loaded chunk required.
-     * This is the primary path; the chunk-based {@link #sample(Chunk, NoiseConfig)}
-     * should only be used when {@link WorldNoiseAccess} is not available.
+     * <p>Produces real heightmap and biome data for any (sectionX, sectionZ)
+     * coordinate without needing a loaded chunk.
      *
      * @param noiseAccess server-side noise access (must not be null)
      * @param sectionX    chunk / section X coordinate
@@ -130,10 +76,7 @@ public final class AnchorSampler {
         // 3. Height-planes use BOTH surface and ocean-floor heightmaps (matches Python)
         float[][] heightPlanes = computeHeightPlanes(hmap, oceanFloorHm);
 
-        // 4. Real router6 from NoiseRouter density functions
-        float[][] router6 = noiseAccess.sampleRouter6(sectionX, sectionZ, hmap);
-
-        return new AnchorInputs(heightPlanes, router6, biomeIdx, hmap, oceanFloorHm);
+        return new AnchorInputs(heightPlanes, biomeIdx, hmap, oceanFloorHm);
     }
 
     // ------------------------------------------------------------------
@@ -286,63 +229,5 @@ public final class AnchorSampler {
         return planes;
     }
 
-    // ------------------------------------------------------------------
-    // Router6 approximation
-    // ------------------------------------------------------------------
-
-    /**
-     * Approximate the 6-channel CORE router values from biome indices and
-     * the surface heightmap.
-     *
-     * <p><strong>DEPRECATED:</strong> This produces a fundamentally different
-     * distribution than real noise-router values and should not be used for
-     * training or high-quality inference.  Use {@link WorldNoiseAccess#sampleRouter6}
-     * instead.
-     *
-     * @return float[6][256] in row-major order (channel, lx*16+lz)
-     * @deprecated Distribution mismatch with real DensityFunction values
-     */
-    @Deprecated
-    static float[][] approximateRouter6(int[][] biomeIdx, float[][] hm) {
-        float[][] r6 = new float[6][256];
-
-        for (int lx = 0; lx < 16; lx++) {
-            for (int lz = 0; lz < 16; lz++) {
-                int idx = lx * 16 + lz;
-                int b = biomeIdx[lx][lz];
-                float h = hm[lx][lz] / HEIGHT_RANGE;  // normalised 0..1
-
-                // Temperature: warm biomes (0–64 IDs) → higher value; cold biomes → lower
-                float temp = 0.5f + (b % 64) / 128f - 0.25f;
-                r6[TEMP_IDX][idx] = clampRouter(temp);
-
-                // Vegetation: mid-range biomes tend toward forests
-                float veg = 0.4f + (b % 32) / 64f;
-                r6[VEGETATION_IDX][idx] = clampRouter(veg);
-
-                // Continents: high terrain → high continents value
-                r6[CONTINENTS_IDX][idx] = clampRouter(h * 0.8f + 0.1f);
-
-                // Erosion: lower terrain → more erosion
-                r6[EROSION_IDX][idx] = clampRouter(1f - h * 0.7f);
-
-                // Depth: ocean floor depth proxy (negative below sea, positive above)
-                float depth = (hm[lx][lz] - SEA_LEVEL) / HEIGHT_RANGE;
-                r6[DEPTH_IDX][idx] = clampRouter(depth * 0.5f + 0.5f);
-
-                // Ridges: high local-variation proxy (use steep terrain as proxy)
-                float ridges = Math.abs(h - 0.5f) * 2f;
-                r6[RIDGES_IDX][idx] = clampRouter(ridges);
-            }
-        }
-        return r6;
-    }
-
-    // ------------------------------------------------------------------
-    // Helpers
-    // ------------------------------------------------------------------
-
-    private static float clampRouter(float v) {
-        return Math.max(0f, Math.min(1f, v));
-    }
 }
+

@@ -32,6 +32,8 @@ public final class VoxyDetection {
     static final String WORLD_SECTION_CLASS      = "me.cortex.voxy.common.world.WorldSection";
     static final String WORLD_ID_CLASS           = "me.cortex.voxy.commonImpl.WorldIdentifier";
     static final String CONV_FACTORY_CLASS       = "me.cortex.voxy.common.voxelization.WorldConversionFactory";
+    static final String VOXY_INSTANCE_CLASS      = "me.cortex.voxy.commonImpl.VoxyInstance";
+    static final String SAVING_SERVICE_CLASS     = "me.cortex.voxy.common.world.service.SectionSavingService";
 
     // ------------------------------------------------------------------ //
     //  Shared state (package-private — used by VoxyEngine and VoxyWorldBinding)

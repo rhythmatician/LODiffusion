@@ -153,19 +153,20 @@ class OctreeQueueSpawnTest {
     void spawnChildren_noOccupancy_spawnsNone() {
         OctreeQueue queue = new OctreeQueue();
         OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
-        float[][][] argmax = new float[32][32][32]; // all zeros
+        int[][][] argmax = new int[32][32][32]; // all zeros
 
-        int spawned = queue.spawnChildren(parent, (byte) 0x00, argmax);
+        int spawned = queue.spawnChildren(parent, (byte) 0x00, argmax, 0, 0);
         assertEquals(0, spawned, "Zero occMask should spawn no children");
     }
 
     @Test
     void spawnChildren_allOccupied_spawnsEight() {
         OctreeQueue queue = new OctreeQueue();
-        OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
-        float[][][] argmax = new float[32][32][32];
+        // Use L2 parent at (0,0,0): all 8 L1 children have Y in [0,127] — in-world
+        OctreeTask parent = new OctreeTask(2, 0, 0, 0, -1, 0);
+        int[][][] argmax = new int[32][32][32];
 
-        int spawned = queue.spawnChildren(parent, (byte) 0xFF, argmax);
+        int spawned = queue.spawnChildren(parent, (byte) 0xFF, argmax, 0, 0);
         assertEquals(8, spawned, "Full occMask should spawn 8 children");
     }
 
@@ -173,10 +174,10 @@ class OctreeQueueSpawnTest {
     void spawnChildren_singleOctant() {
         OctreeQueue queue = new OctreeQueue();
         OctreeTask parent = new OctreeTask(3, 0, 0, 0, -1, 0);
-        float[][][] argmax = new float[32][32][32];
+        int[][][] argmax = new int[32][32][32];
 
         // Only octant 5 occupied (bit 5)
-        int spawned = queue.spawnChildren(parent, (byte) (1 << 5), argmax);
+        int spawned = queue.spawnChildren(parent, (byte) (1 << 5), argmax, 0, 0);
         assertEquals(1, spawned, "Single bit should spawn 1 child");
 
         // The child should be at level 2
@@ -190,8 +191,8 @@ class OctreeQueueSpawnTest {
 
         // L4 parent → L3 children
         OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
-        float[][][] argmax = new float[32][32][32];
-        queue.spawnChildren(parent, (byte) 0x01, argmax);
+        int[][][] argmax = new int[32][32][32];
+        queue.spawnChildren(parent, (byte) 0x01, argmax, 0, 0);
         assertEquals(1, queue.levelQueueSize(3),
                 "L4 parent spawns to L3 queue");
 
@@ -199,7 +200,7 @@ class OctreeQueueSpawnTest {
         queue.clear();
         OctreeTask parent1 = new OctreeTask(1, 0, 0, 0, 0, 0);
         parent1.parentContextFlat = new long[32 * 32 * 32]; // required for non-root
-        queue.spawnChildren(parent1, (byte) 0x01, argmax);
+        queue.spawnChildren(parent1, (byte) 0x01, argmax, 0, 0);
         assertEquals(1, queue.levelQueueSize(0),
                 "L1 parent spawns to L0 queue");
     }
@@ -208,45 +209,47 @@ class OctreeQueueSpawnTest {
     void spawnChildren_l0Parent_spawnsNothing() {
         OctreeQueue queue = new OctreeQueue();
         OctreeTask parent = new OctreeTask(0, 0, 0, 0, 0, 0);
-        float[][][] argmax = new float[32][32][32];
+        int[][][] argmax = new int[32][32][32];
 
-        int spawned = queue.spawnChildren(parent, (byte) 0xFF, argmax);
+        int spawned = queue.spawnChildren(parent, (byte) 0xFF, argmax, 0, 0);
         assertEquals(0, spawned, "L0 (leaf) should not spawn children");
     }
 
     @Test
     void spawnChildren_deduplication() {
         OctreeQueue queue = new OctreeQueue();
-        OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
-        float[][][] argmax = new float[32][32][32];
+        // Use L2 parent at (0,0,0): all 8 L1 children have Y in [0,127] — in-world
+        OctreeTask parent = new OctreeTask(2, 0, 0, 0, -1, 0);
+        int[][][] argmax = new int[32][32][32];
 
         // First spawn: 8 children
-        int first = queue.spawnChildren(parent, (byte) 0xFF, argmax);
+        int first = queue.spawnChildren(parent, (byte) 0xFF, argmax, 0, 0);
         assertEquals(8, first);
 
         // Second spawn with same parent: all duplicates
-        int second = queue.spawnChildren(parent, (byte) 0xFF, argmax);
+        int second = queue.spawnChildren(parent, (byte) 0xFF, argmax, 0, 0);
         assertEquals(0, second, "Duplicate children should not be re-enqueued");
     }
 
     @Test
     void spawnChildren_childCoordinates() {
         OctreeQueue queue = new OctreeQueue();
-        // Parent at L4 (5, 3, 7), only octant 7 occupied
-        OctreeTask parent = new OctreeTask(4, 5, 3, 7, -1, 0);
-        float[][][] argmax = new float[32][32][32];
+        // Parent at L4 (5, -1, 7), only octant 7 occupied
+        // Child Y = -1*2+1 = -1 at L3 → blocks [-256, -1], overlaps world [-64, 192)
+        OctreeTask parent = new OctreeTask(4, 5, -1, 7, -1, 0);
+        int[][][] argmax = new int[32][32][32];
 
-        queue.spawnChildren(parent, (byte) (1 << 7), argmax);
+        queue.spawnChildren(parent, (byte) (1 << 7), argmax, 0, 0);
 
         // Child should be at L3 with coords:
         // childX = 5*2 + 1 = 11
-        // childY = 3*2 + 1 = 7
+        // childY = -1*2 + 1 = -1
         // childZ = 7*2 + 1 = 15
         OctreeTask child = queue.pollLevel(3);
         assertNotNull(child, "Child should be in L3 queue");
         assertEquals(3, child.level);
         assertEquals(11, child.wsX, "childX = parentX*2 + (oct&1)");
-        assertEquals(7, child.wsY, "childY = parentY*2 + ((oct>>2)&1)");
+        assertEquals(-1, child.wsY, "childY = parentY*2 + ((oct>>2)&1)");
         assertEquals(15, child.wsZ, "childZ = parentZ*2 + ((oct>>1)&1)");
         assertEquals(7, child.octant, "Child's octant should be 7");
     }
@@ -257,14 +260,14 @@ class OctreeQueueSpawnTest {
         OctreeTask parent = new OctreeTask(4, 0, 0, 0, -1, 0);
 
         // Fill argmax with known pattern: class = Y coordinate
-        float[][][] argmax = new float[32][32][32];
+        int[][][] argmax = new int[32][32][32];
         for (int y = 0; y < 32; y++)
             for (int z = 0; z < 32; z++)
                 for (int x = 0; x < 32; x++)
                     argmax[y][z][x] = y;
 
         // Spawn octant 0 (offsets: X=0, Z=0, Y=0 → lower-left-bottom octant)
-        queue.spawnChildren(parent, (byte) 0x01, argmax);
+        queue.spawnChildren(parent, (byte) 0x01, argmax, 0, 0);
         OctreeTask child = queue.pollLevel(3);
 
         assertNotNull(child.parentContextFlat,
@@ -291,7 +294,7 @@ class OctreeQueueSpawnTest {
 
     @Test
     void extractAndUpsample_outputSize() {
-        float[][][] src = new float[32][32][32];
+        int[][][] src = new int[32][32][32];
         long[] result = OctreeQueue.extractAndUpsampleOctant(src, 0, 0, 0);
         assertEquals(32 * 32 * 32, result.length,
                 "Output must be exactly 32768 elements");
@@ -300,11 +303,11 @@ class OctreeQueueSpawnTest {
     @Test
     void extractAndUpsample_octant0_uniformValue() {
         // Fill entire volume with class 42
-        float[][][] src = new float[32][32][32];
+        int[][][] src = new int[32][32][32];
         for (int y = 0; y < 32; y++)
             for (int z = 0; z < 32; z++)
                 for (int x = 0; x < 32; x++)
-                    src[y][z][x] = 42.0f;
+                    src[y][z][x] = 42;
 
         long[] result = OctreeQueue.extractAndUpsampleOctant(src, 0, 0, 0);
 
@@ -317,7 +320,7 @@ class OctreeQueueSpawnTest {
     @Test
     void extractAndUpsample_nearestNeighbor_2x() {
         // Fill src with gradient: value = x coordinate
-        float[][][] src = new float[32][32][32];
+        int[][][] src = new int[32][32][32];
         for (int y = 0; y < 32; y++)
             for (int z = 0; z < 32; z++)
                 for (int x = 0; x < 32; x++)
@@ -338,13 +341,13 @@ class OctreeQueueSpawnTest {
     void extractAndUpsample_octant7_offsets() {
         // Octant 7: bit0=X=1, bit1=Z=1, bit2=Y=1
         // Offsets: X=16, Z=16, Y=16
-        float[][][] src = new float[32][32][32];
+        int[][][] src = new int[32][32][32];
 
         // Mark only the octant 7 region with value 99
         for (int y = 16; y < 32; y++)
             for (int z = 16; z < 32; z++)
                 for (int x = 16; x < 32; x++)
-                    src[y][z][x] = 99.0f;
+                    src[y][z][x] = 99;
 
         long[] result = OctreeQueue.extractAndUpsampleOctant(src, 16, 16, 16);
 
@@ -357,7 +360,7 @@ class OctreeQueueSpawnTest {
     @Test
     void extractAndUpsample_differentOctants_extractDifferentData() {
         // Fill each octant with a different value
-        float[][][] src = new float[32][32][32];
+        int[][][] src = new int[32][32][32];
         for (int y = 0; y < 32; y++)
             for (int z = 0; z < 32; z++)
                 for (int x = 0; x < 32; x++) {
@@ -386,7 +389,7 @@ class OctreeQueueSpawnTest {
     @Test
     void extractAndUpsample_yGradient_verifyRowMajorYZX() {
         // Verify Y,Z,X row-major ordering in output flat array
-        float[][][] src = new float[32][32][32];
+        int[][][] src = new int[32][32][32];
         for (int y = 0; y < 32; y++)
             for (int z = 0; z < 32; z++)
                 for (int x = 0; x < 32; x++)
@@ -505,4 +508,119 @@ class OctreeQueueSpawnTest {
         assertEquals(1, queue.failedCount());
         assertEquals(3, queue.totalProcessed());
     }
+
+    // ══════════════════════════════════════════════════════════════════════
+    //  Coordinate-scaling regression tests
+    // ══════════════════════════════════════════════════════════════════════
+
+    /**
+     * Verify that updatePriority correctly maps playerSectionX/Z (16-block
+     * chunk coords) to world-section coordinates at each level.
+     *
+     * <p>Player at block (-181, -9) → playerSection = (-12, -1).
+     * <ul>
+     *   <li>L0 wsX covers 32 blocks → player's L0 wsX = -6 (block -181 / 32)</li>
+     *   <li>L4 wsX covers 512 blocks → player's L4 wsX = -1 (block -181 / 512)</li>
+     * </ul>
+     * A task AT the player's position should get priority 0.
+     */
+    @Test
+    void updatePriority_coordinateScaling() {
+        int playerSectionX = -12;  // blockX=-181 >> 4
+        int playerSectionZ = -1;   // blockZ=-9 >> 4
+
+        // L0: player's wsX = floor(-181/32) = -6, wsZ = floor(-9/32) = -1
+        OctreeTask l0 = new OctreeTask(0, -6, 0, -1, 0, 999);
+        l0.updatePriority(playerSectionX, playerSectionZ);
+        assertEquals(0, l0.priority, "L0 task at player position should have priority 0");
+
+        // L4: player's wsX = floor(-181/512) = -1, wsZ = floor(-9/512) = -1
+        OctreeTask l4 = new OctreeTask(4, -1, 0, -1, -1, 999);
+        l4.updatePriority(playerSectionX, playerSectionZ);
+        assertEquals(0, l4.priority, "L4 task at player position should have priority 0");
+
+        // L0 task 1 section away should have priority 1
+        OctreeTask l0off = new OctreeTask(0, -5, 0, -1, 0, 999);
+        l0off.updatePriority(playerSectionX, playerSectionZ);
+        assertEquals(1, l0off.priority, "L0 task 1 section from player should have priority 1");
+    }
+
+    /**
+     * Verify that spawnChildren computes child priorities using the correct
+     * coordinate mapping (matching updatePriority).
+     */
+    @Test
+    void spawnChildren_priorityUsesCorrectCoordinateScaling() {
+        OctreeQueue queue = new OctreeQueue();
+        // Parent at L4 (-1, 0, -1) — the player's L4 section
+        OctreeTask parent = new OctreeTask(4, -1, 0, -1, -1, 0);
+        int[][][] argmax = new int[32][32][32];
+
+        // Player at block (-181, -9) → section (-12, -1)
+        queue.spawnChildren(parent, (byte) 0xFF, argmax, -12, -1);
+
+        // L3 child at (-1, 0, -1) should be the closest
+        // Player L3 wsX = floor(-181/256) = -1, L3 wsZ = floor(-9/256) = -1
+        // So child (-1, *, -1) should have priority 0
+        boolean foundZeroPriority = false;
+        for (int i = 0; i < 8; i++) {
+            OctreeTask child = queue.pollLevel(3);
+            if (child != null && child.wsX == -1 && child.wsZ == -1) {
+                assertEquals(0, child.priority,
+                    "L3 child at (-1,*,-1) should have distance 0 from player");
+
+                foundZeroPriority = true;
+            }
+        }
+        assertTrue(foundZeroPriority, "Should find a child with distance priority 0");
+    }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  Adjacency boost propagation tests
+    // ══════════════════════════════════════════════════════════════════
+
+    @Test
+    void adjacencyBoost_simpleNeighbour() {
+        OctreeQueue queue = new OctreeQueue();
+        // two adjacent L0 tasks, both start with same priority
+        OctreeTask t1 = new OctreeTask(0, 0, 0, 0, 0, 10);
+        OctreeTask t2 = new OctreeTask(0, 1, 0, 0, 1, 10);
+        assertTrue(queue.enqueueChild(t1));
+        assertTrue(queue.enqueueChild(t2));
+
+        // no boosts yet
+        assertFalse(t2.nearProcessed);
+
+        // mark t1 as completed; propagation should flag t2
+        queue.propagateAdjacency(t1);
+        assertTrue(t2.nearProcessed, "neighbour should have been flagged");
+
+        // reprioritise to apply the new boost
+        queue.reprioritise(0, 0);
+        assertTrue(t2.priority < 10,
+                "priority should drop when adjacent to processed");
+    }
+
+    @Test
+    void adjacencyBoost_ringsExpand() {
+        OctreeQueue queue = new OctreeQueue();
+        OctreeTask a = new OctreeTask(0, 0, 0, 0, 0, 20);
+        OctreeTask b = new OctreeTask(0, 1, 0, 0, 1, 20);
+        OctreeTask c = new OctreeTask(0, 2, 0, 0, 2, 20);
+        assertTrue(queue.enqueueChild(a));
+        assertTrue(queue.enqueueChild(b));
+        assertTrue(queue.enqueueChild(c));
+
+        // complete a → boost b only
+        queue.propagateAdjacency(a);
+        queue.reprioritise(0,0);
+        assertTrue(b.nearProcessed);
+        assertFalse(c.nearProcessed);
+
+        // complete b and propagate again
+        queue.propagateAdjacency(b);
+        queue.reprioritise(0,0);
+        assertTrue(c.nearProcessed, "second ring should be boosted after b completes");
+    }
 }
+

@@ -127,9 +127,23 @@ public final class Config {
   }
 
   // Runtime mutation helpers (update overlay + cache)
+  /**
+   * ONNX execution provider preference.
+   *
+   * <p>Supported values: {@code "auto"} (default), {@code "directml"},
+   * {@code "openvino"}, {@code "cpu"}.  {@code "auto"} selects the best
+   * provider available on the current platform (DirectML on Windows 10+,
+   * otherwise CPU).
+   */
+  public static String inferenceDevice() {
+    return getString("inferenceDevice", "auto");
+  }
+
   public static void setUseOnnxTerrain(boolean enabled) { setRuntime("useOnnxTerrain", enabled); }
   public static void setAdapter(String adapterId) { setRuntime("adapter", adapterId); }
   public static void setThreshold(double thr) { setRuntime("threshold", thr); }
+  public static void setOccThreshold(double thr) { setRuntime("occThreshold", thr); }
+  public static void setInferenceDevice(String device) { setRuntime("inferenceDevice", device); }
 
   /**
    * Set the debug.dumpCsv path in the runtime overlay (writes nested object).
