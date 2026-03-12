@@ -1202,6 +1202,7 @@ public final class LodGenerationService {
                 if (isOutOfWorldY(t.level, t.wsY)) {
                     t.markReady();
                     queue.markCompleted();
+                    queue.propagateAdjacency(t);
                     return true;
                 }
                 return false;
@@ -1220,6 +1221,7 @@ public final class LodGenerationService {
                     if (we != null && VoxyCompat.allOctantsPopulated(we, t.level, t.wsX, t.wsY, t.wsZ)) {
                         t.markReady();
                         queue.markCompleted();
+                        queue.propagateAdjacency(t);
                         return true;
                     }
                     return false;
@@ -1287,6 +1289,7 @@ public final class LodGenerationService {
                     if (taskMaxBlockY < surfMin || taskMinBlockY >= surfMax) {
                         task.markReady();
                         queue.markCompleted();
+                        queue.propagateAdjacency(task);
                         it.remove();
                     }
                 }
@@ -1349,8 +1352,12 @@ public final class LodGenerationService {
 
                     task.markReady();
                     queue.markCompleted();
+                    queue.propagateAdjacency(task);
                     processed++;
                 }
+                // after we have finished the batch, update priorities so any
+                // neighbours boosted via propagateAdjacency are reordered
+                queue.reprioritise(playerSectionX, playerSectionZ);
             } catch (Exception e) {
                 for (OctreeTask task : claimed) {
                     if (task.state() == OctreeTask.State.PROCESSING) {

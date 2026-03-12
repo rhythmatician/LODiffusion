@@ -568,9 +568,59 @@ class OctreeQueueSpawnTest {
             if (child != null && child.wsX == -1 && child.wsZ == -1) {
                 assertEquals(0, child.priority,
                     "L3 child at (-1,*,-1) should have distance 0 from player");
+
                 foundZeroPriority = true;
             }
         }
         assertTrue(foundZeroPriority, "Should find a child with distance priority 0");
     }
+
+    // ══════════════════════════════════════════════════════════════════
+    //  Adjacency boost propagation tests
+    // ══════════════════════════════════════════════════════════════════
+
+    @Test
+    void adjacencyBoost_simpleNeighbour() {
+        OctreeQueue queue = new OctreeQueue();
+        // two adjacent L0 tasks, both start with same priority
+        OctreeTask t1 = new OctreeTask(0, 0, 0, 0, 0, 10);
+        OctreeTask t2 = new OctreeTask(0, 1, 0, 0, 1, 10);
+        assertTrue(queue.enqueueChild(t1));
+        assertTrue(queue.enqueueChild(t2));
+
+        // no boosts yet
+        assertFalse(t2.nearProcessed);
+
+        // mark t1 as completed; propagation should flag t2
+        queue.propagateAdjacency(t1);
+        assertTrue(t2.nearProcessed, "neighbour should have been flagged");
+
+        // reprioritise to apply the new boost
+        queue.reprioritise(0, 0);
+        assertTrue(t2.priority < 10,
+                "priority should drop when adjacent to processed");
+    }
+
+    @Test
+    void adjacencyBoost_ringsExpand() {
+        OctreeQueue queue = new OctreeQueue();
+        OctreeTask a = new OctreeTask(0, 0, 0, 0, 0, 20);
+        OctreeTask b = new OctreeTask(0, 1, 0, 0, 1, 20);
+        OctreeTask c = new OctreeTask(0, 2, 0, 0, 2, 20);
+        assertTrue(queue.enqueueChild(a));
+        assertTrue(queue.enqueueChild(b));
+        assertTrue(queue.enqueueChild(c));
+
+        // complete a → boost b only
+        queue.propagateAdjacency(a);
+        queue.reprioritise(0,0);
+        assertTrue(b.nearProcessed);
+        assertFalse(c.nearProcessed);
+
+        // complete b and propagate again
+        queue.propagateAdjacency(b);
+        queue.reprioritise(0,0);
+        assertTrue(c.nearProcessed, "second ring should be boosted after b completes");
+    }
 }
+

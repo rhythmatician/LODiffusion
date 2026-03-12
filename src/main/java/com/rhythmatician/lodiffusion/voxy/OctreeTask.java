@@ -106,8 +106,19 @@ public final class OctreeTask implements Comparable<OctreeTask> {
      */
     public volatile boolean nearVanilla;
 
+    /** True when this task touches the current processed frontier. */
+    public volatile boolean nearProcessed;
+
     /** Priority reduction applied to tasks adjacent to loaded vanilla chunks. */
     static final int VANILLA_BORDER_BOOST = 12;
+
+    /**
+     * Priority reduction applied to tasks next to any already-processed
+     * section (vanilla or generated).  As completed tasks propagate the
+     * frontier outward the boost cascades ring-by-ring, ensuring voxels
+     * closest to the rendered boundary are visited first.
+     */
+    static final int PROCESSED_BORDER_BOOST = 12;
 
 
     // ── Mutable state ───────────────────────────────────────────────────
@@ -257,7 +268,8 @@ public final class OctreeTask implements Comparable<OctreeTask> {
         int playerAtLevel_Z = WorldSectionCoord.sectionToWorldSection(playerSectionZ, level);
         this.priority = Math.abs(wsX - playerAtLevel_X)
                       + Math.abs(wsZ - playerAtLevel_Z)
-                      - (nearVanilla ? VANILLA_BORDER_BOOST : 0);
+                      - (nearVanilla ? VANILLA_BORDER_BOOST : 0)
+                      - (nearProcessed ? PROCESSED_BORDER_BOOST : 0);
     }
 
     /**
@@ -281,7 +293,8 @@ public final class OctreeTask implements Comparable<OctreeTask> {
         float dot = dx * headingX + dz * headingZ;
         float directionalPenalty = -dot * coneStrength;
         this.priority = manhattan + Math.round(directionalPenalty)
-                      - (nearVanilla ? VANILLA_BORDER_BOOST : 0);
+                      - (nearVanilla ? VANILLA_BORDER_BOOST : 0)
+                      - (nearProcessed ? PROCESSED_BORDER_BOOST : 0);
     }
 
     // ── Comparable (priority queue ordering) ────────────────────────────
@@ -298,7 +311,9 @@ public final class OctreeTask implements Comparable<OctreeTask> {
     public String toString() {
         return "OctreeTask[L" + level + " (" + wsX + "," + wsY + "," + wsZ
                 + ") oct=" + octant + " pri=" + priority
-                + (nearVanilla ? " VB" : "") + " " + state.get() + "]";
+                + (nearVanilla ? " VB" : "")
+                + (nearProcessed ? " PB" : "")
+                + " " + state.get() + "]";
     }
 
     // ── Coordinate utilities (delegated to WorldSectionCoord) ────────────

@@ -23,6 +23,14 @@ import com.rhythmatician.lodiffusion.HelloTerrainMod;
  * <p>Multiple worker threads may drain different levels concurrently.
  * The queue provides thread-safe enqueue, drain, and child-spawning.
  *
+ * <h3>Priority boosting</h3>
+ * <p>A task may receive a constant priority reduction if it lies adjacent
+ * to a vanilla-loaded chunk (set by the generation service when roots are
+ * enqueued).  Newly added in this revision, we also track adjacency to
+ * *processed* sections and propagate a similar boost outward as each
+ * section completes.  This produces a ring-expanding frontier that keeps
+ * generation focused just beyond the visible boundary.
+ *
  * <h3>Shutdown</h3>
  * <p>Shutdown cascades top-down: when L4 is done generating, its completion
  * is signalled, and workers at L3 know no more parents will arrive, etc.
@@ -412,6 +420,34 @@ public final class OctreeQueue {
 
     /** Increment the completed-task counter (called after Voxy write). */
     public void markCompleted() { completedCount.incrementAndGet(); }
+
+    /**
+     * When a task transitions to READY, call this to boost any nearby
+     * pending tasks so the processing frontier expands outward one ring at a time.
+     *
+     * <p>We only consider horizontal neighbours (±1 in X/Z) because
+     * priority ignores Y; vertical propagation would behave the same but
+     * offer little benefit and complicate test scenarios.  The method is
+     * idempotent – marking an already-boosted task again has no effect.
+     */
+    public void propagateAdjacency(OctreeTask completed) {
+        int lvl = completed.level;
+        // four cardinal directions in XZ
+        int[][] deltas = {{1,0,0},{-1,0,0},{0,0,1},{0,0,-1}};
+        for (int[] d : deltas) {
+            int nx = completed.wsX + d[0];
+            int ny = completed.wsY + d[1];
+            int nz = completed.wsZ + d[2];
+            // pack key and look up
+            long key = OctreeTask.packKey(lvl, nx, ny, nz);
+            OctreeTask neighbour = allTasks.get(key);
+            if (neighbour == null) continue;
+            // only boost pending tasks that haven't already been marked
+            if (!neighbour.isCancelled() && !neighbour.nearProcessed) {
+                neighbour.nearProcessed = true;
+            }
+        }
+    }
 
     /** Increment the failed-task counter. */
     public void markFailed() { failedCount.incrementAndGet(); }
