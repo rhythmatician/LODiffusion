@@ -1077,10 +1077,28 @@ public final class LodGenerationService {
                     for (int dz = -l4Radius; dz <= l4Radius; dz++) {
                         int wx = l4Cx + dx;
                         int wz = l4Cz + dz;
+
+                        // ── Vanilla-border detection ───────────────────
+                        // Each L4 section covers 32 chunks per axis.
+                        // Check 1 chunk just outside each of the 4 faces
+                        // (midpoint of the face) for a loaded vanilla chunk.
+                        // Cost: 4 hash-map lookups per L4 root per 500 ms.
+                        int cMinX = wx * 32;  // west-edge chunk X
+                        int cMinZ = wz * 32;  // north-edge chunk Z
+                        int cMidX = cMinX + 15;
+                        int cMidZ = cMinZ + 15;
+                        boolean nearVanilla =
+                                tryGetLoadedChunk(world, cMinX - 1,  cMidZ    ) != null
+                             || tryGetLoadedChunk(world, cMinX + 32, cMidZ    ) != null
+                             || tryGetLoadedChunk(world, cMidX,      cMinZ - 1) != null
+                             || tryGetLoadedChunk(world, cMidX,      cMinZ + 32) != null;
+
                         for (int wy = wyMin; wy <= wyMax; wy++) {
                             int priority = Math.abs(dx) + Math.abs(dz)
                                          + Math.abs(wy - l4Cy);
-                            roots.add(new OctreeTask(4, wx, wy, wz, -1, priority));
+                            OctreeTask root = new OctreeTask(4, wx, wy, wz, -1, priority);
+                            root.nearVanilla = nearVanilla;
+                            roots.add(root);
                         }
                     }
                 }

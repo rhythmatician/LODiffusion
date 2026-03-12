@@ -98,6 +98,16 @@ public final class OctreeTask implements Comparable<OctreeTask> {
      */
     volatile int priority;
 
+    /**
+     * True when this task's XZ footprint is adjacent to a fully-generated
+     * vanilla chunk.  Inherited by children.  Reduces priority by
+     * {@value #VANILLA_BORDER_BOOST} so Voxy LODs fill in at the seam
+     * between generated and ungenerated terrain first.
+     */
+    public volatile boolean nearVanilla;
+
+    /** Priority reduction applied to tasks adjacent to loaded vanilla chunks. */
+    static final int VANILLA_BORDER_BOOST = 12;
 
 
     // ── Mutable state ───────────────────────────────────────────────────
@@ -246,7 +256,8 @@ public final class OctreeTask implements Comparable<OctreeTask> {
         int playerAtLevel_X = WorldSectionCoord.sectionToWorldSection(playerSectionX, level);
         int playerAtLevel_Z = WorldSectionCoord.sectionToWorldSection(playerSectionZ, level);
         this.priority = Math.abs(wsX - playerAtLevel_X)
-                      + Math.abs(wsZ - playerAtLevel_Z);
+                      + Math.abs(wsZ - playerAtLevel_Z)
+                      - (nearVanilla ? VANILLA_BORDER_BOOST : 0);
     }
 
     /**
@@ -269,7 +280,8 @@ public final class OctreeTask implements Comparable<OctreeTask> {
         int manhattan = Math.abs(dx) + Math.abs(dz);
         float dot = dx * headingX + dz * headingZ;
         float directionalPenalty = -dot * coneStrength;
-        this.priority = manhattan + Math.round(directionalPenalty);
+        this.priority = manhattan + Math.round(directionalPenalty)
+                      - (nearVanilla ? VANILLA_BORDER_BOOST : 0);
     }
 
     // ── Comparable (priority queue ordering) ────────────────────────────
@@ -285,7 +297,8 @@ public final class OctreeTask implements Comparable<OctreeTask> {
     @Override
     public String toString() {
         return "OctreeTask[L" + level + " (" + wsX + "," + wsY + "," + wsZ
-                + ") oct=" + octant + " pri=" + priority + " " + state.get() + "]";
+                + ") oct=" + octant + " pri=" + priority
+                + (nearVanilla ? " VB" : "") + " " + state.get() + "]";;
     }
 
     // ── Coordinate utilities (delegated to WorldSectionCoord) ────────────

@@ -1,5 +1,7 @@
 package com.rhythmatician.lodiffusion.voxy;
 
+import java.lang.invoke.MethodHandles;
+import java.lang.invoke.VarHandle;
 import java.lang.reflect.Field;
 
 import org.slf4j.Logger;
@@ -40,6 +42,18 @@ public final class VoxyWorldBinding {
 
     /** {@code WorldSection.nonEmptyChildren} — octant-presence bitmask for GPU octree traversal. */
     static Field worldSectionNonEmptyChildrenField;
+
+    /**
+     * VarHandle for {@code WorldSection.nonEmptyChildren}, used for CAS updates in
+     * {@link #propagateChildExistence}. Mirrors the approach Voxy itself uses inside
+     * {@code WorldSection.updateEmptyChildState()} — a CAS loop prevents lost-update
+     * races against concurrent Voxy write paths.
+     *
+     * <p>May be {@code null} if {@link MethodHandles#privateLookupIn} is blocked by
+     * the JVM's strong encapsulation settings; in that case the code falls back to
+     * a non-atomic field write.
+     */
+    static VarHandle worldSectionNecVarHandle;
 
     private VoxyWorldBinding() {}
 
@@ -83,6 +97,22 @@ public final class VoxyWorldBinding {
                 worldSectionNonEmptyChildrenField =
                         VoxyEngine.worldSectionClass.getDeclaredField("nonEmptyChildren");
                 worldSectionNonEmptyChildrenField.setAccessible(true);
+
+                // Attempt to resolve a VarHandle for nonEmptyChildren so that
+                // propagateChildExistence() can use a CAS loop instead of a raw
+                // field write.  privateLookupIn may fail on JVMs with strict
+                // strong encapsulation — the fallback Field path remains safe.
+                try {
+                    MethodHandles.Lookup privateLookup = MethodHandles.privateLookupIn(
+                            VoxyEngine.worldSectionClass, MethodHandles.lookup());
+                    worldSectionNecVarHandle = privateLookup.findVarHandle(
+                            VoxyEngine.worldSectionClass, "nonEmptyChildren", byte.class);
+                    LOGGER.info("Voxy nonEmptyChildren VarHandle resolved — CAS propagation enabled");
+                } catch (IllegalAccessException | NoSuchFieldException e) {
+                    LOGGER.warn("nonEmptyChildren VarHandle unavailable, CAS propagation disabled: {}",
+                            e.getMessage());
+                    worldSectionNecVarHandle = null;
+                }
 
                 worldSectionFieldsReady = true;
                 LOGGER.info("Voxy WorldSection field bindings resolved");
@@ -344,14 +374,32 @@ public final class VoxyWorldBinding {
                 Object parentSection = VoxyEngine.acquireMethod.invoke(
                         worldEngine, parentLvl, parentWsX, parentWsY, parentWsZ);
 
-                // Read current nonEmptyChildren, OR in the child bit
-                byte current = worldSectionNonEmptyChildrenField.getByte(parentSection);
-                byte updated = (byte) (current | childBit);
-                if (updated != current) {
-                    worldSectionNonEmptyChildrenField.setByte(parentSection, updated);
-                    // markDirty → triggers mesh rebuild + child existence propagation
-                    // to the GPU octree via processChildChange()
-                    VoxyEngine.markDirtyMethod.invoke(worldEngine, parentSection);
+                // Update nonEmptyChildren using CAS when the VarHandle is available.
+                // This mirrors WorldSection.updateEmptyChildState()'s own CAS loop,
+                // making it safe against concurrent Voxy write paths (e.g. a vanilla
+                // chunk arriving while we are propagating existence bits upward).
+                if (worldSectionNecVarHandle != null) {
+                    byte prev, next;
+                    boolean didChange = false;
+                    do {
+                        prev = (byte)(Byte) worldSectionNecVarHandle.get(parentSection);
+                        next = (byte) (prev | childBit);
+                        if (next == prev) break; // bit already set — nothing to do
+                        didChange = true;
+                    } while (!worldSectionNecVarHandle.compareAndSet(parentSection, prev, next));
+                    if (didChange) {
+                        VoxyEngine.markDirtyMethod.invoke(worldEngine, parentSection);
+                    }
+                } else {
+                    // Fallback: non-atomic read-modify-write (best-effort when VarHandle
+                    // is unavailable).  A lost-update here is non-fatal: the bit will
+                    // be re-set on the next LODiffusion write pass.
+                    byte current = worldSectionNonEmptyChildrenField.getByte(parentSection);
+                    byte updated = (byte) (current | childBit);
+                    if (updated != current) {
+                        worldSectionNonEmptyChildrenField.setByte(parentSection, updated);
+                        VoxyEngine.markDirtyMethod.invoke(worldEngine, parentSection);
+                    }
                 }
 
                 VoxyEngine.worldSectionReleaseMethod.invoke(parentSection);

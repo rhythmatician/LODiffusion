@@ -249,6 +249,7 @@ public final class OctreeQueue {
             OctreeTask child = new OctreeTask(
                     childLevel, cx, cy, cz, oct, childPriority);
             child.parentContextFlat = childParentFlat;
+            child.nearVanilla = parent.nearVanilla;  // propagate boost down octree
 
             // Column context is built lazily by the processing worker
             // (not here) to avoid blocking the inference thread on noise sampling
