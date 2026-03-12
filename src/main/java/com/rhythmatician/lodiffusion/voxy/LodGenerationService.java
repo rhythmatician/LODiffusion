@@ -3,6 +3,7 @@ package com.rhythmatician.lodiffusion.voxy;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -1238,6 +1239,38 @@ public final class LodGenerationService {
                         ctxCache.put(xzKey, ctx);
                     }
                 }
+            }
+
+            // ── Pre-inference surface clip ────────────────────────────
+            // Skip tasks whose Y range is entirely above or below the
+            // heightmap surface.  The rawHm values are "first air Y"
+            // (topSolid + 1).  Zero-margin: if the task's block-Y range
+            // doesn't overlap [surfMin, surfMax), skip it entirely.
+            // This catches L4 roots and any children that slipped through
+            // the spawnChildren pruning at a coarser resolution.
+            {
+                Iterator<OctreeTask> it = claimed.iterator();
+                while (it.hasNext()) {
+                    OctreeTask task = it.next();
+                    float[][] taskRawHm = task.columnContext.rawHm();
+                    if (taskRawHm == null) continue;
+                    int taskMinBlockY = WorldSectionCoord.worldSectionToBlockMin(task.wsY, level);
+                    int taskMaxBlockY = WorldSectionCoord.worldSectionToBlockMax(task.wsY, level) + 1;
+                    float surfMin = Float.MAX_VALUE;
+                    float surfMax = -Float.MAX_VALUE;
+                    for (float[] row : taskRawHm) {
+                        for (float h : row) {
+                            if (h < surfMin) surfMin = h;
+                            if (h > surfMax) surfMax = h;
+                        }
+                    }
+                    if (taskMaxBlockY < surfMin || taskMinBlockY >= surfMax) {
+                        task.markReady();
+                        queue.markCompleted();
+                        it.remove();
+                    }
+                }
+                if (claimed.isEmpty()) continue;
             }
 
             // ── Batched inference ────────────────────────────────────

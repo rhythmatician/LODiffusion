@@ -125,17 +125,10 @@ public final class OctreeQueue {
 
     // ── Child spawning ──────────────────────────────────────────────────
 
-    /**
-     * Extra margin (in blocks) above and below the surface range when
-     * checking intersection, to ensure we don't prune sections
-     * containing caves near the surface or tree canopies.
-     *
-     * <p>32 blocks was too generous: with typical MC surface at Y≈63,
-     * it allowed wsY=0 (Y=0–31) to pass through (childMaxBlockY=32 vs
-     * rangeMin=31 — boundary case).  16 blocks is sufficient for
-     * near-surface caves while correctly pruning deep underground octants.
-     */
-    private static final int SURFACE_MARGIN_BLOCKS = 16;
+    // No margin constant — surface pruning is now zero-margin.
+    // Heightmap values are "first air Y" (topSolid + 1).
+    // Prune if entirely above (minBlockY >= surfMax) or
+    // entirely below (maxBlockY_excl < surfMin).
 
     /**
      * After inference on a parent task, spawn child tasks for each occupied
@@ -152,8 +145,9 @@ public final class OctreeQueue {
      * </ol>
      *
      * <p>Children whose Y range does not intersect the surface heightmap
-     * (± {@value #SURFACE_MARGIN_BLOCKS} blocks margin) are pruned
-     * entirely — only surface-intersecting children are refined.
+     * are pruned entirely — only surface-intersecting children are refined.
+     * Pruning uses zero margin: any child entirely above or below the
+     * heightmap surface ("first air Y" values) is skipped.
      *
      * <p>Column context is NOT built here — it is deferred to the worker
      * thread that processes the child, avoiding blocking the parent's
@@ -218,12 +212,17 @@ public final class OctreeQueue {
             int childPriority = Math.abs(cx - playerAtLevel_X)
                               + Math.abs(cz - playerAtLevel_Z);
 
-            // ── Surface-intersection pruning ───────────────────────────
-            // Skip children whose Y range does NOT overlap the surface
-            // height in their XZ sub-region of the parent heightmap.
-            // Only surface-intersecting children are refined; deep
-            // underground and pure-sky octants are dropped entirely to
-            // save inference time.
+            // ── Surface-intersection pruning (zero-margin) ─────────────
+            // Heightmap values are "first air Y" (topSolid + 1).
+            // - surfMin = lowest first-air-Y in this octant's XZ footprint
+            // - surfMax = highest first-air-Y
+            // Prune if the child's block-Y range is entirely above the
+            // surface (childMinBlockY >= surfMax → all air) or entirely
+            // below it (childMaxBlockY_excl < surfMin → all underground).
+            // This aggressively skips both sky and deep-underground
+            // octants.  May clip some treetops in heavily forested biomes
+            // (noise-based heightmap doesn't include trees/structures),
+            // but the speed gain is large.
             if (parentRawHm != null) {
                 int childMinBlockY = WorldSectionCoord.worldSectionToBlockMin(cy, childLevel);
                 int childMaxBlockY = WorldSectionCoord.worldSectionToBlockMax(cy, childLevel) + 1;
@@ -240,12 +239,8 @@ public final class OctreeQueue {
                     }
                 }
 
-                // Extend surface range by margin for caves/canopies
-                float rangeMin = surfMin - SURFACE_MARGIN_BLOCKS;
-                float rangeMax = Math.max(surfMax, 62f) + SURFACE_MARGIN_BLOCKS; // include sea level
-
-                // No overlap → skip entirely (don't refine underground/sky)
-                if (childMaxBlockY <= rangeMin || childMinBlockY >= rangeMax) {
+                // Zero-margin: prune if entirely above OR entirely below surface
+                if (childMaxBlockY < surfMin || childMinBlockY >= surfMax) {
                     pruned++;
                     continue;
                 }
