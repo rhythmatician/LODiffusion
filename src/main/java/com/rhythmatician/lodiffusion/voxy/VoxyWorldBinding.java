@@ -305,6 +305,29 @@ public final class VoxyWorldBinding {
                 }
             }
 
+            // Set the nonEmptyChildren bit for the octant we just wrote to.
+            // Without this, Voxy's NodeManager sees the section exists (parent
+            // bits are set) but nonEmptyChildren == 0, triggering an infinite
+            // warn-invalidate-recreate loop (~30K warnings/sec).
+            if (nonAir > 0) {
+                int octXHalf = (bx >= 16) ? 1 : 0;
+                int octZHalf = (bz >= 16) ? 1 : 0;
+                int octYHalf = (by >= 16) ? 1 : 0;
+                int octant = octXHalf | (octZHalf << 1) | (octYHalf << 2);
+                byte childBit = (byte) (1 << octant);
+
+                if (worldSectionNecVarHandle != null) {
+                    byte prev, next;
+                    do {
+                        prev = (byte)(Byte) worldSectionNecVarHandle.get(worldSection);
+                        next = (byte) (prev | childBit);
+                    } while (!worldSectionNecVarHandle.compareAndSet(worldSection, prev, next));
+                } else {
+                    byte current = worldSectionNonEmptyChildrenField.getByte(worldSection);
+                    worldSectionNonEmptyChildrenField.setByte(worldSection, (byte)(current | childBit));
+                }
+            }
+
             // Mark dirty → triggers save + mesh rebuild
             VoxyEngine.markDirtyMethod.invoke(worldEngine, worldSection);
 
@@ -312,8 +335,9 @@ public final class VoxyWorldBinding {
             VoxyEngine.worldSectionReleaseMethod.invoke(worldSection);
 
             // Propagate child existence bits to parent WorldSections so the GPU octree
-            // traversal can navigate down to this data
-            if (lvl < 4) {
+            // traversal can navigate down to this data.  Only propagate when we actually
+            // wrote non-air data — otherwise parents would advertise empty children.
+            if (nonAir > 0 && lvl < 4) {
                 propagateChildExistence(worldEngine, lvl, sectionX, sectionY, sectionZ);
             }
 
@@ -442,6 +466,47 @@ public final class VoxyWorldBinding {
 
         ensureWorldSectionBindings();
 
+        // Pre-compute nonEmptyChildren and non-air count from the voxel data
+        // BEFORE acquiring the WorldSection, to minimize lock hold time.
+        int nonAir = 0;
+        byte nec;
+        if (lvl == 0) {
+            // L0: 0xFF if any blocks exist, 0 otherwise (matches Voxy's updateLvl0State)
+            for (long v : voxels) {
+                if (!isAir(v)) { nonAir++; }
+            }
+            nec = (nonAir > 0) ? (byte) 0xFF : 0;
+        } else {
+            // L1-4: compute per-octant non-air presence.
+            // Each bit corresponds to a 16³ sub-cube (child octant):
+            //   bit 0 = x, bit 1 = z, bit 2 = y  (matches WorldSection.getChildIndex)
+            nec = 0;
+            for (int octant = 0; octant < 8; octant++) {
+                int ox = (octant & 1) * 16;        // bit 0 → x half
+                int oz = ((octant >> 1) & 1) * 16; // bit 1 → z half
+                int oy = ((octant >> 2) & 1) * 16; // bit 2 → y half
+                boolean hasNonAir = false;
+                for (int iy = oy; iy < oy + 16 && !hasNonAir; iy++) {
+                    for (int iz = oz; iz < oz + 16 && !hasNonAir; iz++) {
+                        for (int ix = ox; ix < ox + 16 && !hasNonAir; ix++) {
+                            if (!isAir(voxels[(iy << 10) | (iz << 5) | ix])) {
+                                hasNonAir = true;
+                            }
+                        }
+                    }
+                }
+                if (hasNonAir) {
+                    nec |= (byte) (1 << octant);
+                    nonAir++; // approximate — just indicates presence
+                }
+            }
+            // Compute exact non-air count for the return value
+            nonAir = 0;
+            for (long v : voxels) {
+                if (!isAir(v)) nonAir++;
+            }
+        }
+
         try {
             Object worldSection = VoxyEngine.acquireMethod.invoke(
                     worldEngine, lvl, wsX, wsY, wsZ);
@@ -451,12 +516,23 @@ public final class VoxyWorldBinding {
             // Copy all 32³ voxels directly (same index layout)
             System.arraycopy(voxels, 0, data, 0, 32 * 32 * 32);
 
+            // Set nonEmptyChildren so Voxy's NodeManager knows this section
+            // has renderable content.  Without this, the renderer sees the
+            // section exists (parent bits set) but nonEmptyChildren == 0,
+            // triggering an infinite warn-invalidate-recreate loop.
+            if (worldSectionNecVarHandle != null) {
+                worldSectionNecVarHandle.set(worldSection, nec);
+            } else {
+                worldSectionNonEmptyChildrenField.setByte(worldSection, nec);
+            }
+
             VoxyEngine.markDirtyMethod.invoke(worldEngine, worldSection);
             VoxyEngine.worldSectionReleaseMethod.invoke(worldSection);
 
             // Propagate child-existence bits to parent levels so the GPU
-            // octree traversal can navigate down to this data
-            if (lvl < 4) {
+            // octree traversal can navigate down to this data.
+            // Only propagate when the section actually has content.
+            if (nec != 0 && lvl < 4) {
                 // Convert WorldSection coords to an equivalent L0 section
                 // coordinate for the existing propagation helper
                 int sectionX = wsX << (lvl + 1);
@@ -471,11 +547,6 @@ public final class VoxyWorldBinding {
                     + " ws=(" + wsX + "," + wsY + "," + wsZ + ")", e);
         }
 
-        // Count non-air (done outside the acquire block)
-        int nonAir = 0;
-        for (long v : voxels) {
-            if (!isAir(v)) nonAir++;
-        }
         return nonAir;
     }
 

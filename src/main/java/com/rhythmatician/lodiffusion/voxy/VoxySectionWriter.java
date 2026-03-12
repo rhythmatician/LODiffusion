@@ -456,6 +456,7 @@ public final class VoxySectionWriter {
         // Build packed voxel array in YZX order (matching writeAtLevel expectations)
         long[] voxels = new long[numCells];
         int idx = 0;
+        int nonAirCount = 0;
 
         for (int ly = 0; ly < cellsPerAxis; ly++) {
             for (int lz = 0; lz < cellsPerAxis; lz++) {
@@ -484,10 +485,17 @@ public final class VoxySectionWriter {
                     } else {
                         int voxyBlockId = blockMapper.getVoxyBlockId(bestIdx);
                         voxel = VoxyCompat.composeVoxel(voxyBlockId, biome, VoxySectionWriter.DEFAULT_LIGHT);
+                        if (voxyBlockId != 0) nonAirCount++;
                     }
                     voxels[idx++] = voxel;
                 }
             }
+        }
+
+        // Skip all-air sections — avoids writing empty data and propagating
+        // existence bits that would trigger Voxy's NodeManager warning loop
+        if (nonAirCount == 0) {
+            return 0;
         }
 
         // Write directly to the target Voxy level
