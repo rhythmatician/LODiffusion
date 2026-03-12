@@ -144,6 +144,19 @@ public final class VoxyCompat {
         return VoxyWorldBinding.sectionExistsAtLevel(worldEngine, lvl, wsX, wsY, wsZ);
     }
 
+    /**
+     * Returns {@code true} if Voxy has fully claimed all 8 octants
+     * ({@code nonEmptyChildren == 0xFF}).  Use this as the upstream inference
+     * guard: if all octants are already populated by real chunk data, there is
+     * nothing for LODiffusion to contribute so the task can be skipped entirely.
+     *
+     * @see VoxyWorldBinding#allOctantsPopulated(Object, int, int, int, int)
+     */
+    public static boolean allOctantsPopulated(Object worldEngine, int lvl,
+                                               int wsX, int wsY, int wsZ) {
+        return VoxyWorldBinding.allOctantsPopulated(worldEngine, lvl, wsX, wsY, wsZ);
+    }
+
     // ── Save-queue monitoring ──────────────────────────────────────────────
 
     /**

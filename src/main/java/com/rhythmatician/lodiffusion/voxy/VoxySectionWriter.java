@@ -438,21 +438,6 @@ public final class VoxySectionWriter {
 
         boolean detailed = sectionsWritten.get() < 5;
 
-        // Guard: don't overwrite data Voxy already holds at this level.
-        // Convert L0 section coordinates to WorldSection coordinates at the target level.
-        {
-            int wsX = sectionX >> (voxyLvl + 1);
-            int wsY = sectionY >> (voxyLvl + 1);
-            int wsZ = sectionZ >> (voxyLvl + 1);
-            if (VoxyCompat.sectionExistsAtLevel(worldEngine, voxyLvl, wsX, wsY, wsZ)) {
-                if (detailed) {
-                    LOGGER.info("[VoxySectionWriter] Skipping LOD{} section ({},{},{}) — WS ({},{},{}) already exists",
-                            voxyLvl, sectionX, sectionY, sectionZ, wsX, wsY, wsZ);
-                }
-                return 0;
-            }
-        }
-
         // Build packed voxel array in YZX order (matching writeAtLevel expectations)
         long[] voxels = new long[numCells];
         int idx = 0;
@@ -538,19 +523,6 @@ public final class VoxySectionWriter {
                                   int wsX, int wsY, int wsZ) {
         if (worldEngine == null) {
             throw new IllegalStateException("writeOctreeToLevel requires a live WorldEngine");
-        }
-
-        // Guard: don't overwrite data Voxy already holds at this level.
-        // When vanilla generates real chunks, VoxelIngestService ingests them and
-        // WorldUpdater.insertUpdate() mips up through all levels — clobbering our
-        // approximation is correct, but the reverse (us clobbering real mipped data)
-        // would corrupt the view until the next Voxy save/load cycle.
-        if (VoxyCompat.sectionExistsAtLevel(worldEngine, level, wsX, wsY, wsZ)) {
-            if (sectionsWritten.get() < 10) {
-                LOGGER.info("[VoxySectionWriter] Skipping L{} WS ({},{},{}) — section already exists",
-                        level, wsX, wsY, wsZ);
-            }
-            return 0;
         }
 
         // Reuse thread-local scratch buffer instead of allocating 32K longs each call
@@ -644,16 +616,6 @@ public final class VoxySectionWriter {
                                       int wsX, int wsY, int wsZ) {
         if (worldEngine == null) {
             throw new IllegalStateException("writeOctreeBlockData requires a live WorldEngine");
-        }
-
-        // Insert-only guard at the WorldSection level
-        if (VoxyCompat.sectionExistsAtLevel(worldEngine, 0, wsX, wsY, wsZ)) {
-            if (sectionsWritten.get() < 10) {
-                LOGGER.info("[VoxySectionWriter] Skipping L0 WS ({},{},{}) — already exists",
-                        wsX, wsY, wsZ);
-            }
-            sectionsWritten.incrementAndGet();
-            return 0;
         }
 
         // Reuse thread-local scratch buffer (same as writeOctreeToLevel)

@@ -1208,14 +1208,16 @@ public final class LodGenerationService {
             });
             if (claimed.isEmpty()) continue;
 
-            // ── Pre-inference existence check for L0 ─────────────────
-            // Skip L0 tasks that Voxy already has data for (e.g. vanilla
-            // chunks ingested from real terrain).  Avoids burning inference
-            // time before the write-time guard in writeOctreeBlockData fires.
-            if (level == 0) {
+            // ── Pre-inference fully-claimed check ────────────────────
+            // Skip tasks only when Voxy has fully populated ALL 8 octants
+            // (nonEmptyChildren == 0xFF).  Partially populated sections still
+            // need model predictions for their empty octants.
+            // writeFullWorldSection / writeAtLevel handle per-octant merging
+            // and will skip any sub-cubes Voxy already owns.
+            {
                 Object we = writer.getWorldEngine();
                 claimed.removeIf(t -> {
-                    if (we != null && VoxyCompat.sectionExistsAtLevel(we, 0, t.wsX, t.wsY, t.wsZ)) {
+                    if (we != null && VoxyCompat.allOctantsPopulated(we, t.level, t.wsX, t.wsY, t.wsZ)) {
                         t.markReady();
                         queue.markCompleted();
                         return true;
