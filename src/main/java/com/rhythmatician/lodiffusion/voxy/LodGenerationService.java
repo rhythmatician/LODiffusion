@@ -162,16 +162,26 @@ public final class LodGenerationService {
      * client initialisation.  {@code null} in dedicated-server contexts where
      * the client-side code is absent.  Commands and other server-side code
      * must guard against null before calling instance methods.
+     *
+     * <p>Uses {@link java.util.concurrent.atomic.AtomicReference} for safe
+     * publication: {@code setInstance} is called exactly once on the client
+     * init thread, and any subsequent reads from other threads are guaranteed
+     * to see the published value.
      */
-    private static volatile LodGenerationService instance;
+    private static final java.util.concurrent.atomic.AtomicReference<LodGenerationService>
+            INSTANCE_REF = new java.util.concurrent.atomic.AtomicReference<>(null);
 
     /** Called by {@code LodiffusionClient} to register the singleton. */
-    public static void setInstance(LodGenerationService svc) { instance = svc; }
+    public static void setInstance(LodGenerationService svc) {
+        INSTANCE_REF.set(svc);
+    }
 
     /**
      * Return the singleton service, or {@code null} if not yet initialised.
      */
-    public static LodGenerationService getInstance() { return instance; }
+    public static LodGenerationService getInstance() {
+        return INSTANCE_REF.get();
+    }
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);

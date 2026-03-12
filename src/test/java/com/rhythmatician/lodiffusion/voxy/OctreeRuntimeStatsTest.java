@@ -264,10 +264,22 @@ class OctreeRuntimeStatsTest {
             Thread.sleep(5); // ensure > 0ms
         }
 
-        assertTrue(PerformanceMonitor.getAverageLevelTiming(3) > 0.0,
-                "Per-level timing should be > 0");
-        assertTrue(PerformanceMonitor.getAverageTiming("test_op") > 0.0,
-                "Named timing should be > 0");
+        double perLevelAvg = PerformanceMonitor.getAverageLevelTiming(3);
+        double namedAvg = PerformanceMonitor.getAverageTiming("test_op");
+
+        assertTrue(perLevelAvg > 0.0, "Per-level timing should be > 0");
+        assertTrue(namedAvg > 0.0, "Named timing should be > 0");
+
+        // Both values record the same elapsed time; allow small FP rounding diff
+        assertEquals(perLevelAvg, namedAvg, 0.001,
+                "Per-level and named timing should record the same elapsed duration");
+
+        // Exactly 1 sample recorded at level 3 and under the named key
+        assertEquals(1L, PerformanceMonitor.getLevelTimingCount(3));
+
+        // Other levels not affected
+        assertEquals(0.0, PerformanceMonitor.getAverageLevelTiming(0));
+        assertEquals(0.0, PerformanceMonitor.getAverageLevelTiming(4));
     }
 
     // ── enqueuedAtMs in OctreeTask ───────────────────────────────────────
