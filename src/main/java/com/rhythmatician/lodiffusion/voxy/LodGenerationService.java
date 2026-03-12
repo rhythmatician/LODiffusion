@@ -1307,19 +1307,21 @@ public final class LodGenerationService {
                     OctreeTask task = claimed.get(i);
                     OctreeModelRunner.OctreeOutput output = outputs.get(i);
 
-                    // Write to Voxy for progressive visibility.
+                    // Write to Voxy for progressive visibility at every level.
+                    //
                     // L0: write 32³ directly as a single WorldSection at level 0.
-                    // L1: write 32³ at 2-block/voxel resolution — visible quickly,
-                    //     looks acceptable, gets refined by L0 shortly after.
-                    // L2-L4: skipped — 4-block/voxel blobs appear as ugly floating
-                    //         chunks before L0 arrives.  L2+ are used only as parent
-                    //         context for the child inference steps.
+                    // L1-L4: write 32³ at the model's native resolution for this
+                    //     level.  Every level needs renderable voxel data — without
+                    //     it Voxy's GPU traversal sees EMPTY_MESH on intermediate
+                    //     parent nodes and stops descending, making far-distance
+                    //     LOD invisible.  Coarse levels (L4/L3) are progressively
+                    //     replaced by finer data as the octree expands.
                     if (level == 0) {
                         writer.writeOctreeBlockData(
                                 output.blockArgmax(),
                                 task.columnContext.biomeIdx(),
                                 task.wsX, task.wsY, task.wsZ);
-                    } else if (level == 1) {
+                    } else {
                         writer.writeOctreeToLevel(
                                 output.blockArgmax(),
                                 task.columnContext.biomeIdx(),
