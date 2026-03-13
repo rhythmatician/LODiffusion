@@ -1,0 +1,301 @@
+#version 450
+// =============================================================================
+// terrain_compute.comp
+// GPU Shadow Router — Minecraft terrain density field compute shader.
+//
+// Computes a 16 × Y_LEVELS × 16 density field for one chunk column.
+// Density > 0 → solid block; density <= 0 → air.
+//
+// Mirrors the vanilla Overworld NoiseRouter / finalDensity evaluation.
+// Loaded and concatenated by com.rhythmatician.lodiffusion.gpu.GlslShaderLoader:
+//   [this file from #version to before "// --- INCLUDE CUT ---"]
+//   + mc_improved_noise.glsl
+//   + mc_perlin_noise.glsl
+//   + mc_normal_noise.glsl
+//   [this file from "// --- INCLUDE CUT ---" to end]
+// =============================================================================
+
+// One workgroup = one 16×16 chunk column.
+// Thread (localX, localZ) handles all Y values for its block column.
+layout(local_size_x = 16, local_size_y = 1, local_size_z = 16) in;
+
+// ---------------------------------------------------------------------------
+// Constants matching vanilla Overworld dimensions
+// ---------------------------------------------------------------------------
+#define Y_MIN       (-64)
+#define Y_MAX       320
+#define Y_LEVELS    384      // Y_MAX - Y_MIN
+#define MAX_OCTAVES 16
+
+// ---------------------------------------------------------------------------
+// SSBOs — populated once at world load by NoiseRouterExtractor.java
+// ---------------------------------------------------------------------------
+
+// ImprovedNoise origin offsets: 4 floats per instance [xo, yo, zo, _pad]
+layout(binding = 0, std430) buffer ImprovedOrigins {
+    float data[];
+} improved_origins;
+
+// ImprovedNoise permutation tables: 256 uints per instance, flat
+layout(binding = 1, std430) buffer ImprovedPerms {
+    uint data[];
+} improved_perms;
+
+// PerlinNoise integer config (stride = PN_INT_STRIDE ints per instance):
+//   [0]           : num_octaves
+//   [1..3]        : _pad
+//   [4 + octave]  : improved_noise_index  (-1 = null octave)
+#define PN_INT_STRIDE   (4 + MAX_OCTAVES)
+layout(binding = 2, std430) buffer PerlinInt {
+    int data[];
+} perlin_int;
+
+// PerlinNoise float config (stride = PN_FLOAT_STRIDE floats per instance):
+//   [0]           : lowestFreqInputFactor
+//   [1]           : lowestFreqValueFactor
+//   [2 + octave]  : amplitude[octave]
+#define PN_FLOAT_STRIDE (2 + MAX_OCTAVES)
+layout(binding = 3, std430) buffer PerlinFloat {
+    float data[];
+} perlin_float;
+
+// NormalNoise integer config: 4 ints per instance
+//   [0] : first_perlin_idx
+//   [1] : second_perlin_idx
+//   [2..3] : _pad
+layout(binding = 4, std430) buffer NormalNoiseInt {
+    int data[];
+} normal_noise_int;
+
+// NormalNoise float config: 1 float per instance
+//   [0] : value_factor
+layout(binding = 5, std430) buffer NormalNoiseFloat {
+    float data[];
+} normal_noise_float;
+
+// Spline control point data (packed).
+// Layout: [numPoints, x0, y0, x1, y1, ...] per spline, addressed by spline_offsets UBO.
+// Used for TerrainProvider cubic splines (continents→offset, etc.).
+layout(binding = 6, std430) buffer SplineData {
+    float data[];
+} spline_data;
+
+// Output density field for the current chunk dispatch.
+// Indexed: [localX + 16 * localZ] * Y_LEVELS + (blockY - Y_MIN)
+// i.e., column-major XZ, then Y.
+layout(binding = 7, std430) buffer DensityOutput {
+    float data[];
+} density_out;
+
+// ---------------------------------------------------------------------------
+// Uniform buffer: dimension-specific router configuration.
+// Populated from the live NoiseRouter at world load.
+// ---------------------------------------------------------------------------
+layout(binding = 8, std140) uniform RouterConfig {
+    // Chunk origin in block coords (set per dispatch via push constant or update)
+    int chunk_origin_x;
+    int chunk_origin_z;
+    int _pad0;
+    int _pad1;
+
+    // NormalNoise indices for named router outputs
+    int nn_continents;      // NoiseRouter.continents (horizontal shaping)
+    int nn_erosion;         // NoiseRouter.erosion
+    int nn_ridges;          // NoiseRouter.ridges (weirdness)
+    int nn_depth_noise;     // The "sloped cheese" base noise for finalDensity
+    int nn_jagged;          // Jaggedness noise (high-freq vertical shape)
+    int nn_shift_a;         // X/Z coordinate shift noise
+    int nn_shift_b;         // X/Z coordinate shift noise (Z component)
+    int _pad2;
+
+    // YClampedGradient parameters for the depth gradient
+    // (from NoiseRouterData, varies slightly by worldgen preset)
+    float grad_from_y;      // Overworld default: -64
+    float grad_to_y;        // Overworld default:  320
+    float grad_from_value;  // Overworld default:   1.5
+    float grad_to_value;    // Overworld default:  -1.5
+
+    // Spline table offsets (index into spline_data.data[] for each named spline)
+    int spline_offset_offset;   // terrain offset spline
+    int spline_factor_offset;   // terrain factor (vertical scale) spline
+    int spline_jagged_offset;   // jaggedness modifier spline
+    int _pad3;
+} router;
+
+// ---------------------------------------------------------------------------
+// [mc_improved_noise.glsl CONCATENATED HERE by Java loader]
+// [mc_perlin_noise.glsl   CONCATENATED HERE by Java loader]
+// [mc_normal_noise.glsl   CONCATENATED HERE by Java loader]
+// ---------------------------------------------------------------------------
+// --- INCLUDE CUT ---
+
+// ---------------------------------------------------------------------------
+// Density graph helpers
+// ---------------------------------------------------------------------------
+
+// DensityFunctions.Mapped.Type.SQUEEZE
+// Matches Java: x / 2 - x*x*x / 24
+float mc_squeeze(float x) {
+    return x / 2.0 - x * x * x / 24.0;
+}
+
+// DensityFunctions.Mapped.Type.HALF_NEGATIVE
+float mc_half_negative(float x) {
+    return x > 0.0 ? x : x * 0.5;
+}
+
+// DensityFunctions.Mapped.Type.QUARTER_NEGATIVE
+float mc_quarter_negative(float x) {
+    return x > 0.0 ? x : x * 0.25;
+}
+
+// DensityFunctions.YClampedGradient.compute():
+// Mth.clampedMap(y, fromY, toY, fromValue, toValue)
+float mc_y_gradient(float y, float from_y, float to_y, float from_val, float to_val) {
+    return clamp(from_val + (y - from_y) * (to_val - from_val) / (to_y - from_y),
+                 min(from_val, to_val), max(from_val, to_val));
+}
+
+// DensityFunctions.Spline cubic spline evaluation.
+// Reads control points from spline_data starting at 'offset':
+//   spline_data[offset]     = num_points (float, cast to int)
+//   spline_data[offset+1+i] = location[i]
+//   spline_data[offset+1+N+i] = value[i]
+//   spline_data[offset+1+2N+i] = derivative[i]
+// Uses Minecraft's CubicSpline evaluation (Catmull-Rom style with explicit derivatives).
+float mc_spline_eval(int offset, float t) {
+    int n = int(spline_data.data[offset]);
+    if (n == 0) return 0.0;
+
+    // Find the interval [i, i+1] that contains t
+    int base = offset + 1;
+    int i = 0;
+    for (int k = 0; k < n - 1; k++) {
+        if (spline_data.data[base + k] <= t) i = k;
+    }
+
+    // Clamp extrapolation
+    float x0 = spline_data.data[base + i];
+    float x1 = spline_data.data[base + i + 1];
+    float y0 = spline_data.data[base + n + i];
+    float y1 = spline_data.data[base + n + i + 1];
+    float d0 = spline_data.data[base + 2 * n + i];
+    float d1 = spline_data.data[base + 2 * n + i + 1];
+
+    // Hermite cubic segment
+    float dx = x1 - x0;
+    if (abs(dx) < 1e-6) return y0;
+    float u = clamp((t - x0) / dx, 0.0, 1.0);
+    float u2 = u * u;
+    float u3 = u2 * u;
+
+    // Standard cubic Hermite: h00, h10, h01, h11 basis functions
+    float h00 =  2.0*u3 - 3.0*u2 + 1.0;
+    float h10 =      u3 - 2.0*u2 + u;
+    float h01 = -2.0*u3 + 3.0*u2;
+    float h11 =      u3 -     u2;
+
+    return h00*y0 + h10*dx*d0 + h01*y1 + h11*dx*d1;
+}
+
+// ---------------------------------------------------------------------------
+// finalDensity evaluation
+// Mirrors the vanilla Overworld NoiseRouter.finalDensity density function graph.
+//
+//  IMPLEMENTATION STATUS:
+//   [x] YClampedGradient (depth base)
+//   [x] NormalNoise sampling (sloped_cheese, jaggedness)
+//   [x] SQUEEZE, HALF_NEGATIVE, QUARTER_NEGATIVE
+//   [~] Spline (continents/erosion/ridges shaping) — stub using linear approximation
+//   [ ] ShiftedNoise (XZ coordinate distortion via shift_a/shift_b)
+//   [ ] WeirdScaledSampler (cave/ravine scaling)
+//   [ ] RangeChoice (cave carver switching)
+//   [ ] FindTopSurface (preliminary surface level Y search)
+// ---------------------------------------------------------------------------
+float computeFinalDensity(float bx, float by, float bz) {
+    // -- Step 1: Sample horizontal routing noises (2D at y=0) -----------------
+    // These drive the spline-based terrain shaping (continents, ridges, erosion).
+    float continents = mc_normal_noise(router.nn_continents, bx, 0.0, bz);
+    float erosion    = mc_normal_noise(router.nn_erosion,    bx, 0.0, bz);
+    float ridges_raw = mc_normal_noise(router.nn_ridges,     bx, 0.0, bz);
+
+    // Vanilla "peaks and valleys" (ridges_folded) transform:
+    //   peaksAndValleys(x) = -(|x - 2/3| - 1/3) * 3/2  (approx)
+    //   Actual: NoiseRouterData.peaksAndValleys(x) = 1 - |1 - |x + 0.5| * 2|
+    // This folds the [-1,1] noise into a [~-1, ~0.5] range favoring "ridges".
+    float ridges_abs = abs(ridges_raw) * 2.0 - 1.0;  // map to [−1, 1] folded
+    float ridges_folded = mc_half_negative(1.0 - abs(ridges_abs));
+
+    // -- Step 2: Spline-based terrain offset and jaggedness -------------------
+    // TODO: These splines are currently stubbed as linear approximations.
+    // Replace mc_spline_eval calls once spline_data is fully populated
+    // by NoiseRouterExtractor.java reading the real CubicSpline objects.
+    float terrain_offset;
+    float jaggedness_factor;
+
+    if (router.spline_offset_offset >= 0) {
+        // Full path: evaluate the real continents-driven terrain offset spline
+        terrain_offset    = mc_spline_eval(router.spline_offset_offset, continents);
+        jaggedness_factor = mc_spline_eval(router.spline_jagged_offset,  ridges_folded);
+    } else {
+        // Fallback: simplified linear shapes for testing without spline data
+        terrain_offset    = continents * 0.25 - erosion * 0.15;
+        jaggedness_factor = ridges_folded * 0.3 + 0.1;
+    }
+
+    // -- Step 3: Y-based depth gradient ---------------------------------------
+    // DensityFunctions.YClampedGradient — maps block Y to a depth value.
+    // Overworld: y=−64 → +1.5, y=320 → −1.5 (surface near 0, underground positive)
+    float depth_gradient = mc_y_gradient(by,
+                                         router.grad_from_y,
+                                         router.grad_to_y,
+                                         router.grad_from_value,
+                                         router.grad_to_value);
+
+    float depth = depth_gradient + terrain_offset;
+
+    // -- Step 4: 3D "sloped cheese" noise (large-scale vertical variation) -----
+    // Corresponds to the interpolated noise sampled at (x, y, z) that forms the
+    // base of the density field — what Mojang calls "slopedCheese" internally.
+    float sloped_cheese = mc_normal_noise(router.nn_depth_noise, bx, by, bz);
+
+    // -- Step 5: Jaggedness bias (high-frequency detail near surface) ----------
+    // This adds sharp vertical variation near the surface (cliffs, overhangs).
+    // In vanilla: jaggedness * ridge-folded-spline * mc_half_negative(jagged_noise)
+    float jagged_noise = mc_normal_noise(router.nn_jagged, bx, by, bz);
+    float jaggedness_bias = mc_quarter_negative(jagged_noise) * jaggedness_factor * 0.2;
+
+    // -- Step 6: Combine into raw final density --------------------------------
+    // In vanilla: finalDensity = squeeze(slopedCheese + jaggedness_bias)
+    // where slopedCheese effectively = sloped_cheese_noise + depth (roughly)
+    float raw_density = sloped_cheese + depth + jaggedness_bias;
+
+    // Apply squeeze (DensityFunctions.Mapped SQUEEZE), then clamp to [-64, 64]
+    return clamp(mc_squeeze(raw_density) * 64.0, -64.0, 64.0);
+}
+
+// ---------------------------------------------------------------------------
+// Compute shader entry point
+// ---------------------------------------------------------------------------
+void main() {
+    // Each thread handles one (localX, localZ) block column in the chunk.
+    int localX = int(gl_LocalInvocationID.x);   // 0..15
+    int localZ = int(gl_LocalInvocationID.z);   // 0..15
+
+    // Absolute block coordinates for this column
+    int blockX = router.chunk_origin_x + localX;
+    int blockZ = router.chunk_origin_z + localZ;
+
+    // Column index in the output array (XZ-major)
+    int col     = localX + 16 * localZ;         // 0..255
+    int col_off = col * Y_LEVELS;               // stride into density_out
+
+    // Evaluate density for every Y level in the dimension
+    for (int yi = 0; yi < Y_LEVELS; yi++) {
+        int blockY = Y_MIN + yi;
+
+        float density = computeFinalDensity(float(blockX), float(blockY), float(blockZ));
+
+        density_out.data[col_off + yi] = density;
+    }
+}
