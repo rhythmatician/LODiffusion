@@ -38,6 +38,9 @@ public class ShaderSSBOManager {
 
     private static final int BUFFER_COUNT = 8;
 
+    // Shader program manager for compute operations
+    private ShaderProgramManager shaderManager = new ShaderProgramManager();
+
     // OpenGL buffer IDs (one per binding)
     private int[] bufferIds = new int[BUFFER_COUNT];
     private boolean initialized = false;
@@ -48,10 +51,10 @@ public class ShaderSSBOManager {
     }
 
     /**
-     * Uploads NoiseRouterData to GPU SSBOs.
+     * Uploads NoiseRouterData to GPU SSBOs and prepares the compute pipeline.
      *
      * Call this on the render thread after extracting the NoiseRouter.
-     * Uses GL_STATIC_DRAW for typical dimension/gameplay scenarios.
+     * Use GL_STATIC_DRAW for typical dimension/gameplay scenarios.
      *
      * ALIGNMENT NOTE (std430):
      * - vec3 is treated as vec4 for alignment purposes (12 bytes + 4 bytes padding)
@@ -65,7 +68,7 @@ public class ShaderSSBOManager {
 
         LOGGER.info("ShaderSSBOManager: Uploading NoiseRouter data to GPU...");
 
-        // Ensure buffers are allocated
+        // Ensure buffers and shaders are allocated
         if (!initialized) {
             allocateBuffers();
         }
@@ -90,12 +93,30 @@ public class ShaderSSBOManager {
             // Binding 7 (Density Output) is allocated but left uninitialized (written by compute shader)
             allocateDensityOutput();
 
+            // Compile shaders after SSBOs are ready
+            shaderManager.compile();
+
             lastUploadTime = System.currentTimeMillis();
-            LOGGER.info("ShaderSSBOManager: GPU upload complete");
+            LOGGER.info("ShaderSSBOManager: GPU upload and shader compilation complete");
         } catch (Exception e) {
-            LOGGER.error("ShaderSSBOManager: Failed to upload NoiseRouter data to GPU", e);
-            throw new RuntimeException("SSBO upload failed", e);
+            LOGGER.error("ShaderSSBOManager: Failed to initialize GPU pipeline", e);
+            throw new RuntimeException("GPU pipeline initialization failed", e);
         }
+    }
+
+    /**
+     * Dispatches the compute shader for a specific 3D region.
+     *
+     * @param workGroupsX Number of work groups along X (e.g., world width in blocks / 8)
+     * @param workGroupsY Number of work groups along Y (e.g., world height in blocks / 8)
+     * @param workGroupsZ Number of work groups along Z (e.g., world depth in blocks / 8)
+     */
+    public void dispatch(int workGroupsX, int workGroupsY, int workGroupsZ) {
+        if (!initialized || !shaderManager.isCompiled()) return;
+
+        shaderManager.use();
+        GL43C.glDispatchCompute(workGroupsX, workGroupsY, workGroupsZ);
+        GL43C.glMemoryBarrier(GL43C.GL_SHADER_STORAGE_BARRIER_BIT);
     }
 
     /**
@@ -224,6 +245,31 @@ public class ShaderSSBOManager {
     }
 
     /**
+     * Reads back data from an SSBO into a FloatBuffer.
+     * Useful for validation (e.g., checking density output at binding 7).
+     *
+     * @param bindingPoint The SSBO binding index (0-7)
+     * @param elementCount Number of floats to read
+     * @return A FloatBuffer containing the GPU-side data
+     */
+    public FloatBuffer readBuffer(int bindingPoint, int elementCount) {
+        if (bindingPoint < 0 || bindingPoint >= BUFFER_COUNT || bufferIds[bindingPoint] == 0) {
+            return null;
+        }
+
+        try {
+            FloatBuffer result = FloatBuffer.allocate(elementCount);
+            glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferIds[bindingPoint]);
+            GL43C.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, result);
+            result.rewind();
+            return result;
+        } catch (Exception e) {
+            LOGGER.error("ShaderSSBOManager: Failed to read buffer from binding {}", bindingPoint, e);
+            return null;
+        }
+    }
+
+    /**
      * Retrieves or creates a buffer ID for a binding point.
      * Uses glGenBuffers() to allocate GPU-side space on first access.
      */
@@ -246,6 +292,9 @@ public class ShaderSSBOManager {
         }
 
         try {
+            // Cleanup shader program
+            shaderManager.cleanup();
+
             for (int i = 0; i < bufferIds.length; i++) {
                 if (bufferIds[i] != 0) {
                     glDeleteBuffers(bufferIds[i]);

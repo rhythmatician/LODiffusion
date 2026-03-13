@@ -5,6 +5,7 @@ import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.nio.FloatBuffer;
 import java.util.Map;
 import java.util.WeakHashMap;
 
@@ -191,8 +192,25 @@ public class WorldGenEventHandler {
             // Upload to GPU SSBOs
             LOGGER.info("Creating ShaderSSBOManager and uploading to GPU...");
             ShaderSSBOManager manager = new ShaderSSBOManager();
-            manager.uploadNoiseData(data);
+            manager.uploadNoiseData(data); // Also compiles shader program
             activeLevels.put(level, manager);
+
+            // Dispatch GPU compute to verify output
+            LOGGER.info("Dispatching GPU compute for validation...");
+            manager.dispatch(32, 1, 32); // 1024 points total (32x1x32 workgroups)
+            LOGGER.info("Compute dispatch complete — validating Binding 7 output...");
+
+            // Read back and log first 10 density samples for validation
+            FloatBuffer densitySamples = manager.readBuffer(7, 10);
+            if (densitySamples != null && densitySamples.hasRemaining()) {
+                StringBuilder log = new StringBuilder("GPU Density Samples [0-9]: ");
+                for (int i = 0; i < 10; i++) {
+                    log.append(String.format("%.4f", densitySamples.get())).append(" ");
+                }
+                LOGGER.info(log.toString());
+            } else {
+                LOGGER.warn("Unable to read density output from GPU (null or empty buffer)");
+            }
 
             long elapsedMs = System.currentTimeMillis() - startTime;
             LOGGER.info("WorldGenEventHandler.onWorldLoad complete in {} ms", elapsedMs);
