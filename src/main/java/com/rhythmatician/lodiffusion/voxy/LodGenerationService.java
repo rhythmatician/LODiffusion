@@ -1437,7 +1437,7 @@ public final class LodGenerationService {
             // ── Batched inference ────────────────────────────────────
             // Use effectiveLevel (which may differ from level if we stole a task)
             // to select the correct model call.
-            try (var timing = com.rhythmatician.lodiffusion.util.PerformanceMonitor
+            try (@SuppressWarnings("unused") var timing = com.rhythmatician.lodiffusion.util.PerformanceMonitor
                     .startLevelTiming(effectiveLevel,
                             com.rhythmatician.lodiffusion.util.PerformanceMonitor.MODEL_INFERENCE_TIME)) {
                 List<OctreeModelRunner.OctreeOutput> outputs;
