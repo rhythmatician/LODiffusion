@@ -5,6 +5,8 @@ import org.apache.logging.log4j.Logger;
 import org.lwjgl.opengl.GL15C;
 import org.lwjgl.opengl.GL31C;
 import org.lwjgl.opengl.GL43C;
+import net.lodiffusion.shadow.VoxyRequestDecoder;
+import net.lodiffusion.shadow.ShadowRouterJobQueue;
 
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
@@ -67,6 +69,7 @@ public class TerrainComputeDispatcher {
 
     // Byte offsets for the mutable chunk-origin fields (updated per dispatch)
     private static final int OFFSET_CHUNK_X = 0;
+    @SuppressWarnings("unused")
     private static final int OFFSET_CHUNK_Z = 4;
 
     private ShaderProgramManager shaderManager;
@@ -143,6 +146,39 @@ public class TerrainComputeDispatcher {
         shaderManager.use();
         GL43C.glDispatchCompute(1, 1, 1);
         GL43C.glMemoryBarrier(GL43C.GL_SHADER_STORAGE_BARRIER_BIT);
+    }
+
+    /**
+     * Pull next job from ShadowRouterJobQueue and dispatch if available.
+     * 
+     * This implements the demand-driven pull model: Voxy's missing terrain requests
+     * are queued by VoxyShadowBridgeMixin, and this method consumes them for GPU generation.
+     * 
+     * @return true if a request was processed, false if queue is empty
+     */
+    public boolean acceptNextRequest() {
+        if (!ready) {
+            return false;
+        }
+        
+        VoxyRequestDecoder.VoxyNodeRequest req = ShadowRouterJobQueue.dequeueAny();
+        if (req == null) {
+            return false;
+        }
+        
+        // Convert Voxy world coordinates to chunk coordinates.
+        // Voxy stores coordinates in a 16-voxel unit space, so divide by 16 to get chunk coords.
+        int chunkX = req.worldX / 16;
+        int chunkZ = req.worldZ / 16;
+        
+        // Dispatch for this request
+        dispatch(chunkX, chunkZ);
+        
+        // Log for debugging (can be disabled later)
+        LOGGER.debug("TerrainComputeDispatcher: processed request LOD={} at chunk ({}, {})",
+                req.lodLevel, chunkX, chunkZ);
+        
+        return true;
     }
 
     // -------------------------------------------------------------------------
