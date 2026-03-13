@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.*;
 
 import fixtures.TestWorldFixtures;
 
@@ -17,6 +18,8 @@ public class SimpleRegionFileTest {
 
     @Test
     public void testDirectRegionFileOpen() throws Exception {
+        assumeTrue(TestWorldFixtures.isTestDataAvailable(),
+            "Skipping: test region files not available in this environment");
         File regionFilePath = TestWorldFixtures.getTestRegionFile("r.0.0.mca");
         assertTrue(regionFilePath.exists(), "Region file should exist at " + regionFilePath.getAbsolutePath());
 
