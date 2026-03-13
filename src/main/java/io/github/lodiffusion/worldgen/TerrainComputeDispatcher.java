@@ -5,6 +5,7 @@ import org.apache.logging.log4j.Logger;
 import org.lwjgl.opengl.GL15C;
 import org.lwjgl.opengl.GL31C;
 import org.lwjgl.opengl.GL43C;
+import com.rhythmatician.lodiffusion.gpu.TerrainShaperMlpSsbo;
 import net.lodiffusion.shadow.VoxyRequestDecoder;
 import net.lodiffusion.shadow.ShadowRouterJobQueue;
 
@@ -75,6 +76,7 @@ public class TerrainComputeDispatcher {
     private ShaderProgramManager shaderManager;
     private int uboId = 0;
     private boolean ready = false;
+    private TerrainShaperMlpSsbo mlpSsbo;
 
     // -------------------------------------------------------------------------
     // Initialisation
@@ -109,6 +111,15 @@ public class TerrainComputeDispatcher {
         ready = true;
         LOGGER.info("TerrainComputeDispatcher: RouterConfig UBO allocated ({} bytes) at binding {}",
                 UBO_SIZE_BYTES, ROUTER_CONFIG_BINDING);
+
+        // Load pre-trained TerrainShaperMLP weights into GPU memory (SSBO=9, UBO=10)
+        try {
+            mlpSsbo = new TerrainShaperMlpSsbo();
+            LOGGER.info("TerrainComputeDispatcher: TerrainShaperMLP weights loaded (binding 9+10)");
+        } catch (Exception e) {
+            LOGGER.warn("TerrainComputeDispatcher: failed to load MLP weights, shader will use fallback splines — {}", e.getMessage());
+            mlpSsbo = null;
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -141,6 +152,11 @@ public class TerrainComputeDispatcher {
         GL15C.glBindBuffer(GL31C.GL_UNIFORM_BUFFER, uboId);
         GL15C.glBufferSubData(GL31C.GL_UNIFORM_BUFFER, OFFSET_CHUNK_X, origin);
         GL15C.glBindBuffer(GL31C.GL_UNIFORM_BUFFER, 0);
+
+        // Bind MLP weights (SSBO=9, UBO=10) before shader execution
+        if (mlpSsbo != null) {
+            mlpSsbo.bind();
+        }
 
         // Execute
         shaderManager.use();
@@ -186,6 +202,10 @@ public class TerrainComputeDispatcher {
     // -------------------------------------------------------------------------
 
     public void cleanup() {
+        if (mlpSsbo != null) {
+            mlpSsbo.cleanup();
+            mlpSsbo = null;
+        }
         if (uboId != 0) {
             int[] ids = { uboId };
             GL15C.glDeleteBuffers(ids);
