@@ -5,6 +5,7 @@ import org.slf4j.LoggerFactory;
 
 import com.rhythmatician.lodiffusion.command.LodiffusionCommand;
 import com.rhythmatician.lodiffusion.command.NoiseDumperCommand;
+import io.github.lodiffusion.worldgen.WorldGenEventHandler;
 import java.nio.file.Files;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 
@@ -18,6 +19,9 @@ public class HelloTerrainMod implements ModInitializer {
 	@Override
 	public void onInitialize() {
 		LOGGER.info("[LODiffusion] Mod initialized!");
+
+		// Initialize world generation event handlers (GPU NoiseRouter extraction)
+		WorldGenEventHandler.initialize();
 
 		// Register /lodiffusion command
 		try {
