@@ -2,6 +2,7 @@ package io.github.lodiffusion.worldgen;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.lwjgl.opengl.GL43C;
 
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
@@ -127,7 +128,8 @@ public class ShaderSSBOManager {
     }
 
     /**
-     * Allocates GPU buffers if not already done.
+     * Allocates GPU buffers on first upload.
+     * Individual buffer IDs are created lazily in reinterpret_cast_obtainBufferId().
      */
     private synchronized void allocateBuffers() {
         if (initialized) {
@@ -135,12 +137,10 @@ public class ShaderSSBOManager {
         }
 
         try {
-            // Use Minecraft's RenderSystem to queue GL calls on render thread
-            // For now, we'll use a simpler approach: buffers will be created on first upload
-            LOGGER.info("ShaderSSBOManager: Buffers will be allocated on first data upload");
+            LOGGER.info("ShaderSSBOManager: Buffer allocation system initialized (lazy allocation on first upload)");
             initialized = true;
         } catch (Exception e) {
-            LOGGER.error("ShaderSSBOManager: Failed to allocate buffer IDs", e);
+            LOGGER.error("ShaderSSBOManager: Failed to initialize buffer allocation", e);
             throw new RuntimeException("Buffer allocation failed", e);
         }
     }
@@ -225,13 +225,13 @@ public class ShaderSSBOManager {
 
     /**
      * Retrieves or creates a buffer ID for a binding point.
-     * (Placeholder: actual GL buffer creation would happen via RenderSystem.recordRenderCall)
+     * Uses glGenBuffers() to allocate GPU-side space on first access.
      */
     private int reinterpret_cast_obtainBufferId(int bindingPoint) {
         if (bufferIds[bindingPoint] == 0) {
-            // TODO: Generate buffer via glGenBuffers()
-            // For now, this is a placeholder that assumes GL context is available
-            bufferIds[bindingPoint] = bindingPoint + 1000; // Temporary ID scheme
+            bufferIds[bindingPoint] = glGenBuffers();
+            LOGGER.debug("ShaderSSBOManager: Generated buffer ID {} for binding {}", 
+                    bufferIds[bindingPoint], bindingPoint);
         }
         return bufferIds[bindingPoint];
     }
@@ -246,11 +246,10 @@ public class ShaderSSBOManager {
         }
 
         try {
-            // TODO: Delete buffers via glDeleteBuffers()
-            for (int bufferId : bufferIds) {
-                if (bufferId != 0) {
-                    // glDeleteBuffers(bufferId);
-                    LOGGER.debug("ShaderSSBOManager: Deleted buffer {}", bufferId);
+            for (int i = 0; i < bufferIds.length; i++) {
+                if (bufferIds[i] != 0) {
+                    glDeleteBuffers(bufferIds[i]);
+                    LOGGER.debug("ShaderSSBOManager: Deleted buffer {} at binding {}", bufferIds[i], i);
                 }
             }
             bufferIds = new int[BUFFER_COUNT];
@@ -279,32 +278,59 @@ public class ShaderSSBOManager {
     }
 
     // ============================================================================
-    // GL Constant Stubs (placeholder for LWJGL calls)
+    // GL Operations (LWJGL3 GL43C backend — direct calls for buffer management)
     // ============================================================================
-    // In actual implementation, these would delegate to LWJGL3 or Minecraft's RenderSystem
-
-    private static final int GL_SHADER_STORAGE_BUFFER = 0x90D3;
-    private static final int GL_COPY_WRITE_BUFFER = 0x8F37;
-    private static final int GL_STATIC_DRAW = 0x88E4;
-    private static final int GL_DYNAMIC_DRAW = 0x88E8;
+    // Called during world load (main thread context), so no RenderSystem wrapping needed
 
     private void glBindBuffer(int target, int buffer) {
-        // Placeholder: RenderSystem.recordRenderCall(() -> GLUtil.NVIDIA_GL.glBindBuffer(target, buffer))
+        GL43C.glBindBuffer(target, buffer);
     }
 
     private void glBufferData(int target, long size, FloatBuffer data, int usage) {
-        // Placeholder: RenderSystem.recordRenderCall(() -> GLUtil.NVIDIA_GL.glBufferData(...))
+        if (data != null) {
+            data.position(0);
+            GL43C.glBufferData(target, data, usage);
+        }
     }
 
     private void glBufferData(int target, long size, IntBuffer data, int usage) {
-        // Placeholder: RenderSystem.recordRenderCall(() -> GLUtil.NVIDIA_GL.glBufferData(...))
+        if (data != null) {
+            data.position(0);
+            GL43C.glBufferData(target, data, usage);
+        }
     }
 
     private void glBindBufferBase(int target, int index, int buffer) {
-        // Placeholder: RenderSystem.recordRenderCall(() -> GLUtil.NVIDIA_GL.glBindBufferBase(...))
+        GL43C.glBindBufferBase(target, index, buffer);
     }
 
     private void glBufferDataNull(int target, long size, int usage) {
-        // Placeholder: RenderSystem.recordRenderCall(() -> GLUtil.NVIDIA_GL.glBufferData(target, size, (FloatBuffer) null, usage))
+        GL43C.glBufferData(target, size, usage);
     }
+
+    private int glGenBuffers() {
+        // Generate one buffer and return its ID
+        int[] ids = new int[1];
+        GL43C.glGenBuffers(ids);
+        if (ids[0] == 0) {
+            throw new RuntimeException("Failed to generate OpenGL buffer");
+        }
+        return ids[0];
+    }
+
+    private void glDeleteBuffers(int buffer) {
+        if (buffer != 0) {
+            int[] ids = { buffer };
+            GL43C.glDeleteBuffers(ids);
+        }
+    }
+
+    // ============================================================================
+    // GL Constants (LWJGL3 GL43C)
+    // ============================================================================
+    // These match the OpenGL 4.3 specification values
+    private static final int GL_SHADER_STORAGE_BUFFER = GL43C.GL_SHADER_STORAGE_BUFFER;
+    private static final int GL_COPY_WRITE_BUFFER = GL43C.GL_COPY_WRITE_BUFFER;
+    private static final int GL_STATIC_DRAW = GL43C.GL_STATIC_DRAW;
+    private static final int GL_DYNAMIC_DRAW = GL43C.GL_DYNAMIC_DRAW;
 }
