@@ -41,6 +41,9 @@ public class ShaderSSBOManager {
     // Shader program manager for compute operations
     private ShaderProgramManager shaderManager = new ShaderProgramManager();
 
+    // Per-chunk compute dispatcher (owns the RouterConfig UBO at binding 8)
+    private TerrainComputeDispatcher dispatcher = new TerrainComputeDispatcher();
+
     // OpenGL buffer IDs (one per binding)
     private int[] bufferIds = new int[BUFFER_COUNT];
     private boolean initialized = false;
@@ -96,8 +99,11 @@ public class ShaderSSBOManager {
             // Compile shaders after SSBOs are ready
             shaderManager.compile();
 
+            // Initialise the per-chunk dispatcher (uploads RouterConfig UBO)
+            dispatcher.init(shaderManager, TerrainComputeDispatcher.RouterConfig.overworldDefaults());
+
             lastUploadTime = System.currentTimeMillis();
-            LOGGER.info("ShaderSSBOManager: GPU upload and shader compilation complete");
+            LOGGER.info("ShaderSSBOManager: GPU upload, shader compilation, and dispatcher init complete");
         } catch (Exception e) {
             LOGGER.error("ShaderSSBOManager: Failed to initialize GPU pipeline", e);
             throw new RuntimeException("GPU pipeline initialization failed", e);
@@ -105,18 +111,18 @@ public class ShaderSSBOManager {
     }
 
     /**
-     * Dispatches the compute shader for a specific 3D region.
+     * Dispatches the compute shader for a single 16×16 chunk column.
      *
-     * @param workGroupsX Number of work groups along X (e.g., world width in blocks / 8)
-     * @param workGroupsY Number of work groups along Y (e.g., world height in blocks / 8)
-     * @param workGroupsZ Number of work groups along Z (e.g., world depth in blocks / 8)
+     * Sets the chunk origin in the RouterConfig UBO, dispatches one workgroup
+     * (matching the shader's local_size 16×1×16 layout), then issues a
+     * storage barrier so Binding 7 is readable immediately after this returns.
+     *
+     * @param chunkX chunk coordinate X (block origin = chunkX * 16)
+     * @param chunkZ chunk coordinate Z (block origin = chunkZ * 16)
      */
-    public void dispatch(int workGroupsX, int workGroupsY, int workGroupsZ) {
-        if (!initialized || !shaderManager.isCompiled()) return;
-
-        shaderManager.use();
-        GL43C.glDispatchCompute(workGroupsX, workGroupsY, workGroupsZ);
-        GL43C.glMemoryBarrier(GL43C.GL_SHADER_STORAGE_BARRIER_BIT);
+    public void dispatch(int chunkX, int chunkZ) {
+        if (!initialized || !shaderManager.isCompiled() || !dispatcher.isReady()) return;
+        dispatcher.dispatch(chunkX, chunkZ);
     }
 
     /**
@@ -292,7 +298,8 @@ public class ShaderSSBOManager {
         }
 
         try {
-            // Cleanup shader program
+            // Cleanup dispatcher UBO first, then shader program
+            dispatcher.cleanup();
             shaderManager.cleanup();
 
             for (int i = 0; i < bufferIds.length; i++) {

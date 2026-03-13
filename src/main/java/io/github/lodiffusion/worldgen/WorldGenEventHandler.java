@@ -195,9 +195,9 @@ public class WorldGenEventHandler {
             manager.uploadNoiseData(data); // Also compiles shader program
             activeLevels.put(level, manager);
 
-            // Dispatch GPU compute to verify output
-            LOGGER.info("Dispatching GPU compute for validation...");
-            manager.dispatch(32, 1, 32); // 1024 points total (32x1x32 workgroups)
+            // Dispatch GPU compute for chunk (0,0) as a cold-start validation pass
+            LOGGER.info("Dispatching GPU compute for validation (chunk 0,0)...");
+            manager.dispatch(0, 0); // 1 workgroup = 256 columns × 384 Y levels
             LOGGER.info("Compute dispatch complete — validating Binding 7 output...");
 
             // Read back and log first 10 density samples for validation
