@@ -285,14 +285,14 @@ public final class OctreeModelRunner implements AutoCloseable {
 
     /**
      * Validate that all octree model files exist in the directory.
+     *
+     * <p>The set of required files is driven entirely by {@code pipeline_manifest.json}.
+     * A hardcoded fallback (init + refine + leaf) is used only when no manifest
+     * is present, so a partially-trained deployment (e.g. init-only) is valid as
+     * long as the manifest accurately reflects what has been deployed.
      */
     private static void validateRequiredFiles(Path modelDir) throws IOException {
-        String[] required = {
-            STEM_INIT + ".onnx", STEM_REFINE + ".onnx", STEM_LEAF + ".onnx",
-            CONFIG_INIT, CONFIG_REFINE, CONFIG_LEAF
-        };
-
-        // Also check manifest for additional required files
+        // Read required files from the manifest first
         Path manifestPath = modelDir.resolve("pipeline_manifest.json");
         List<String> allRequired = new ArrayList<>();
 
@@ -304,9 +304,14 @@ public final class OctreeModelRunner implements AutoCloseable {
             }
         }
 
-        // Ensure our minimum set is always checked
-        for (String r : required) {
-            if (!allRequired.contains(r)) allRequired.add(r);
+        // Fallback: no manifest present — require the full three-model set
+        if (allRequired.isEmpty()) {
+            allRequired.add(STEM_INIT   + ".onnx");
+            allRequired.add(STEM_REFINE + ".onnx");
+            allRequired.add(STEM_LEAF   + ".onnx");
+            allRequired.add(CONFIG_INIT);
+            allRequired.add(CONFIG_REFINE);
+            allRequired.add(CONFIG_LEAF);
         }
 
         List<String> missing = new ArrayList<>();
