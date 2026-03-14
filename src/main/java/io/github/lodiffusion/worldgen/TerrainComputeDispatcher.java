@@ -64,9 +64,17 @@ public class TerrainComputeDispatcher {
      *   offset 68 : int  spline_factor_offset
      *   offset 72 : int  spline_jagged_offset
      *   offset 76 : int  _pad3
-     *   total   : 80 bytes
+     *   offset 80 : int  nn_entrances     (WS-4.1a)
+     *   offset 84 : int  nn_cheese_caves  (WS-4.1a)
+     *   offset 88 : int  nn_spaghetti_2d  (WS-4.1a)
+     *   offset 92 : int  nn_roughness     (WS-4.1a)
+     *   offset 96 : int  nn_noodle        (WS-4.1a)
+     *   offset 100: int  _pad4
+     *   offset 104: int  _pad5
+     *   offset 108: int  _pad6
+     *   total     : 112 bytes
      */
-    private static final int UBO_SIZE_BYTES = 80;
+    private static final int UBO_SIZE_BYTES = 112;
 
     // Byte offsets for the mutable chunk-origin fields (updated per dispatch)
     private static final int OFFSET_CHUNK_X = 0;
@@ -254,6 +262,16 @@ public class TerrainComputeDispatcher {
         buf.putInt(c.splineJaggedOffset);
         buf.putInt(0); // _pad3
 
+        // offset 80–111: cave noise indices (WS-4.1a; -1 = not wired → GLSL skips)
+        buf.putInt(c.nnEntrances);
+        buf.putInt(c.nnCheeseCaves);
+        buf.putInt(c.nnSpaghetti2d);
+        buf.putInt(c.nnRoughness);
+        buf.putInt(c.nnNoodle);
+        buf.putInt(0); // _pad4
+        buf.putInt(0); // _pad5
+        buf.putInt(0); // _pad6
+
         buf.flip();
         return buf;
     }
@@ -282,6 +300,13 @@ public class TerrainComputeDispatcher {
         public int nnJagged      = -1;
         public int nnShiftA      = -1;
         public int nnShiftB      = -1;
+
+        // WS-4.1a: Cave noise indices (-1 = disabled)
+        public int nnEntrances   = -1;   // overworld/caves/entrances
+        public int nnCheeseCaves = -1;   // overworld/caves/pillars
+        public int nnSpaghetti2d = -1;   // overworld/caves/spaghetti_2d
+        public int nnRoughness   = -1;   // overworld/caves/spaghetti_roughness_function
+        public int nnNoodle      = -1;   // overworld/caves/noodle
 
         // YClampedGradient for depth
         public float gradFromY     = -64.0f;
@@ -317,7 +342,7 @@ public class TerrainComputeDispatcher {
             c.nnJagged     = jagged;
             c.nnShiftA     = shiftA;
             c.nnShiftB     = shiftB;
-            // copy gradient and spline fields
+            // copy gradient, spline and cave fields
             c.gradFromY      = this.gradFromY;
             c.gradToY        = this.gradToY;
             c.gradFromValue  = this.gradFromValue;
@@ -325,6 +350,41 @@ public class TerrainComputeDispatcher {
             c.splineOffsetOffset = this.splineOffsetOffset;
             c.splineFactorOffset = this.splineFactorOffset;
             c.splineJaggedOffset = this.splineJaggedOffset;
+            c.nnEntrances   = this.nnEntrances;
+            c.nnCheeseCaves = this.nnCheeseCaves;
+            c.nnSpaghetti2d = this.nnSpaghetti2d;
+            c.nnRoughness   = this.nnRoughness;
+            c.nnNoodle      = this.nnNoodle;
+            return c;
+        }
+
+        /**
+         * Returns a copy with cave noise indices set (WS-4.1a).
+         * Call this once {@code NoiseRouterExtractor} exposes cave noise indices.
+         */
+        public RouterConfig withCaveIndices(
+                int entrances, int cheeseCaves, int spaghetti2d,
+                int roughness, int noodle) {
+            RouterConfig c = new RouterConfig();
+            c.nnContinents = this.nnContinents;
+            c.nnErosion    = this.nnErosion;
+            c.nnRidges     = this.nnRidges;
+            c.nnDepthNoise = this.nnDepthNoise;
+            c.nnJagged     = this.nnJagged;
+            c.nnShiftA     = this.nnShiftA;
+            c.nnShiftB     = this.nnShiftB;
+            c.gradFromY      = this.gradFromY;
+            c.gradToY        = this.gradToY;
+            c.gradFromValue  = this.gradFromValue;
+            c.gradToValue    = this.gradToValue;
+            c.splineOffsetOffset = this.splineOffsetOffset;
+            c.splineFactorOffset = this.splineFactorOffset;
+            c.splineJaggedOffset = this.splineJaggedOffset;
+            c.nnEntrances   = entrances;
+            c.nnCheeseCaves = cheeseCaves;
+            c.nnSpaghetti2d = spaghetti2d;
+            c.nnRoughness   = roughness;
+            c.nnNoodle      = noodle;
             return c;
         }
 
@@ -348,6 +408,11 @@ public class TerrainComputeDispatcher {
             c.splineOffsetOffset = offsetSpline;
             c.splineFactorOffset = factorSpline;
             c.splineJaggedOffset = jaggedSpline;
+            c.nnEntrances   = this.nnEntrances;
+            c.nnCheeseCaves = this.nnCheeseCaves;
+            c.nnSpaghetti2d = this.nnSpaghetti2d;
+            c.nnRoughness   = this.nnRoughness;
+            c.nnNoodle      = this.nnNoodle;
             return c;
         }
     }

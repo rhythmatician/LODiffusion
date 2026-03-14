@@ -166,6 +166,18 @@ layout(binding = 8, std140) uniform RouterConfig {
     int spline_factor_offset;   // terrain factor (vertical scale) spline
     int spline_jagged_offset;   // jaggedness modifier spline
     int _pad3;
+
+    // WS-4.1a: Cave noise NormalNoise indices (-1 = disabled / not yet wired)
+    // Indices into the flat NormalNoise arrays at bindings 4 and 5.
+    int nn_entrances;           // overworld/caves/entrances  (cave bore openings)
+    int nn_cheese_caves;        // overworld/caves/pillars    (large spherical caves)
+    int nn_spaghetti_2d;        // overworld/caves/spaghetti_2d  (2D tunnel axis)
+    int nn_roughness;           // overworld/caves/spaghetti_roughness_function
+    int nn_noodle;              // overworld/caves/noodle     (thin connected tunnels)
+    int _pad4;
+    int _pad5;
+    int _pad6;
+    // total: 112 bytes (std140 requires multiple-of-16 struct size)
 } router;
 
 // ---------------------------------------------------------------------------
@@ -383,8 +395,61 @@ float computeFinalDensity(float bx, float by, float bz) {
     float initial_density = 4.0 * mc_quarter_negative(terrain_factor * (depth + jaggedness_applied));
     float raw_density = initial_density + sloped_cheese;
 
-    // Apply squeeze (DensityFunctions.Mapped SQUEEZE), then clamp to [-64, 64]
-    return clamp(mc_squeeze(raw_density) * 64.0, -64.0, 64.0);
+    // -- Step 8: Squeeze and first clamp (before cave carving) ---------------
+    // Apply vanilla SQUEEZE transform: result in roughly [-1..+1].
+    float squeezed = mc_squeeze(raw_density);
+
+    // -- Step 9: Cave carving (WS-4.1a) ---------------------------------------
+    // Each cave noise is evaluated independently; a cave is present when the
+    // noise implies a hollow volume.  All branch on index -1 so they degrade
+    // gracefully when the index has not been wired yet.
+    //
+    // Coordinate conventions follow vanilla:
+    //   spaghetti_2d : 2D (Y=0), tunnels modulated by roughness
+    //   entrances    : 3D, Y*0.5 scale (wider vertical bores)
+    //   cheese       : 3D, XZ*0.4 / Y*0.4*2.0 scale (large blobs)
+    //   noodle       : 3D, XZ*1.5 scale (thin corridors)
+
+    float cave_density_delta = 0.0;
+
+    // Cheese / pillar caves (large spherical voids)
+    if (router.nn_cheese_caves >= 0) {
+        float cheese = mc_normal_noise(router.nn_cheese_caves,
+                                       bx * 0.4, by * 0.8, bz * 0.4);
+        // Threshold: cave where cheese > 0.03 (matches vanilla approx)
+        float cave_val = cheese - 0.03;
+        cave_density_delta = max(cave_density_delta, cave_val);
+    }
+
+    // Spaghetti tunnel caves (2D axis + 3D roughness perturbation)
+    if (router.nn_spaghetti_2d >= 0) {
+        float spaghetti_2d = mc_normal_noise(router.nn_spaghetti_2d, bx, 0.0, bz);
+        float roughness = (router.nn_roughness >= 0)
+            ? mc_normal_noise(router.nn_roughness, bx, by, bz) * 0.03
+            : 0.0;
+        // Spaghetti tube: carve near zero
+        float spaghetti_tube = -abs(spaghetti_2d + roughness) + 0.03;
+        cave_density_delta = max(cave_density_delta, spaghetti_tube);
+    }
+
+    // Cave entrances (vertical bores, scaled Y)
+    if (router.nn_entrances >= 0) {
+        float entrance = mc_normal_noise(router.nn_entrances, bx, by * 0.5, bz);
+        float entrance_cave = -abs(entrance) + 0.05;
+        cave_density_delta = max(cave_density_delta, entrance_cave);
+    }
+
+    // Noodle caves (thin, XZ-scaled)
+    if (router.nn_noodle >= 0) {
+        float noodle = mc_normal_noise(router.nn_noodle, bx * 1.5, by, bz * 1.5);
+        float noodle_cave = -abs(noodle) + 0.02;
+        cave_density_delta = max(cave_density_delta, noodle_cave);
+    }
+
+    // Apply cave carving: subtract cavity contribution then clamp to [-64, 64].
+    // cave_density_delta > 0 → underground void; subtract it from solid density.
+    float carved = squeezed - cave_density_delta;
+    return clamp(carved * 64.0, -64.0, 64.0);
 }
 
 // ---------------------------------------------------------------------------

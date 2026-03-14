@@ -4,8 +4,11 @@ import com.rhythmatician.lodiffusion.HelloTerrainMod;
 
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
+import net.minecraft.registry.Registry;
 import net.minecraft.registry.RegistryKey;
+import net.minecraft.registry.RegistryKeys;
 import net.minecraft.registry.entry.RegistryEntry;
+import net.minecraft.util.Identifier;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.util.math.MathHelper;
@@ -414,6 +417,48 @@ public final class WorldNoiseAccess {
     /** Expose for diagnostics. */
     public boolean isAvailable() {
         return true;  // if constructed, it's available
+    }
+
+    // ------------------------------------------------------------------
+    // Named DensityFunction registry lookup (WS-4.1)
+    // ------------------------------------------------------------------
+
+    /**
+     * Look up a registered {@link DensityFunction} by its overworld resource path.
+     *
+     * <p>Density functions such as {@code "overworld/offset"},
+     * {@code "overworld/caves/spaghetti_2d"}, etc. are stored in Minecraft's
+     * dynamic {@code DensityFunction} registry and can be sampled via
+     * {@link #sampleRouterField3D(DensityFunction, int, int)} at any world
+     * coordinate without a loaded chunk.
+     *
+     * <p>Returns {@code null} if the registry or the specific ID is not found
+     * (e.g. the world uses a non-overworld or custom generator).
+     *
+     * @param path  the overworld-relative resource path, e.g.
+     *              {@code "overworld/offset"} or
+     *              {@code "overworld/caves/spaghetti_2d"}
+     * @return the {@link DensityFunction}, or {@code null} on failure
+     */
+    public DensityFunction lookupDensityFunction(String path) {
+        try {
+            var dfReg = serverWorld.getRegistryManager()
+                    .getOrThrow(RegistryKeys.DENSITY_FUNCTION);
+            Identifier id = Identifier.of("minecraft", path);
+            RegistryKey<DensityFunction> key =
+                    RegistryKey.of(RegistryKeys.DENSITY_FUNCTION, id);
+            DensityFunction df = dfReg.get(key);
+            if (df == null) {
+                HelloTerrainMod.LOGGER.debug(
+                        "[WorldNoiseAccess] DensityFunction not found: minecraft:{}", path);
+            }
+            return df;
+        } catch (Exception e) {
+            HelloTerrainMod.LOGGER.warn(
+                    "[WorldNoiseAccess] lookupDensityFunction({}) failed: {}",
+                    path, e.getMessage());
+            return null;
+        }
     }
 
     // ------------------------------------------------------------------

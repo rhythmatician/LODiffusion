@@ -25,6 +25,7 @@ import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.world.gen.densityfunction.DensityFunction;
 import net.minecraft.world.gen.noise.NoiseRouter;
 
 /**
@@ -84,6 +85,14 @@ public final class NoiseDumperCommand {
                         .executes(ctx -> executeParity(ctx,
                                 IntegerArgumentType.getInteger(ctx, "cx"),
                                 IntegerArgumentType.getInteger(ctx, "cz"))))))
+            // /dumpnoise stage1 [radius]   — WS-4.1
+            // Dumps the 12 Stage 1 NN input features + final_density output per 4×48×4 cell.
+            // Output: run/stage1_dumps/chunk_<cx>_<cz>.json
+            .then(CommandManager.literal("stage1")
+                .executes(ctx -> executeStage1(ctx, 8))
+                .then(CommandManager.argument("radius", IntegerArgumentType.integer(1, 512))
+                    .executes(ctx -> executeStage1(ctx,
+                            IntegerArgumentType.getInteger(ctx, "radius")))))
         );
     }
 
@@ -447,5 +456,260 @@ public final class NoiseDumperCommand {
                 }
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    //  Stage 1 training data — /dumpnoise stage1 <radius>  (WS-4.1)
+    // ------------------------------------------------------------------
+
+    /**
+     * Names for the 12 Stage 1 NN input features sampled from the density
+     * function registry, in order.
+     *
+     * <ul>
+     *   <li>Indices 0-2: TerrainShaper outputs (offset, factor, jaggedness)</li>
+     *   <li>Indices 3-4: Surface density (depth, sloped_cheese)</li>
+     *   <li>Index 5: block Y (cell centre, −60..316)</li>
+     *   <li>Indices 6-11: Cave noise inputs (entrances, pillars/cheeseCaves,
+     *       spaghetti_2d, spaghetti_roughness, noodle, base_3d_noise)</li>
+     * </ul>
+     */
+    private static final String[][] STAGE1_FIELDS = {
+        // { JSON key, registry path (null → special handling) }
+        {"offset",             "overworld/offset"},
+        {"factor",             "overworld/factor"},
+        {"jaggedness",         "overworld/jaggedness"},
+        {"depth",              null},                                   // router.depth() direct
+        {"sloped_cheese",      "overworld/sloped_cheese"},
+        {"y",                  null},                                   // cell centre Y
+        {"entrances",          "overworld/caves/entrances"},
+        {"cheese_caves",       "overworld/caves/pillars"},
+        {"spaghetti_2d",       "overworld/caves/spaghetti_2d"},
+        {"roughness",          "overworld/caves/spaghetti_roughness_function"},
+        {"noodle",             "overworld/caves/noodle"},
+        {"base_3d_noise",      "overworld/base_3d_noise"},
+    };
+
+    /**
+     * Execute {@code /dumpnoise stage1 <radius>}.
+     *
+     * <p>Dumps one JSON file per chunk under {@code run/stage1_dumps/},
+     * each containing the 12 Stage 1 input features + final_density output
+     * sampled at 4×48×4 cell resolution (768 samples per chunk).
+     */
+    private static int executeStage1(CommandContext<ServerCommandSource> ctx,
+                                      int radius) {
+        ServerCommandSource source = ctx.getSource();
+        ServerWorld world = source.getWorld();
+
+        Path outDir = Path.of("stage1_dumps");
+        try {
+            Files.createDirectories(outDir);
+        } catch (IOException e) {
+            source.sendError(Text.literal("[Stage1Dump] Cannot create output dir: " + e.getMessage()));
+            return 0;
+        }
+
+        WorldNoiseAccess noise = WorldNoiseAccess.tryCreate(world);
+        if (noise == null) {
+            source.sendError(Text.literal(
+                    "[Stage1Dump] Failed to initialise noise pipeline."));
+            return 0;
+        }
+
+        long seed = world.getSeed();
+        int[] centre = {0, 0};
+        try {
+            BlockPos origin = BlockPos.ofFloored(source.getPosition());
+            centre[0] = origin.getX() >> 4;
+            centre[1] = origin.getZ() >> 4;
+        } catch (UnsupportedOperationException e) {
+            // keep (0,0)
+        }
+        final int centerCx = centre[0];
+        final int centerCz = centre[1];
+
+        int totalChunks = (2 * radius + 1) * (2 * radius + 1);
+        source.sendFeedback(
+                () -> Text.literal(String.format(
+                        "[Stage1Dump] Dumping %d chunks r=%d centred (%d,%d) → %s",
+                        totalChunks, radius, centerCx, centerCz,
+                        outDir.toAbsolutePath())),
+                false);
+
+        // Resolve all DensityFunction objects once (avoids per-chunk registry lookups)
+        NoiseRouter router = noise.getNoiseRouter();
+        DensityFunction[] dfs = resolveStageDensityFunctions(noise, router);
+        if (dfs == null) {
+            source.sendError(Text.literal(
+                    "[Stage1Dump] Failed to resolve density functions — check server log."));
+            return 0;
+        }
+
+        int threadCount = 4;
+        ExecutorService pool = Executors.newFixedThreadPool(threadCount, r -> {
+            Thread t = new Thread(r, "Stage1Dumper-Worker");
+            t.setDaemon(true);
+            return t;
+        });
+
+        AtomicInteger dumped = new AtomicInteger();
+        AtomicInteger failed = new AtomicInteger();
+        long startTime = System.currentTimeMillis();
+        List<Future<?>> futures = new ArrayList<>(totalChunks);
+
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                final int cx = centerCx + dx;
+                final int cz = centerCz + dz;
+                futures.add(pool.submit(() -> {
+                    try {
+                        dumpChunkNoiseStage1(noise, dfs, cx, cz, seed, outDir);
+                        dumped.incrementAndGet();
+                    } catch (Exception e) {
+                        LOG.warn("[Stage1Dump] Failed chunk ({},{}): {}", cx, cz, e.getMessage());
+                        failed.incrementAndGet();
+                    }
+                    int done = dumped.get() + failed.get();
+                    if (done % 100 == 0 || done == totalChunks) {
+                        double elapsed = (System.currentTimeMillis() - startTime) / 1000.0;
+                        double rate = elapsed > 0 ? done / elapsed : 0;
+                        source.sendFeedback(
+                                () -> Text.literal(String.format(
+                                        "[Stage1Dump] %d/%d (%.1f/s)", done, totalChunks, rate)),
+                                false);
+                    }
+                }));
+            }
+        }
+
+        Thread coordinator = new Thread(() -> {
+            for (Future<?> f : futures) {
+                try { f.get(); } catch (Exception e) { LOG.warn("[Stage1Dump] {}", e.getMessage()); }
+            }
+            pool.shutdown();
+            double totalSec = (System.currentTimeMillis() - startTime) / 1000.0;
+            final int d = dumped.get(), fl = failed.get();
+            source.sendFeedback(
+                    () -> Text.literal(String.format(
+                            "[Stage1Dump] Done. %d dumped, %d failed in %.1fs",
+                            d, fl, totalSec)),
+                    false);
+        }, "Stage1Dumper-Coordinator");
+        coordinator.setDaemon(true);
+        coordinator.start();
+
+        return 1;
+    }
+
+    /**
+     * Resolve all 12 Stage 1 density functions from the registry.
+     *
+     * <p>{@code dfs[i] == null} for special-handled fields (y, depth via router).
+     */
+    private static DensityFunction[] resolveStageDensityFunctions(WorldNoiseAccess noise,
+                                                                     NoiseRouter router) {
+        DensityFunction[] dfs = new DensityFunction[STAGE1_FIELDS.length];
+        for (int i = 0; i < STAGE1_FIELDS.length; i++) {
+            String path = STAGE1_FIELDS[i][1];
+            if (path == null) {
+                // "depth" (index 3) and "y" (index 5) are special-cased below
+                if ("depth".equals(STAGE1_FIELDS[i][0])) {
+                    dfs[i] = router.depth();  // direct router field
+                }
+                // "y" field: dfs[i] stays null → handled by cell centre Y in dump loop
+                continue;
+            }
+            DensityFunction df = noise.lookupDensityFunction(path);
+            if (df == null) {
+                LOG.warn("[Stage1Dump] Could not resolve '{}' — will use 0.0", path);
+                // Use a zero constant so the dump still runs
+                df = net.minecraft.world.gen.densityfunction.DensityFunctionTypes.zero();
+            }
+            dfs[i] = df;
+        }
+        return dfs;
+    }
+
+    /**
+     * Dump Stage 1 training data for a single chunk to JSON.
+     *
+     * <p>Samples all 12 input features + final_density at the standard
+     * 4×48×4 Minecraft noise cell resolution (768 samples per chunk).
+     *
+     * <p>JSON layout (all fields flat arrays, cx-outer / cy-middle / cz-inner,
+     * length 768 = 4×48×4):
+     * <pre>
+     *   chunk_x, chunk_z, seed
+     *   offset, factor, jaggedness        — terrain shaper outputs
+     *   depth, sloped_cheese              — surface density
+     *   y                                 — block Y of each cell centre
+     *   entrances, cheese_caves,
+     *   spaghetti_2d, roughness,
+     *   noodle, base_3d_noise             — cave noise inputs
+     *   final_density                     — training label
+     * </pre>
+     */
+    static void dumpChunkNoiseStage1(WorldNoiseAccess noise,
+                                      DensityFunction[] dfs,
+                                      int cx, int cz, long seed,
+                                      Path outDir) throws IOException {
+        String filename = String.format("chunk_%d_%d.json", cx, cz);
+        Path file = outDir.resolve(filename);
+
+        // --- Sample all 12 fields at 4×48×4 cell resolution ----------------
+        // Cell centres: X = baseX + c*4 + 2, Z = baseZ + c*4 + 2, Y = -64 + cy*8 + 4
+        // Output layout: [cx_cell][cy_cell][cz_cell] → flat 768 values in CX-outer/CY-mid/CZ-inner
+
+        // Pre-compute all 3D fields
+        float[][][] finalDensity = noise.sampleRouterField3D(
+                noise.getNoiseRouter().finalDensity(), cx, cz);
+
+        float[][][][] fieldValues = new float[STAGE1_FIELDS.length][4][48][4];
+        float[][][] yValues = new float[4][48][4];  // cell-centre Y (same for all chunks)
+
+        // Precompute y (cell centre)
+        for (int cy = 0; cy < 48; cy++) {
+            float yCentre = -64f + cy * 8f + 4f;
+            for (int ccx = 0; ccx < 4; ccx++)
+                for (int ccz = 0; ccz < 4; ccz++)
+                    yValues[ccx][cy][ccz] = yCentre;
+        }
+
+        for (int fieldIdx = 0; fieldIdx < STAGE1_FIELDS.length; fieldIdx++) {
+            String fieldName = STAGE1_FIELDS[fieldIdx][0];
+            DensityFunction df = dfs[fieldIdx];
+
+            if ("y".equals(fieldName)) {
+                fieldValues[fieldIdx] = yValues;
+            } else if (df != null) {
+                fieldValues[fieldIdx] = noise.sampleRouterField3D(df, cx, cz);
+            }
+            // dfs[fieldIdx] == null only for unresolved (already warned) → stays all-zero float[4][48][4]
+        }
+
+        // --- Write JSON -----------------------------------------------------
+        StringBuilder sb = new StringBuilder(32 * 1024);
+        sb.append("{\n");
+        sb.append("  \"chunk_x\": ").append(cx).append(",\n");
+        sb.append("  \"chunk_z\": ").append(cz).append(",\n");
+        sb.append("  \"seed\": ").append(seed).append(",\n");
+        sb.append("  \"cell_resolution\": \"4x48x4\",\n");
+        sb.append("  \"note\": \"flat arrays indexed [cx*48*4 + cy*4 + cz], cell centres\",\n");
+
+        // Write each of the 12 input features
+        for (int fieldIdx = 0; fieldIdx < STAGE1_FIELDS.length; fieldIdx++) {
+            sb.append("  \"").append(STAGE1_FIELDS[fieldIdx][0]).append("\": [");
+            appendCell3D(sb, fieldValues[fieldIdx]);
+            sb.append(fieldIdx < STAGE1_FIELDS.length - 1 ? "],\n" : "],\n");
+        }
+
+        // Write final_density (training label)
+        sb.append("  \"final_density\": [");
+        appendCell3D(sb, finalDensity);
+        sb.append("]\n");
+
+        sb.append("}\n");
+        Files.writeString(file, sb.toString());
     }
 }
