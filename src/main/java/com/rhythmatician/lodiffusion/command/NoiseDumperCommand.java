@@ -25,6 +25,7 @@ import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.world.ServerWorld;
 import net.minecraft.text.Text;
 import net.minecraft.util.math.BlockPos;
+import net.minecraft.world.gen.noise.NoiseRouter;
 
 /**
  * Server command {@code /dumpnoise <radius>} that extracts vanilla noise
@@ -230,8 +231,26 @@ public final class NoiseDumperCommand {
         // Sample biomes at surface level (chunk-free via BiomeSource.getBiome())
         String[][] biomeNames = noise.sampleBiomeNames(cx, cz, surfaceHm);
 
-        // Build JSON — heightmaps + biome names for add_column_heights.py
-        StringBuilder sb = new StringBuilder(4096);
+        // ---- Raw NoiseRouter fields ----------------------------------------
+        // Sea level Y=63 is a good reference for the 2D-ish climate fields.
+        // These functions vary very little with Y except near terrain transitions.
+        NoiseRouter router = noise.getNoiseRouter();
+        final int seaLevel = 63;
+
+        // 2D climate/shape fields (4×4 cell grid, sampled at sea level)
+        float[][] continents  = noise.sampleRouterField2D(router.continents(),  cx, cz, seaLevel);
+        float[][] erosion     = noise.sampleRouterField2D(router.erosion(),     cx, cz, seaLevel);
+        float[][] ridges      = noise.sampleRouterField2D(router.ridges(),      cx, cz, seaLevel);
+        float[][] temperature = noise.sampleRouterField2D(router.temperature(), cx, cz, seaLevel);
+        float[][] vegetation  = noise.sampleRouterField2D(router.vegetation(),  cx, cz, seaLevel);
+        float[][] depth       = noise.sampleRouterField2D(router.depth(),       cx, cz, seaLevel);
+
+        // 3D density field (4×48×4 cell grid, full overworld Y range -64..320)
+        float[][][] finalDensity = noise.sampleRouterField3D(router.finalDensity(), cx, cz);
+        // -------------------------------------------------------------------
+
+        // Build JSON
+        StringBuilder sb = new StringBuilder(8192);
         sb.append("{\n");
         sb.append("  \"chunk_x\": ").append(cx).append(",\n");
         sb.append("  \"chunk_z\": ").append(cz).append(",\n");
@@ -254,6 +273,36 @@ public final class NoiseDumperCommand {
                 sb.append('"').append(biomeNames[x][z]).append('"');
             }
         }
+        sb.append("],\n");
+
+        // 2D router fields — flat 16 values each (4×4), cx-outer / cz-inner
+        sb.append("  \"continents\": [");
+        appendCell2D(sb, continents);
+        sb.append("],\n");
+
+        sb.append("  \"erosion\": [");
+        appendCell2D(sb, erosion);
+        sb.append("],\n");
+
+        sb.append("  \"ridges\": [");
+        appendCell2D(sb, ridges);
+        sb.append("],\n");
+
+        sb.append("  \"temperature\": [");
+        appendCell2D(sb, temperature);
+        sb.append("],\n");
+
+        sb.append("  \"vegetation\": [");
+        appendCell2D(sb, vegetation);
+        sb.append("],\n");
+
+        sb.append("  \"depth\": [");
+        appendCell2D(sb, depth);
+        sb.append("],\n");
+
+        // 3D final_density — flat 768 values (4×48×4), cx-outer / cy-middle / cz-inner
+        sb.append("  \"final_density\": [");
+        appendCell3D(sb, finalDensity);
         sb.append("]\n");
 
         sb.append("}\n");
@@ -264,12 +313,44 @@ public final class NoiseDumperCommand {
     // Helpers
     // ------------------------------------------------------------------
 
+    /** Append a flat 16×16 heightmap as integers (x-major). */
     private static void appendFloatGrid(StringBuilder sb, float[][] grid) {
         for (int x = 0; x < 16; x++) {
             for (int z = 0; z < 16; z++) {
                 if (x > 0 || z > 0) sb.append(',');
                 // Cast to int — heightmaps are whole-block Y values
                 sb.append((int) grid[x][z]);
+            }
+        }
+    }
+
+    /**
+     * Append a 4×4 float cell grid as a flat JSON array (cx-outer, cz-inner).
+     * Values are written as floating-point with 6 significant digits.
+     */
+    private static void appendCell2D(StringBuilder sb, float[][] grid) {
+        boolean first = true;
+        for (int cx = 0; cx < 4; cx++) {
+            for (int cz = 0; cz < 4; cz++) {
+                if (!first) sb.append(',');
+                first = false;
+                sb.append(String.format("%.6g", grid[cx][cz]));
+            }
+        }
+    }
+
+    /**
+     * Append a 4×48×4 float cell grid as a flat JSON array (cx-outer, cy-middle, cz-inner).
+     */
+    private static void appendCell3D(StringBuilder sb, float[][][] grid) {
+        boolean first = true;
+        for (int cx = 0; cx < 4; cx++) {
+            for (int cy = 0; cy < 48; cy++) {
+                for (int cz = 0; cz < 4; cz++) {
+                    if (!first) sb.append(',');
+                    first = false;
+                    sb.append(String.format("%.6g", grid[cx][cy][cz]));
+                }
             }
         }
     }

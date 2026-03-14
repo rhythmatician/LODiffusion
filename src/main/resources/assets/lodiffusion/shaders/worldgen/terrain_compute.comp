@@ -289,16 +289,20 @@ float mc_spline_eval(int offset, float t) {
 // ---------------------------------------------------------------------------
 float computeFinalDensity(float bx, float by, float bz) {
     // -- Step 1: Sample horizontal routing noises (2D at y=0) -----------------
-    // These drive the spline-based terrain shaping (continents, ridges, erosion, weirdness).
+    // These drive the spline-based terrain shaping (continents, erosion, ridges, weirdness).
+    //
+    // In vanilla, NoiseRouter.ridges is the single noise source for both "weirdness"
+    // and the folded "peaks and valleys" ridges value fed to the terrain shaper:
+    //   weirdness     = ridges_noise (raw)          → TerrainShaper input 4
+    //   ridges_folded = peaksAndValleys(weirdness)  → TerrainShaper input 3
     float continents = mc_normal_noise(router.nn_continents, bx, 0.0, bz);
     float erosion    = mc_normal_noise(router.nn_erosion,    bx, 0.0, bz);
-    float ridges_raw = mc_normal_noise(router.nn_ridges,     bx, 0.0, bz);
-    float weirdness  = mc_normal_noise(router.nn_shift_a,    bx, 0.0, bz);  // Using shift_a as weirdness proxy
+    float weirdness  = mc_normal_noise(router.nn_ridges,     bx, 0.0, bz);
 
-    // Vanilla "peaks and valleys" (ridges_folded) transform:
-    //   Actual: NoiseRouterData.peaksAndValleys(x) = 1 - |1 - |x + 0.5| * 2|
-    // This folds the [-1,1] noise into a [~-1, ~0.5] range favoring "ridges".
-    float ridges_abs = abs(ridges_raw) * 2.0 - 1.0;
+    // Vanilla "peaks and valleys" transform (NoiseRouterData.peaksAndValleys):
+    //   peaksAndValleys(x) = 1 - |1 - |x + 0.5| * 2|   (approximately)
+    // Folds the raw weirdness noise into a [~-1, ~0.5] range that peaks at ridges.
+    float ridges_abs    = abs(weirdness) * 2.0 - 1.0;
     float ridges_folded = mc_half_negative(1.0 - abs(ridges_abs));
 
     // -- Step 2: TerrainShaperMLP evaluation -----------------------------------

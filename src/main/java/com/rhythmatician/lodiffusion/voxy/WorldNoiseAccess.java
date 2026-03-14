@@ -20,8 +20,10 @@ import net.minecraft.world.gen.chunk.ChunkGeneratorSettings;
 import net.minecraft.world.gen.chunk.ChunkNoiseSampler;
 import net.minecraft.world.gen.chunk.GenerationShapeConfig;
 import net.minecraft.world.gen.chunk.NoiseChunkGenerator;
+import net.minecraft.world.gen.densityfunction.DensityFunction;
 import net.minecraft.world.gen.densityfunction.DensityFunctionTypes;
 import net.minecraft.world.gen.noise.NoiseConfig;
+import net.minecraft.world.gen.noise.NoiseRouter;
 
 import java.util.Arrays;
 import java.util.function.Predicate;
@@ -412,5 +414,85 @@ public final class WorldNoiseAccess {
     /** Expose for diagnostics. */
     public boolean isAvailable() {
         return true;  // if constructed, it's available
+    }
+
+    // ------------------------------------------------------------------
+    // Raw NoiseRouter field sampling
+    // ------------------------------------------------------------------
+
+    /**
+     * Expose the {@link NoiseRouter} for direct {@link DensityFunction} access.
+     *
+     * <p>The returned router's functions can be sampled at arbitrary (x, y, z)
+     * positions using {@link DensityFunction#sample(DensityFunction.NoisePos)}.
+     */
+    public NoiseRouter getNoiseRouter() {
+        return noiseConfig.getNoiseRouter();
+    }
+
+    /**
+     * Sample a {@link DensityFunction} at 4×4 cell resolution at a fixed Y.
+     *
+     * <p>Cell centre coordinates: {@code X = chunkBaseX + cx*4 + 2},
+     * {@code Z = chunkBaseZ + cz*4 + 2}.  The Y coordinate is fixed for
+     * fields that do not vary vertically (continents, erosion, ridges,
+     * temperature, vegetation).
+     *
+     * @param df       the density function to evaluate
+     * @param sectionX chunk X coordinate
+     * @param sectionZ chunk Z coordinate
+     * @param sampleY  block Y at which to evaluate
+     * @return {@code float[4][4]} grid, cx-outer / cz-inner (x-major)
+     */
+    public float[][] sampleRouterField2D(DensityFunction df,
+                                         int sectionX, int sectionZ,
+                                         int sampleY) {
+        float[][] out = new float[4][4];
+        int baseX = sectionX * 16;
+        int baseZ = sectionZ * 16;
+        for (int cx = 0; cx < 4; cx++) {
+            int x = baseX + cx * 4 + 2;  // cell centre X
+            for (int cz = 0; cz < 4; cz++) {
+                int z = baseZ + cz * 4 + 2;  // cell centre Z
+                out[cx][cz] = (float) df.sample(
+                        new DensityFunction.UnblendedNoisePos(x, sampleY, z));
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Sample a {@link DensityFunction} at 4×48×4 cell resolution — the full
+     * overworld noise grid from Y=-64 to Y=320 (48 cells of 8 blocks each).
+     *
+     * <p>Cell centre coordinates:
+     * <ul>
+     *   <li>X: {@code chunkBaseX + cx*4 + 2}</li>
+     *   <li>Z: {@code chunkBaseZ + cz*4 + 2}</li>
+     *   <li>Y: {@code -64 + cy*8 + 4}  (centre of 8-block cell)</li>
+     * </ul>
+     *
+     * @param df       the density function to evaluate
+     * @param sectionX chunk X coordinate
+     * @param sectionZ chunk Z coordinate
+     * @return {@code float[4][48][4]} grid, {@code [cx][cy][cz]} order
+     */
+    public float[][][] sampleRouterField3D(DensityFunction df,
+                                           int sectionX, int sectionZ) {
+        float[][][] out = new float[4][48][4];
+        int baseX = sectionX * 16;
+        int baseZ = sectionZ * 16;
+        for (int cx = 0; cx < 4; cx++) {
+            int x = baseX + cx * 4 + 2;
+            for (int cz = 0; cz < 4; cz++) {
+                int z = baseZ + cz * 4 + 2;
+                for (int cy = 0; cy < 48; cy++) {
+                    int y = -64 + cy * 8 + 4;  // cell centre Y
+                    out[cx][cy][cz] = (float) df.sample(
+                            new DensityFunction.UnblendedNoisePos(x, y, z));
+                }
+            }
+        }
+        return out;
     }
 }
