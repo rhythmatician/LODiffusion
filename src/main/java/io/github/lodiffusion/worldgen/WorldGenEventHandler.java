@@ -6,10 +6,13 @@ import org.apache.logging.log4j.Logger;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.FloatBuffer;
+import java.nio.IntBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Map;
 import java.util.WeakHashMap;
+
+import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 
 /**
  * Event handler for world generation integration (reflection-driven).
@@ -216,11 +219,75 @@ public class WorldGenEventHandler {
                 LOGGER.warn("Unable to read density output from GPU (null or empty buffer)");
             }
 
+            // WS-2: Read block-material output and push to Voxy
+            writeBlocksToVoxy(manager, level, dimensionInfo);
+
             long elapsedMs = System.currentTimeMillis() - startTime;
             LOGGER.info("WorldGenEventHandler.onWorldLoad complete in {} ms", elapsedMs);
 
         } catch (Exception e) {
             LOGGER.error("WorldGenEventHandler.onWorldLoad failed", e);
+        }
+    }
+
+    /**
+     * Reads the block-material output from the GPU and pushes chunk (0,0) into Voxy
+     * as an initial proof-of-concept (WS-2.4).
+     *
+     * <p>Skipped when Voxy is unavailable or the dimension is not the overworld.
+     * Catches all exceptions so a Voxy API change never crashes world load.
+     */
+    private void writeBlocksToVoxy(ShaderSSBOManager manager, Object level, String dimensionInfo) {
+        if (!VoxyCompat.isAvailable()) {
+            LOGGER.debug("WS-2: Voxy not available — skipping block write");
+            return;
+        }
+        if (!dimensionInfo.contains("overworld") && !dimensionInfo.contains("(unknown)")) {
+            LOGGER.debug("WS-2: Skipping block write for non-overworld dimension: {}", dimensionInfo);
+            return;
+        }
+        try {
+            IntBuffer blockMat = manager.readBlockOutput();
+            if (blockMat == null) {
+                LOGGER.warn("WS-2: block output buffer is null — skipping Voxy write");
+                return;
+            }
+
+            // Get Voxy world engine from the level (ServerLevel extends World)
+            Object worldEngine = VoxyCompat.getWorldEngine((net.minecraft.world.World) level);
+            if (worldEngine == null) {
+                LOGGER.warn("WS-2: Voxy world engine not available for this level");
+                return;
+            }
+
+            // Get default biome ID (plains) from the mapper
+            Object mapper = VoxyCompat.getMapper(worldEngine);
+            int defaultBiome = resolveDefaultBiome(mapper);
+
+            ShaderSectionWriter writer = new ShaderSectionWriter(worldEngine, defaultBiome);
+            int nonAir = writer.writeColumn(blockMat, 0, 0);
+            LOGGER.info("WS-2: wrote GPU chunk (0,0) to Voxy — {} non-air voxels", nonAir);
+
+        } catch (Exception e) {
+            LOGGER.warn("WS-2: writeBlocksToVoxy failed (non-fatal): {}", e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Resolves the Voxy biome ID for {@code minecraft:plains} via the Mapper.
+     * Returns 0 if resolution fails.
+     */
+    private int resolveDefaultBiome(Object mapper) {
+        try {
+            // The plains biome identifier is used as a fallback; just try to call
+            // Mapper.getIdForBiome with the identifier string if the Voxy API supports it.
+            Class<?> identifierClass = Class.forName("net.minecraft.util.Identifier");
+            Object plainsId = identifierClass.getMethod("of", String.class).invoke(null, "minecraft:plains");
+            Method m = mapper.getClass().getMethod("getIdForBiome", Object.class);
+            return (int) m.invoke(mapper, plainsId);
+        } catch (Exception e) {
+            LOGGER.debug("WS-2: could not resolve plains biome ID ({}), using 0", e.getMessage());
+            return 0;
         }
     }
 

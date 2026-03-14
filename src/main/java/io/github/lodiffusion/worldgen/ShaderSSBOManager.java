@@ -35,11 +35,17 @@ public class ShaderSSBOManager {
     private static final int NORMAL_NOISE_FLOAT_BINDING = 5;
     private static final int SPLINE_DATA_BINDING = 6;
     private static final int DENSITY_OUTPUT_BINDING = 7;
+    /** Block material output SSBO (binding 11, written by pass 2 of the compute shader). */
+    private static final int BLOCK_OUTPUT_BINDING = 11;
 
-    private static final int BUFFER_COUNT = 8;
+    /** bufferIds array must be large enough to hold binding 11 as a direct index. */
+    private static final int BUFFER_COUNT = 12;
 
     /** Number of floats in the density output grid: 16 (X) × 384 (Y_LEVELS) × 16 (Z). */
     private static final int DENSITY_FLOATS = 16 * 384 * 16;  // = 98,304
+
+    /** Number of ints in the block-material output grid (same element count as density). */
+    private static final int BLOCK_INT_COUNT = DENSITY_FLOATS;  // = 98,304
 
     // Shader program manager for compute operations
     private ShaderProgramManager shaderManager = new ShaderProgramManager();
@@ -98,6 +104,9 @@ public class ShaderSSBOManager {
 
             // Binding 7 (Density Output) is allocated but left uninitialized (written by compute shader)
             allocateDensityOutput();
+
+            // Binding 11 (Block Material Output) — same layout as density, written by pass 2
+            allocateBlockOutput();
 
             // Compile shaders after SSBOs are ready
             shaderManager.compile();
@@ -267,6 +276,28 @@ public class ShaderSSBOManager {
     }
 
     /**
+     * Allocates block-material output buffer (binding 11, written by pass 2 of compute shader).
+     * Same element count as density output but stores {@code int} material codes.
+     * Material codes: 0=AIR, 1=STONE, 2=WATER, 3=GRASS, 4=DIRT.
+     */
+    private void allocateBlockOutput() {
+        try {
+            int bufferId = reinterpret_cast_obtainBufferId(BLOCK_OUTPUT_BINDING);
+            long sizeBytes = (long) BLOCK_INT_COUNT * Integer.BYTES;  // = 393,216 bytes
+
+            glBindBuffer(GL_COPY_WRITE_BUFFER, bufferId);
+            glBufferDataNull(GL_COPY_WRITE_BUFFER, sizeBytes, GL_DYNAMIC_DRAW);
+            glBindBufferBase(GL_SHADER_STORAGE_BUFFER, BLOCK_OUTPUT_BINDING, bufferId);
+
+            LOGGER.info("ShaderSSBOManager: Allocated block output buffer ({} KB) at binding {}",
+                    sizeBytes / 1024, BLOCK_OUTPUT_BINDING);
+        } catch (Exception e) {
+            LOGGER.error("ShaderSSBOManager: Failed to allocate block output buffer", e);
+            throw new RuntimeException("Block output allocation failed", e);
+        }
+    }
+
+    /**
      * Dispatches the terrain compute shader for one chunk and reads back the full
      * density field from Binding 7.
      *
@@ -285,6 +316,46 @@ public class ShaderSSBOManager {
 
     /** Number of floats in one dispatched chunk density field ({@value}). */
     public static int getDensityFloats() { return DENSITY_FLOATS; }
+
+    /** Number of ints in one dispatched chunk block-material field ({@value}). */
+    public static int getBlockIntCount() { return BLOCK_INT_COUNT; }
+
+    /**
+     * Reads back block-material data from the block output SSBO (binding 11).
+     *
+     * <p>Call after {@link #dispatch(int, int)} to retrieve the material codes written
+     * by pass 2 of the compute shader.  Material codes: 0=AIR, 1=STONE, 2=WATER,
+     * 3=GRASS, 4=DIRT.
+     *
+     * @return IntBuffer of {@value #BLOCK_INT_COUNT} ints (positioned at 0), or
+     *         {@code null} on error.
+     */
+    public IntBuffer readBlockOutput() {
+        return readIntBuffer(BLOCK_OUTPUT_BINDING, BLOCK_INT_COUNT);
+    }
+
+    /**
+     * Reads back data from an SSBO into an IntBuffer.
+     *
+     * @param bindingPoint SSBO binding index
+     * @param elementCount number of ints to read
+     * @return IntBuffer positioned at 0, or {@code null} on error
+     */
+    public IntBuffer readIntBuffer(int bindingPoint, int elementCount) {
+        if (bindingPoint < 0 || bindingPoint >= BUFFER_COUNT || bufferIds[bindingPoint] == 0) {
+            return null;
+        }
+        try {
+            IntBuffer result = IntBuffer.allocate(elementCount);
+            org.lwjgl.opengl.GL43C.glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferIds[bindingPoint]);
+            org.lwjgl.opengl.GL43C.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, result);
+            result.rewind();
+            return result;
+        } catch (Exception e) {
+            LOGGER.error("ShaderSSBOManager: Failed to read int buffer from binding {}", bindingPoint, e);
+            return null;
+        }
+    }
 
     /**
      * Reads back data from an SSBO into a FloatBuffer.

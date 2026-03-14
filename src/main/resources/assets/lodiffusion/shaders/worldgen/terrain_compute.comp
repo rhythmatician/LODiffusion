@@ -27,6 +27,17 @@ layout(local_size_x = 16, local_size_y = 1, local_size_z = 16) in;
 #define Y_LEVELS    384      // Y_MAX - Y_MIN
 #define MAX_OCTAVES 16
 
+// Sea level below which air blocks become water
+#define SEA_LEVEL   62
+
+// Material type codes written to block_out by the surface pass.
+// Translated to Voxy block IDs on the Java side (ShaderSectionWriter).
+#define MAT_AIR     0
+#define MAT_STONE   1
+#define MAT_WATER   2
+#define MAT_GRASS   3   // topmost solid at Y >= SEA_LEVEL
+#define MAT_DIRT    4   // 1-3 blocks below grass surface
+
 // ---------------------------------------------------------------------------
 // SSBOs — populated once at world load by NoiseRouterExtractor.java
 // ---------------------------------------------------------------------------
@@ -114,6 +125,13 @@ layout(binding = 10, std140) uniform ShapeMlpConfig {
 layout(binding = 7, std430) buffer DensityOutput {
     float data[];
 } density_out;
+
+// Output material type for each block (same indexing as density_out).
+// Material codes (see MAT_xxx constants below) are written after the density
+// pass so the Java side can build Voxy sections without re-running the CPU.
+layout(binding = 11, std430) buffer BlockOutput {
+    int data[];
+} block_out;
 
 // ---------------------------------------------------------------------------
 // Uniform buffer: dimension-specific router configuration.
@@ -385,12 +403,46 @@ void main() {
     int col     = localX + 16 * localZ;         // 0..255
     int col_off = col * Y_LEVELS;               // stride into density_out
 
-    // Evaluate density for every Y level in the dimension
+    // -- Pass 1: Density field (written to density_out) ---------------------
     for (int yi = 0; yi < Y_LEVELS; yi++) {
         int blockY = Y_MIN + yi;
-
         float density = computeFinalDensity(float(blockX), float(blockY), float(blockZ));
-
         density_out.data[col_off + yi] = density;
+    }
+
+    // -- Pass 2: Surface detection + material assignment (WS-2.1 / WS-2.2) -
+    // Scan top-down to find the highest solid block in this column.
+    // This is done after writing all densities so we can read them back.
+    int surface_yi = -1;
+    for (int yi = Y_LEVELS - 1; yi >= 0; yi--) {
+        if (density_out.data[col_off + yi] > 0.0) {
+            surface_yi = yi;
+            break;
+        }
+    }
+    int surface_blockY = Y_MIN + surface_yi;  // block Y of highest solid block
+
+    for (int yi = 0; yi < Y_LEVELS; yi++) {
+        int blockY = Y_MIN + yi;
+        float dens  = density_out.data[col_off + yi];
+
+        int mat;
+        if (dens <= 0.0) {
+            // Air or open-air water: fill with water below sea level.
+            mat = (blockY < SEA_LEVEL) ? MAT_WATER : MAT_AIR;
+        } else {
+            // Solid block — apply surface-layer heuristic only for dry land
+            // (surface above sea level).  Underwater solid blocks stay stone.
+            int dist = surface_yi - yi;  // 0 = surface, >0 = below surface
+            if (dist == 0 && surface_blockY >= SEA_LEVEL) {
+                mat = MAT_GRASS;
+            } else if (dist <= 3 && surface_blockY >= SEA_LEVEL) {
+                mat = MAT_DIRT;
+            } else {
+                mat = MAT_STONE;
+            }
+        }
+
+        block_out.data[col_off + yi] = mat;
     }
 }
