@@ -38,6 +38,9 @@ public class ShaderSSBOManager {
 
     private static final int BUFFER_COUNT = 8;
 
+    /** Number of floats in the density output grid: 16 (X) × 384 (Y_LEVELS) × 16 (Z). */
+    private static final int DENSITY_FLOATS = 16 * 384 * 16;  // = 98,304
+
     // Shader program manager for compute operations
     private ShaderProgramManager shaderManager = new ShaderProgramManager();
 
@@ -246,10 +249,10 @@ public class ShaderSSBOManager {
      */
     private void allocateDensityOutput() {
         try {
-            // Allocate a 256KB buffer for density output grid
-            // (actual size will depend on chunk column dimension)
+            // 16×384×16 floats, indexed [lx + 16*lz] * 384 + (by + 64)
+            // = 98,304 floats = 393,216 bytes ≈ 384 KB
             int bufferId = reinterpret_cast_obtainBufferId(DENSITY_OUTPUT_BINDING);
-            long sizeBytes = 256 * 1024; // 256 KB default (can be resized later)
+            long sizeBytes = (long) DENSITY_FLOATS * Float.BYTES;
 
             glBindBuffer(GL_COPY_WRITE_BUFFER, bufferId);
             glBufferDataNull(GL_COPY_WRITE_BUFFER, sizeBytes, GL_DYNAMIC_DRAW);
@@ -262,6 +265,26 @@ public class ShaderSSBOManager {
             throw new RuntimeException("Density output allocation failed", e);
         }
     }
+
+    /**
+     * Dispatches the terrain compute shader for one chunk and reads back the full
+     * density field from Binding 7.
+     *
+     * <p><b>Threading:</b> Must be called from a thread with an active GL context
+     * (render thread in singleplayer, server-with-GL-context in test environments).
+     *
+     * @param chunkX chunk X coordinate
+     * @param chunkZ chunk Z coordinate
+     * @return FloatBuffer of {@value #DENSITY_FLOATS} floats, indexed
+     *         {@code [lx + 16*lz] * 384 + (by + 64)}, or {@code null} on failure.
+     */
+    public FloatBuffer dispatchAndRead(int chunkX, int chunkZ) {
+        dispatch(chunkX, chunkZ);
+        return readBuffer(DENSITY_OUTPUT_BINDING, DENSITY_FLOATS);
+    }
+
+    /** Number of floats in one dispatched chunk density field ({@value}). */
+    public static int getDensityFloats() { return DENSITY_FLOATS; }
 
     /**
      * Reads back data from an SSBO into a FloatBuffer.

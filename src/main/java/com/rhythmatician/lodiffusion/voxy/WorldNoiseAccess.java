@@ -430,6 +430,67 @@ public final class WorldNoiseAccess {
         return noiseConfig.getNoiseRouter();
     }
 
+    // -------------------------------------------------------------------------
+    // Block-resolution sampling (WS-1.3 parity validation)
+    // -------------------------------------------------------------------------
+
+    /**
+     * Sample {@code router.finalDensity()} at every block in a chunk column,
+     * producing the same 16×384×16 grid written by the GPU compute shader to Binding 7.
+     *
+     * <p>Indexing matches the shader: {@code [lx + 16*lz] * 384 + (by + 64)}.
+     *
+     * @param router   the NoiseRouter for the dimension
+     * @param sectionX chunk X coordinate
+     * @param sectionZ chunk Z coordinate
+     * @return flat {@code float[16 * 384 * 16]} array
+     */
+    public float[] sampleFinalDensityBlockRes(NoiseRouter router,
+                                               int sectionX, int sectionZ) {
+        float[] out = new float[16 * 384 * 16];
+        DensityFunction df = router.finalDensity();
+        int baseX = sectionX * 16;
+        int baseZ = sectionZ * 16;
+        for (int lx = 0; lx < 16; lx++) {
+            int bx = baseX + lx;
+            for (int lz = 0; lz < 16; lz++) {
+                int bz = baseZ + lz;
+                int colBase = (lx + 16 * lz) * 384;
+                for (int by = -64; by < 320; by++) {
+                    out[colBase + (by + 64)] = (float) df.sample(
+                            new DensityFunction.UnblendedNoisePos(bx, by, bz));
+                }
+            }
+        }
+        return out;
+    }
+
+    /**
+     * Sample a {@link DensityFunction} at 16×16 <em>block</em> resolution for a single Y.
+     * Higher-resolution than {@link #sampleRouterField2D} (which uses 4×4 cells).
+     *
+     * @param df       the density function to evaluate
+     * @param sectionX chunk X coordinate
+     * @param sectionZ chunk Z coordinate
+     * @param sampleY  block Y at which to evaluate
+     * @return {@code float[16][16]}, lx-outer / lz-inner (x-major)
+     */
+    public float[][] sampleRouterField2DBlockRes(DensityFunction df,
+                                                  int sectionX, int sectionZ,
+                                                  int sampleY) {
+        float[][] out = new float[16][16];
+        int baseX = sectionX * 16;
+        int baseZ = sectionZ * 16;
+        for (int lx = 0; lx < 16; lx++) {
+            for (int lz = 0; lz < 16; lz++) {
+                out[lx][lz] = (float) df.sample(
+                        new DensityFunction.UnblendedNoisePos(
+                                baseX + lx, sampleY, baseZ + lz));
+            }
+        }
+        return out;
+    }
+
     /**
      * Sample a {@link DensityFunction} at 4×4 cell resolution at a fixed Y.
      *

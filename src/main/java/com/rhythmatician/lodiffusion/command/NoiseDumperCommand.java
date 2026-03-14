@@ -60,7 +60,8 @@ public final class NoiseDumperCommand {
     private NoiseDumperCommand() {}
 
     /**
-     * Register {@code /dumpnoise [radius]} with the Brigadier dispatcher.
+     * Register {@code /dumpnoise [radius]} and {@code /dumpnoise parity <cx> <cz>}
+     * with the Brigadier dispatcher.
      * Should be called from {@link com.rhythmatician.lodiffusion.HelloTerrainMod}.
      */
     public static void register(CommandDispatcher<ServerCommandSource> dispatcher) {
@@ -73,7 +74,100 @@ public final class NoiseDumperCommand {
             .then(CommandManager.argument("radius", IntegerArgumentType.integer(1, 512))
                 .executes(ctx -> execute(ctx,
                         IntegerArgumentType.getInteger(ctx, "radius"))))
+            // /dumpnoise parity <cx> <cz>
+            // Writes block-resolution Java vanilla density to parity_reports/java_chunk_<cx>_<cz>.json
+            // Compare against parity_reports/gpu_chunk_0_0.json (auto-written at world load)
+            // then run:  python tools/validate_shader_parity.py
+            .then(CommandManager.literal("parity")
+                .then(CommandManager.argument("cx", IntegerArgumentType.integer(-512, 512))
+                    .then(CommandManager.argument("cz", IntegerArgumentType.integer(-512, 512))
+                        .executes(ctx -> executeParity(ctx,
+                                IntegerArgumentType.getInteger(ctx, "cx"),
+                                IntegerArgumentType.getInteger(ctx, "cz"))))))
         );
+    }
+
+    // ------------------------------------------------------------------
+    // Parity handler (/dumpnoise parity <cx> <cz>)
+    // ------------------------------------------------------------------
+
+    /**
+     * WS-1.3: Dump block-resolution Java vanilla final_density for one chunk.
+     *
+     * <p>Writes {@code run/parity_reports/java_chunk_<cx>_<cz>.json} with a flat
+     * {@code density} array of 98,304 floats indexed {@code [lx + 16*lz] * 384 + (by + 64)}.
+     * Compare against {@code parity_reports/gpu_chunk_0_0.json} (auto-written at world load)
+     * using {@code python tools/validate_shader_parity.py}.
+     */
+    private static int executeParity(CommandContext<ServerCommandSource> ctx,
+                                     int cx, int cz) {
+        ServerCommandSource source = ctx.getSource();
+        ServerWorld world = source.getWorld();
+
+        WorldNoiseAccess noise = WorldNoiseAccess.tryCreate(world);
+        if (noise == null) {
+            source.sendError(Text.literal("[NoiseDumper] parity: noise pipeline unavailable"));
+            return 0;
+        }
+
+        source.sendFeedback(
+                () -> Text.literal(String.format(
+                        "[NoiseDumper] parity: sampling Java density for chunk (%d,%d) — 98,304 positions...",
+                        cx, cz)),
+                false);
+
+        long t0 = System.currentTimeMillis();
+        NoiseRouter router = noise.getNoiseRouter();
+        float[] javaDensity = noise.sampleFinalDensityBlockRes(router, cx, cz);
+        long samplingMs = System.currentTimeMillis() - t0;
+
+        // Compute a quick surface-level mean to verify non-trivial output
+        float sum = 0f;
+        for (int col = 0; col < 256; col++) {
+            // Y=63 (sea level): index = col*384 + (63+64) = col*384 + 127
+            sum += javaDensity[col * 384 + 127];
+        }
+        float meanAtSeaLevel = sum / 256f;
+
+        source.sendFeedback(
+                () -> Text.literal(String.format(
+                        "[NoiseDumper] parity: sampled 98,304 values in %dms; mean density @ Y=63: %.5f",
+                        samplingMs, meanAtSeaLevel)),
+                false);
+
+        // Write JSON
+        try {
+            Path dir = Path.of("parity_reports");
+            Files.createDirectories(dir);
+            Path out = dir.resolve(String.format("java_chunk_%d_%d.json", cx, cz));
+
+            StringBuilder sb = new StringBuilder(2 * 1024 * 1024);
+            sb.append("{\n");
+            sb.append("  \"chunk_x\": ").append(cx).append(",\n");
+            sb.append("  \"chunk_z\": ").append(cz).append(",\n");
+            sb.append("  \"source\": \"java\",\n");
+            sb.append("  \"y_min\": -64,\n");
+            sb.append("  \"y_levels\": 384,\n");
+            sb.append("  \"note\": \"density[lx + 16*lz][by - y_min]\",\n");
+            sb.append("  \"density\": [");
+            for (int i = 0; i < javaDensity.length; i++) {
+                if (i > 0) sb.append(',');
+                sb.append(String.format("%.6g", javaDensity[i]));
+            }
+            sb.append("]\n}\n");
+
+            Files.writeString(out, sb);
+            final long sizeKB = out.toFile().length() / 1024;
+            source.sendFeedback(
+                    () -> Text.literal(String.format(
+                            "[NoiseDumper] parity: wrote %s (%dKB) — now run: python tools/validate_shader_parity.py",
+                            out.toAbsolutePath(), sizeKB)),
+                    false);
+            return 1;
+        } catch (IOException e) {
+            source.sendError(Text.literal("[NoiseDumper] parity: write failed — " + e.getMessage()));
+            return 0;
+        }
     }
 
     // ------------------------------------------------------------------

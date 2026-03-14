@@ -6,6 +6,8 @@ import org.apache.logging.log4j.Logger;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.FloatBuffer;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import java.util.Map;
 import java.util.WeakHashMap;
 
@@ -197,17 +199,19 @@ public class WorldGenEventHandler {
 
             // Dispatch GPU compute for chunk (0,0) as a cold-start validation pass
             LOGGER.info("Dispatching GPU compute for validation (chunk 0,0)...");
-            manager.dispatch(0, 0); // 1 workgroup = 256 columns × 384 Y levels
+            FloatBuffer allDensity = manager.dispatchAndRead(0, 0);
             LOGGER.info("Compute dispatch complete — validating Binding 7 output...");
 
-            // Read back and log first 10 density samples for validation
-            FloatBuffer densitySamples = manager.readBuffer(7, 10);
-            if (densitySamples != null && densitySamples.hasRemaining()) {
+            if (allDensity != null && allDensity.hasRemaining()) {
+                // Log first 10 samples for quick liveness check
                 StringBuilder log = new StringBuilder("GPU Density Samples [0-9]: ");
-                for (int i = 0; i < 10; i++) {
-                    log.append(String.format("%.4f", densitySamples.get())).append(" ");
+                for (int i = 0; i < 10 && allDensity.hasRemaining(); i++) {
+                    log.append(String.format("%.4f", allDensity.get())).append(" ");
                 }
                 LOGGER.info(log.toString());
+
+                // Write full density output for WS-1.3 parity validation
+                writeGpuParityFile(allDensity, dimensionInfo);
             } else {
                 LOGGER.warn("Unable to read density output from GPU (null or empty buffer)");
             }
@@ -217,6 +221,52 @@ public class WorldGenEventHandler {
 
         } catch (Exception e) {
             LOGGER.error("WorldGenEventHandler.onWorldLoad failed", e);
+        }
+    }
+
+    /**
+     * Writes the GPU density output for chunk (0,0) to a JSON file for WS-1.3 parity validation.
+     *
+     * <p>File: {@code run/parity_reports/gpu_chunk_0_0.json}<br>
+     * Format: {@code {"chunk_x":0,"chunk_z":0,"source":"gpu",
+     * "density":[...98304 floats...]}}
+     *
+     * <p>Compare against {@code java_chunk_0_0.json} (written by {@code /dumpnoise parity 0 0})
+     * using {@code tools/validate_shader_parity.py}.
+     */
+    private void writeGpuParityFile(FloatBuffer densityBuf, String dimensionInfo) {
+        // Only write parity for the overworld (avoids nether/end false positives)
+        if (!dimensionInfo.contains("overworld") && !dimensionInfo.contains("(unknown)")) {
+            LOGGER.debug("Skipping parity file for non-overworld dimension: {}", dimensionInfo);
+            return;
+        }
+        try {
+            Path dir = Path.of("parity_reports");
+            Files.createDirectories(dir);
+            Path out = dir.resolve("gpu_chunk_0_0.json");
+
+            densityBuf.rewind();
+            StringBuilder sb = new StringBuilder(2 * 1024 * 1024);
+            sb.append("{\n");
+            sb.append("  \"chunk_x\": 0,\n");
+            sb.append("  \"chunk_z\": 0,\n");
+            sb.append("  \"source\": \"gpu\",\n");
+            sb.append("  \"y_min\": -64,\n");
+            sb.append("  \"y_levels\": 384,\n");
+            sb.append("  \"note\": \"density[lx + 16*lz][by - y_min]\",\n");
+            sb.append("  \"density\": [");
+            boolean first = true;
+            while (densityBuf.hasRemaining()) {
+                if (!first) sb.append(',');
+                first = false;
+                sb.append(String.format("%.6g", densityBuf.get()));
+            }
+            sb.append("]\n}\n");
+
+            Files.writeString(out, sb);
+            LOGGER.info("WS-1.3 parity: wrote GPU density to {}", out.toAbsolutePath());
+        } catch (Exception e) {
+            LOGGER.warn("WS-1.3 parity: failed to write GPU density file", e);
         }
     }
 
