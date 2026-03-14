@@ -156,7 +156,12 @@ public class NoiseRouterExtractor {
         }
         data.splineData = FloatBuffer.wrap(splineArray);
 
+        // Second pass: resolve named noise indices from specific NoiseRouter fields
+        wireNamedIndices(noiseRouter, data);
+
         LOGGER.info("NoiseRouter extraction complete. Spline data size: {} floats", data.splineData.capacity());
+        LOGGER.info("Named indices: continents={} erosion={} ridges={} shift={}",
+                data.nnContinents, data.nnErosion, data.nnRidges, data.shiftNoiseIndex);
         return data;
     }
 
@@ -189,9 +194,6 @@ public class NoiseRouterExtractor {
     private void unwrapAndProcess(Object function) {
         if (function == null) return;
 
-        // Determine runtime type names to avoid classloading issues
-        String simpleName = function.getClass().getSimpleName();
-
         if (densityFunctionsNoiseClass != null && densityFunctionsNoiseClass.isInstance(function)) {
             processNoise(function);
             return;
@@ -210,11 +212,39 @@ public class NoiseRouterExtractor {
             return;
         }
 
+        // Handle NoiseHolder directly — visited via visitNoise() from ShiftedNoise/ShiftA/ShiftB.
+        // This registers the NormalNoise for continents, erosion, ridges, and the SHIFT noise.
+        if (densityFunctionNoiseHolderClass != null && densityFunctionNoiseHolderClass.isInstance(function)) {
+            processNoiseHolder(function);
+            return;
+        }
+
         // Fallback: if this object has a field named "wrapped" or "argument", try to unwrap
         Object fallback = tryUnwrapByName(function, "wrapped");
         if (fallback == null) fallback = tryUnwrapByName(function, "argument");
         if (fallback != null) {
             unwrapAndProcess(fallback);
+        }
+    }
+
+    private void processNoiseHolder(Object holder) {
+        try {
+            if (noiseHolderNoiseMethod == null) return;
+            Object noiseObj = noiseHolderNoiseMethod.invoke(holder);
+            if (noiseObj == null || normalNoiseClass == null || !normalNoiseClass.isInstance(noiseObj)) return;
+
+            if (!noiseIndexMap.containsKey(noiseObj)) {
+                int index = normalNoises.size();
+                noiseIndexMap.put(noiseObj, index);
+                normalNoises.add(noiseObj);
+
+                Object first  = getFieldValue(noiseObj, "first");
+                Object second = getFieldValue(noiseObj, "second");
+                registerPerlinNoise(first);
+                registerPerlinNoise(second);
+            }
+        } catch (Exception e) {
+            LOGGER.warn("Failed to process NoiseHolder node", e);
         }
     }
 
@@ -512,6 +542,91 @@ public class NoiseRouterExtractor {
         return null;
     }
 
+    // ----------------------------------------------------------------------------------------------------------------
+    // Named index wiring (second pass after mapAll() traversal)
+    // ----------------------------------------------------------------------------------------------------------------
+
+    /**
+     * Populates named noise indices in {@code data} by walking specific fields of the NoiseRouter.
+     * Requires that {@code mapAll()} has already been run so {@code noiseIndexMap} is populated.
+     */
+    private void wireNamedIndices(Object noiseRouter, NoiseRouterData data) {
+        data.nnContinents    = indexForShiftedNoise(noiseRouter, "continents");
+        data.nnErosion       = indexForShiftedNoise(noiseRouter, "erosion");
+        data.nnRidges        = indexForShiftedNoise(noiseRouter, "ridges");
+        data.shiftNoiseIndex = indexForShiftNoise(noiseRouter, "continents");
+        // nnDepthNoise and nnJagged are buried deep in finalDensity — tracked separately (WS-1.2 ext.)
+
+        LOGGER.info("Named noise indices: continents={}, erosion={}, ridges={}, shift={}",
+                data.nnContinents, data.nnErosion, data.nnRidges, data.shiftNoiseIndex);
+    }
+
+    /**
+     * Returns the NormalNoise SSBO index for the noise wrapped inside a ShiftedNoise2d field.
+     * noiseRouter.{fieldName}() → ShiftedNoise → .noise (NoiseHolder) → NormalNoise → index
+     */
+    private int indexForShiftedNoise(Object noiseRouter, String fieldName) {
+        try {
+            Object shiftedNoise = invokeAccessor(noiseRouter, fieldName);
+            if (shiftedNoise == null) return -1;
+
+            // ShiftedNoise.noise is a DensityFunction$NoiseHolder
+            Object noiseHolder = getFieldValue(shiftedNoise, "noise");
+            if (noiseHolder == null) return -1;
+
+            Object normalNoise = noiseHolderNoiseMethod != null ? noiseHolderNoiseMethod.invoke(noiseHolder) : null;
+            if (normalNoise == null) return -1;
+
+            Integer idx = noiseIndexMap.get(normalNoise);
+            return idx != null ? idx : -1;
+        } catch (Exception e) {
+            LOGGER.warn("Failed to determine index for ShiftedNoise '{}'", fieldName, e);
+            return -1;
+        }
+    }
+
+    /**
+     * Returns the SHIFT NormalNoise SSBO index by walking:
+     *   noiseRouter.{fieldName}() (ShiftedNoise) → .shiftX (ShiftA) → .offsetNoise (NoiseHolder) → NormalNoise
+     *
+     * Both ShiftA and ShiftB use the same underlying Noises.SHIFT NormalNoise.
+     * The coord permutation (bx,0,bz vs bz,bx,0) is applied at call time in the shader,
+     * so a single SSBO index covers both shift_x and shift_z.
+     */
+    private int indexForShiftNoise(Object noiseRouter, String fieldName) {
+        try {
+            Object shiftedNoise = invokeAccessor(noiseRouter, fieldName);
+            if (shiftedNoise == null) return -1;
+
+            // ShiftedNoise.shiftX is a ShiftA instance
+            Object shiftA = getFieldValue(shiftedNoise, "shiftX");
+            if (shiftA == null) return -1;
+
+            // ShiftA.offsetNoise is a DensityFunction$NoiseHolder
+            Object offsetNoiseHolder = getFieldValue(shiftA, "offsetNoise");
+            if (offsetNoiseHolder == null) return -1;
+
+            Object normalNoise = noiseHolderNoiseMethod != null ? noiseHolderNoiseMethod.invoke(offsetNoiseHolder) : null;
+            if (normalNoise == null) return -1;
+
+            Integer idx = noiseIndexMap.get(normalNoise);
+            return idx != null ? idx : -1;
+        } catch (Exception e) {
+            LOGGER.warn("Failed to determine shift noise index from '{}'", fieldName, e);
+            return -1;
+        }
+    }
+
+    /** Invokes a no-arg accessor method by name on the given object. */
+    private Object invokeAccessor(Object obj, String methodName) {
+        try {
+            java.lang.reflect.Method m = obj.getClass().getMethod(methodName);
+            return m.invoke(obj);
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
     // ============================================================================
     // Output Data Container
     // ============================================================================
@@ -524,6 +639,15 @@ public class NoiseRouterExtractor {
         public IntBuffer normalNoiseInts;
         public FloatBuffer normalNoiseFloats;
         public FloatBuffer splineData;
+
+        // Named NormalNoise indices within the flat SSBO arrays (binding 4/5).
+        // -1 means not found — shader will use its fallback path.
+        public int nnContinents    = -1;
+        public int nnErosion       = -1;
+        public int nnRidges        = -1;
+        public int nnDepthNoise    = -1;  // TODO: extract from finalDensity tree (WS-1.2 ext.)
+        public int nnJagged        = -1;  // TODO: extract from finalDensity tree (WS-1.2 ext.)
+        public int shiftNoiseIndex = -1;  // Noises.SHIFT — same index for both ShiftA and ShiftB
 
         public void uploadToGPU() {
             LOGGER.info("SSBO upload requested (not yet implemented)");

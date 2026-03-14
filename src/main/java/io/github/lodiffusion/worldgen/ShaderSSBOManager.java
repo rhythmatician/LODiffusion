@@ -99,8 +99,21 @@ public class ShaderSSBOManager {
             // Compile shaders after SSBOs are ready
             shaderManager.compile();
 
+            // Build RouterConfig from extracted named indices (wires continents, erosion, ridges, shift).
+            // Falls back to -1 for any index not yet resolved (shader uses simplified path).
+            TerrainComputeDispatcher.RouterConfig config = TerrainComputeDispatcher.RouterConfig.overworldDefaults()
+                    .withNamedIndices(
+                            data.nnContinents,
+                            data.nnErosion,
+                            data.nnRidges,
+                            data.nnDepthNoise,
+                            data.nnJagged,
+                            data.shiftNoiseIndex,  // nn_shift_a: SHIFT noise at (bx*0.25, 0, bz*0.25)
+                            data.shiftNoiseIndex   // nn_shift_b: same noise, coords swapped in GLSL
+                    );
+
             // Initialise the per-chunk dispatcher (uploads RouterConfig UBO)
-            dispatcher.init(shaderManager, TerrainComputeDispatcher.RouterConfig.overworldDefaults());
+            dispatcher.init(shaderManager, config);
 
             lastUploadTime = System.currentTimeMillis();
             LOGGER.info("ShaderSSBOManager: GPU upload, shader compilation, and dispatcher init complete");

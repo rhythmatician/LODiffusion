@@ -282,22 +282,43 @@ float mc_spline_eval(int offset, float t) {
 //   [x] NormalNoise sampling (sloped_cheese, jaggedness)
 //   [x] SQUEEZE, HALF_NEGATIVE, QUARTER_NEGATIVE
 //   [x] TerrainShaperMLP (continents/erosion/ridges/weirdness shaping) ← REPLACED with MLP
-//   [ ] ShiftedNoise (XZ coordinate distortion via shift_a/shift_b)
+//   [x] ShiftedNoise (XZ coordinate distortion via shift_a/shift_b)
 //   [ ] WeirdScaledSampler (cave/ravine scaling)
 //   [ ] RangeChoice (cave carver switching)
 //   [ ] FindTopSurface (preliminary surface level Y search)
 // ---------------------------------------------------------------------------
 float computeFinalDensity(float bx, float by, float bz) {
-    // -- Step 1: Sample horizontal routing noises (2D at y=0) -----------------
+    // -- Step 1: Compute XZ coordinate distortion (ShiftedNoise) ---------------
+    // In vanilla all climate noises are ShiftedNoise2d — sampled at:
+    //   (bx * 0.25 + shift_x,  0,  bz * 0.25 + shift_z)
+    // Both shift_x and shift_z come from Noises.SHIFT (the same NormalNoise) evaluated
+    // at permuted coordinates (ShiftA / ShiftB from DensityFunctions.java):
+    //   shift_x = SHIFT.getValue(bx*0.25, 0,      bz*0.25) * 4.0  [ShiftA]
+    //   shift_z = SHIFT.getValue(bz*0.25, bx*0.25, 0     ) * 4.0  [ShiftB — x/z swap]
+    // nn_shift_a holds the SHIFT NormalNoise index (same index used for both permutations).
+    // Guard: if not yet wired (WS-1.2), fall back to correct xzScale without shift.
+    float sx, sz;
+    if (router.nn_shift_a >= 0) {
+        float shift_x = mc_normal_noise(router.nn_shift_a, bx * 0.25, 0.0,       bz * 0.25) * 4.0;
+        float shift_z = mc_normal_noise(router.nn_shift_a, bz * 0.25, bx * 0.25, 0.0      ) * 4.0;
+        sx = bx * 0.25 + shift_x;
+        sz = bz * 0.25 + shift_z;
+    } else {
+        // Fallback: correct xzScale=0.25, no distortion (until WS-1.2 wires nn_shift_a)
+        sx = bx * 0.25;
+        sz = bz * 0.25;
+    }
+
+    // -- Step 2: Sample horizontal routing noises (2D at shifted/scaled XZ) ----
     // These drive the spline-based terrain shaping (continents, erosion, ridges, weirdness).
     //
     // In vanilla, NoiseRouter.ridges is the single noise source for both "weirdness"
     // and the folded "peaks and valleys" ridges value fed to the terrain shaper:
     //   weirdness     = ridges_noise (raw)          → TerrainShaper input 4
     //   ridges_folded = peaksAndValleys(weirdness)  → TerrainShaper input 3
-    float continents = mc_normal_noise(router.nn_continents, bx, 0.0, bz);
-    float erosion    = mc_normal_noise(router.nn_erosion,    bx, 0.0, bz);
-    float weirdness  = mc_normal_noise(router.nn_ridges,     bx, 0.0, bz);
+    float continents = mc_normal_noise(router.nn_continents, sx, 0.0, sz);
+    float erosion    = mc_normal_noise(router.nn_erosion,    sx, 0.0, sz);
+    float weirdness  = mc_normal_noise(router.nn_ridges,     sx, 0.0, sz);
 
     // Vanilla "peaks and valleys" transform (NoiseRouterData.peaksAndValleys):
     //   peaksAndValleys(x) = 1 - |1 - |x + 0.5| * 2|   (approximately)
@@ -305,7 +326,7 @@ float computeFinalDensity(float bx, float by, float bz) {
     float ridges_abs    = abs(weirdness) * 2.0 - 1.0;
     float ridges_folded = mc_half_negative(1.0 - abs(ridges_abs));
 
-    // -- Step 2: TerrainShaperMLP evaluation -----------------------------------
+    // -- Step 3: TerrainShaperMLP evaluation -----------------------------------
     // The MLP replaces the nested cubic splines that map
     // (continents, erosion, ridges_folded, weirdness) -> (offset, factor, jaggedness)
     vec4 mlp_input = vec4(continents, erosion, ridges_folded, weirdness);
@@ -314,7 +335,7 @@ float computeFinalDensity(float bx, float by, float bz) {
     float terrain_factor = mlp_output.y;      // steepness factor
     float jaggedness_factor = mlp_output.z;   // jaggedness
 
-    // -- Step 3: Y-based depth gradient ---------------------------------------
+    // -- Step 4: Y-based depth gradient ---------------------------------------
     // DensityFunctions.YClampedGradient — maps block Y to a depth value.
     // Overworld: y=−64 → +1.5, y=320 → −1.5 (surface near 0, underground positive)
     float depth_gradient = mc_y_gradient(by,
@@ -325,18 +346,18 @@ float computeFinalDensity(float bx, float by, float bz) {
 
     float depth = depth_gradient + terrain_offset;
 
-    // -- Step 4: 3D "sloped cheese" noise (large-scale vertical variation) -----
+    // -- Step 5: 3D "sloped cheese" noise (large-scale vertical variation) -----
     // Corresponds to the interpolated noise sampled at (x, y, z) that forms the
     // base of the density field — what Mojang calls "slopedCheese" internally.
     float sloped_cheese = mc_normal_noise(router.nn_depth_noise, bx, by, bz);
 
-    // -- Step 5: Jaggedness bias (high-frequency detail near surface) ----------
+    // -- Step 6: Jaggedness bias (high-frequency detail near surface) ----------
     // This adds sharp vertical variation near the surface (cliffs, overhangs).
     // In vanilla: jaggedness * heightNoise * mc_half_negative(jagged_noise)
     float jagged_noise = mc_normal_noise(router.nn_jagged, bx, by, bz);
     float jaggedness_applied = jaggedness_factor * mc_half_negative(jagged_noise);
 
-    // -- Step 6: Combine into raw final density --------------------------------
+    // -- Step 7: Combine into raw final density --------------------------------
     // Vanilla formula:
     //   initialDensity = 4.0 * mc_quarter_negative(factor * (depth + jaggedness))
     //   finalDensity = squeeze(initialDensity + slopedCheese)
