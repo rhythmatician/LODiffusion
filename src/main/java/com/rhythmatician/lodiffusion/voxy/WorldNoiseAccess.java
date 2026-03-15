@@ -601,4 +601,144 @@ public final class WorldNoiseAccess {
         }
         return out;
     }
+
+    // ------------------------------------------------------------------
+    // SparseRoot noise input (Stage 2 model: noise_3d)
+    // ------------------------------------------------------------------
+
+    /**
+     * Registry paths and special handling for the 13 SparseRoot noise channels.
+     *
+     * <p>Layout matches the Python training pipeline:
+     * <pre>
+     *   0  offset           overworld/offset
+     *   1  factor           overworld/factor
+     *   2  jaggedness       overworld/jaggedness
+     *   3  depth            router.depth()  (null path → special)
+     *   4  sloped_cheese    overworld/sloped_cheese
+     *   5  y                cell-centre Y (null path → special)
+     *   6  entrances        overworld/caves/entrances
+     *   7  cheese_caves     overworld/caves/pillars
+     *   8  spaghetti_2d     overworld/caves/spaghetti_2d
+     *   9  roughness        overworld/caves/spaghetti_roughness_function
+     *  10  noodle           overworld/caves/noodle
+     *  11  base_3d_noise    overworld/base_3d_noise
+     *  12  final_density    router.finalDensity() (null path → special)
+     * </pre>
+     */
+    private static final String[] NOISE_3D_PATHS = {
+        "overworld/offset",
+        "overworld/factor",
+        "overworld/jaggedness",
+        null,   // depth → router.depth()
+        "overworld/sloped_cheese",
+        null,   // y → cell-centre Y value
+        "overworld/caves/entrances",
+        "overworld/caves/pillars",
+        "overworld/caves/spaghetti_2d",
+        "overworld/caves/spaghetti_roughness_function",
+        "overworld/caves/noodle",
+        "overworld/base_3d_noise",
+        null,   // final_density → router.finalDensity()
+    };
+
+    /** Number of SparseRoot noise channels. */
+    public static final int N_NOISE_3D = NOISE_3D_PATHS.length; // 13
+
+    /**
+     * Lazily-resolved density functions for {@link #sampleNoise3DForSection}.
+     * Index 5 (Y) stays null; indices 3 and 12 use router fields.
+     * Protected by {@code this} monitor on first initialization.
+     */
+    private volatile DensityFunction[] noise3dFunctions = null;
+
+    /**
+     * Resolve (once) and cache all {@link DensityFunction} objects needed for
+     * the 13-channel SparseRoot noise input.
+     */
+    private DensityFunction[] getNoise3dFunctions() {
+        if (noise3dFunctions != null) return noise3dFunctions;
+        synchronized (this) {
+            if (noise3dFunctions != null) return noise3dFunctions;
+            NoiseRouter router = noiseConfig.getNoiseRouter();
+            DensityFunction[] dfs = new DensityFunction[N_NOISE_3D];
+            for (int i = 0; i < N_NOISE_3D; i++) {
+                String path = NOISE_3D_PATHS[i];
+                if (path == null) {
+                    if (i == 3)  { dfs[i] = router.depth(); }           // depth
+                    else if (i == 12) { dfs[i] = router.finalDensity(); } // final_density
+                    // i == 5 (Y): stays null, handled per-cell
+                } else {
+                    DensityFunction df = lookupDensityFunction(path);
+                    if (df == null) {
+                        HelloTerrainMod.LOGGER.warn(
+                                "[WorldNoiseAccess] noise3d[{}] '{}' not found — using zero",
+                                i, path);
+                        df = DensityFunctionTypes.zero();
+                    }
+                    dfs[i] = df;
+                }
+            }
+            noise3dFunctions = dfs;
+            return dfs;
+        }
+    }
+
+    /**
+     * Sample the 13-channel SparseRoot noise input for a single L0 Voxy section.
+     *
+     * <p>Returns a flat {@code float[N_NOISE_3D * 4 * 2 * 4]} array in
+     * {@code [field][cx][cy][cz]} (channel-outermost, C-contiguous) order,
+     * matching the Python training pipeline's <br>
+     * {@code noise_3d shape=(N, 13, 4, 2, 4)}.
+     *
+     * <p>The two Y-cells that make up a 16-block section at vanilla cell resolution
+     * (8 blocks/cell) are sliced from the full 48-cell column:
+     * <pre>
+     *   cy_start = (sectionY + 4) * 2
+     *   cy values sampled: cy_start, cy_start + 1
+     * </pre>
+     *
+     * @param chunkX   chunk X coordinate (= wsX at L0)
+     * @param chunkZ   chunk Z coordinate (= wsZ at L0)
+     * @param sectionY section Y in native (L0) units, range [-4, 19]
+     * @return flat {@code float[13 * 4 * 2 * 4 = 416]}, or an all-zeros array
+     *         if the noise pipeline is unavailable
+     */
+    public float[] sampleNoise3DForSection(int chunkX, int chunkZ, int sectionY) {
+        DensityFunction[] dfs = getNoise3dFunctions();
+        float[] flat = new float[N_NOISE_3D * 4 * 2 * 4];
+
+        // cy_start = (sectionY + 4) * 2; clamp to valid cell range [0, 47]
+        int cyStart = (sectionY + 4) * 2;
+        cyStart = Math.max(0, Math.min(46, cyStart));  // ensure cy_start+1 ≤ 47
+
+        int baseX = chunkX * 16;
+        int baseZ = chunkZ * 16;
+
+        int flatIdx = 0;
+        for (int field = 0; field < N_NOISE_3D; field++) {
+            DensityFunction df = dfs[field];
+            for (int cx = 0; cx < 4; cx++) {
+                int x = baseX + cx * 4 + 2;
+                for (int localCy = 0; localCy < 2; localCy++) {
+                    int cy = cyStart + localCy;
+                    int y = -64 + cy * 8 + 4;  // cell-centre Y in blocks
+                    for (int cz = 0; cz < 4; cz++) {
+                        int z = baseZ + cz * 4 + 2;
+                        float val;
+                        if (df == null) {
+                            // field 5 = Y: emit cell-centre Y
+                            val = y;
+                        } else {
+                            val = (float) df.sample(
+                                    new DensityFunction.UnblendedNoisePos(x, y, z));
+                        }
+                        flat[flatIdx++] = val;
+                    }
+                }
+            }
+        }
+        return flat;
+    }
 }
