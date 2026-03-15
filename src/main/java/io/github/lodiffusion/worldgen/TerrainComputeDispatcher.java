@@ -5,6 +5,8 @@ import org.apache.logging.log4j.Logger;
 import org.lwjgl.opengl.GL15C;
 import org.lwjgl.opengl.GL31C;
 import org.lwjgl.opengl.GL43C;
+import com.rhythmatician.lodiffusion.gpu.BiomePaletteSSBO;
+import com.rhythmatician.lodiffusion.gpu.BiomePaletteSerializer;
 import com.rhythmatician.lodiffusion.gpu.TerrainShaperMlpSsbo;
 import net.lodiffusion.shadow.VoxyRequestDecoder;
 import net.lodiffusion.shadow.ShadowRouterJobQueue;
@@ -68,10 +70,10 @@ public class TerrainComputeDispatcher {
      *   offset 84 : int  nn_cheese_caves  (WS-4.1a)
      *   offset 88 : int  nn_spaghetti_2d  (WS-4.1a)
      *   offset 92 : int  nn_roughness     (WS-4.1a)
-     *   offset 96 : int  nn_noodle        (WS-4.1a)
-     *   offset 100: int  _pad4
-     *   offset 104: int  _pad5
-     *   offset 108: int  _pad6
+     *   offset 96 : int  nn_noodle         (WS-4.1a)
+     *   offset 100: int  nn_temperature     (biome: temperature noise index)
+     *   offset 104: int  nn_vegetation      (biome: vegetation/humidity noise index)
+     *   offset 108: int  biome_palette_count (0 = GPU biome pass disabled)
      *   total     : 112 bytes
      */
     private static final int UBO_SIZE_BYTES = 112;
@@ -85,6 +87,7 @@ public class TerrainComputeDispatcher {
     private int uboId = 0;
     private boolean ready = false;
     private TerrainShaperMlpSsbo mlpSsbo;
+    private BiomePaletteSSBO biomePaletteSSBO;
 
     // -------------------------------------------------------------------------
     // Initialisation
@@ -130,6 +133,31 @@ public class TerrainComputeDispatcher {
         }
     }
 
+    /**
+     * Uploads the biome parameter palette to the GPU (binding 12 + 13).
+     * Call this once after {@link #init} when the world's biome source is available.
+     *
+     * @param biomeSource the runtime {@code MultiNoiseBiomeSource} instance
+     * @param config      the current RouterConfig to update with the palette entry count
+     * @return an updated RouterConfig with {@code biomePaletteCount} set
+     */
+    public RouterConfig initBiomePalette(Object biomeSource, RouterConfig config) {
+        try {
+            java.nio.FloatBuffer palette = BiomePaletteSerializer.buildPalette(biomeSource);
+            int count = (palette.limit() / BiomePaletteSerializer.ENTRY_STRIDE);
+            if (count == 0) {
+                LOGGER.warn("TerrainComputeDispatcher: biome palette is empty — GPU biome pass disabled");
+                return config;
+            }
+            biomePaletteSSBO = new BiomePaletteSSBO(palette, count);
+            LOGGER.info("TerrainComputeDispatcher: biome palette uploaded ({} entries, bindings 12+13)", count);
+            return config.withBiomePalette(config.nnTemperature, config.nnVegetation, count);
+        } catch (Exception e) {
+            LOGGER.error("TerrainComputeDispatcher: biome palette init failed — GPU biome pass disabled", e);
+            return config;
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Per-chunk dispatch
     // -------------------------------------------------------------------------
@@ -164,6 +192,11 @@ public class TerrainComputeDispatcher {
         // Bind MLP weights (SSBO=9, UBO=10) before shader execution
         if (mlpSsbo != null) {
             mlpSsbo.bind();
+        }
+
+        // Bind biome palette + output SSBOs (bindings 12+13)
+        if (biomePaletteSSBO != null) {
+            biomePaletteSSBO.bind();
         }
 
         // Execute
@@ -213,6 +246,10 @@ public class TerrainComputeDispatcher {
         if (mlpSsbo != null) {
             mlpSsbo.cleanup();
             mlpSsbo = null;
+        }
+        if (biomePaletteSSBO != null) {
+            biomePaletteSSBO.cleanup();
+            biomePaletteSSBO = null;
         }
         if (uboId != 0) {
             int[] ids = { uboId };
@@ -268,9 +305,9 @@ public class TerrainComputeDispatcher {
         buf.putInt(c.nnSpaghetti2d);
         buf.putInt(c.nnRoughness);
         buf.putInt(c.nnNoodle);
-        buf.putInt(0); // _pad4
-        buf.putInt(0); // _pad5
-        buf.putInt(0); // _pad6
+        buf.putInt(c.nnTemperature);       // was _pad4
+        buf.putInt(c.nnVegetation);        // was _pad5
+        buf.putInt(c.biomePaletteCount);   // was _pad6
 
         buf.flip();
         return buf;
@@ -307,6 +344,11 @@ public class TerrainComputeDispatcher {
         public int nnSpaghetti2d = -1;   // overworld/caves/spaghetti_2d
         public int nnRoughness   = -1;   // overworld/caves/spaghetti_roughness_function
         public int nnNoodle      = -1;   // overworld/caves/noodle
+
+        // Biome classification noise indices + palette count
+        public int nnTemperature     = -1;  // NoiseRouter.temperature
+        public int nnVegetation      = -1;  // NoiseRouter.vegetation (= humidity)
+        public int biomePaletteCount =  0;  // 0 = GPU biome pass disabled
 
         // YClampedGradient for depth
         public float gradFromY     = -64.0f;
@@ -350,11 +392,45 @@ public class TerrainComputeDispatcher {
             c.splineOffsetOffset = this.splineOffsetOffset;
             c.splineFactorOffset = this.splineFactorOffset;
             c.splineJaggedOffset = this.splineJaggedOffset;
-            c.nnEntrances   = this.nnEntrances;
-            c.nnCheeseCaves = this.nnCheeseCaves;
-            c.nnSpaghetti2d = this.nnSpaghetti2d;
-            c.nnRoughness   = this.nnRoughness;
-            c.nnNoodle      = this.nnNoodle;
+            c.nnEntrances        = this.nnEntrances;
+            c.nnCheeseCaves      = this.nnCheeseCaves;
+            c.nnSpaghetti2d      = this.nnSpaghetti2d;
+            c.nnRoughness        = this.nnRoughness;
+            c.nnNoodle           = this.nnNoodle;
+            c.nnTemperature      = this.nnTemperature;
+            c.nnVegetation       = this.nnVegetation;
+            c.biomePaletteCount  = this.biomePaletteCount;
+            return c;
+        }
+
+        /**
+         * Returns a copy with biome classification fields set.
+         * Call {@code TerrainComputeDispatcher.initBiomePalette()} which calls this internally.
+         */
+        public RouterConfig withBiomePalette(int temperature, int vegetation, int paletteCount) {
+            RouterConfig c = new RouterConfig();
+            c.nnContinents       = this.nnContinents;
+            c.nnErosion          = this.nnErosion;
+            c.nnRidges           = this.nnRidges;
+            c.nnDepthNoise       = this.nnDepthNoise;
+            c.nnJagged           = this.nnJagged;
+            c.nnShiftA           = this.nnShiftA;
+            c.nnShiftB           = this.nnShiftB;
+            c.gradFromY          = this.gradFromY;
+            c.gradToY            = this.gradToY;
+            c.gradFromValue      = this.gradFromValue;
+            c.gradToValue        = this.gradToValue;
+            c.splineOffsetOffset = this.splineOffsetOffset;
+            c.splineFactorOffset = this.splineFactorOffset;
+            c.splineJaggedOffset = this.splineJaggedOffset;
+            c.nnEntrances        = this.nnEntrances;
+            c.nnCheeseCaves      = this.nnCheeseCaves;
+            c.nnSpaghetti2d      = this.nnSpaghetti2d;
+            c.nnRoughness        = this.nnRoughness;
+            c.nnNoodle           = this.nnNoodle;
+            c.nnTemperature      = temperature;
+            c.nnVegetation       = vegetation;
+            c.biomePaletteCount  = paletteCount;
             return c;
         }
 
@@ -413,6 +489,9 @@ public class TerrainComputeDispatcher {
             c.nnSpaghetti2d = this.nnSpaghetti2d;
             c.nnRoughness   = this.nnRoughness;
             c.nnNoodle      = this.nnNoodle;
+            c.nnTemperature     = this.nnTemperature;
+            c.nnVegetation      = this.nnVegetation;
+            c.biomePaletteCount = this.biomePaletteCount;
             return c;
         }
     }

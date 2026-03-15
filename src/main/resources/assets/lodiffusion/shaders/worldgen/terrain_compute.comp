@@ -133,6 +133,30 @@ layout(binding = 11, std430) buffer BlockOutput {
     int data[];
 } block_out;
 
+// Biome parameter palette — uploaded once at world load by BiomePaletteSSBO.java.
+// Stride = 16 floats per entry:
+//   [0..1]   temperature   (min, max), de-quantised (÷10000)
+//   [2..3]   humidity      (min, max)
+//   [4..5]   continentalness (min, max)
+//   [6..7]   erosion       (min, max)
+//   [8..9]   depth         (min, max)
+//   [10..11] weirdness     (min, max)
+//   [12]     offset        (7th dimension; query-point is always 0)
+//   [13]     biome_id      (bit-cast float — recover with floatBitsToInt)
+//   [14..15] pad
+#define BIOME_PALETTE_STRIDE 16
+layout(binding = 12, std430) buffer BiomePalette {
+    float data[];
+} biome_palette;
+
+// Per-dispatch biome output: one int per quart-Y lattice point.
+// 4 (qx) × 4 (qz) × BIOME_Y_LEVELS (qy) entries.
+// Index: qx * (4 * BIOME_Y_LEVELS) + qz * BIOME_Y_LEVELS + qy
+#define BIOME_Y_LEVELS  (Y_LEVELS / 4)    // = 96
+layout(binding = 13, std430) buffer BiomeOutput {
+    int data[];
+} biome_out;
+
 // ---------------------------------------------------------------------------
 // Uniform buffer: dimension-specific router configuration.
 // Populated from the live NoiseRouter at world load.
@@ -174,9 +198,9 @@ layout(binding = 8, std140) uniform RouterConfig {
     int nn_spaghetti_2d;        // overworld/caves/spaghetti_2d  (2D tunnel axis)
     int nn_roughness;           // overworld/caves/spaghetti_roughness_function
     int nn_noodle;              // overworld/caves/noodle     (thin connected tunnels)
-    int _pad4;
-    int _pad5;
-    int _pad6;
+    int nn_temperature;         // NoiseRouter.temperature  (biome climate signal)
+    int nn_vegetation;          // NoiseRouter.vegetation   (= humidity, biome climate signal)
+    int biome_palette_count;    // number of entries in BiomePalette SSBO (binding 12; 0 = disabled)
     // total: 112 bytes (std140 requires multiple-of-16 struct size)
 } router;
 
@@ -250,6 +274,50 @@ vec3 mc_terrain_shaper_mlp(vec4 input_vec) {
     }
     
     return output;  // [offset, factor, jaggedness]
+}
+
+// ---------------------------------------------------------------------------
+// Biome classification helpers
+// ---------------------------------------------------------------------------
+
+// Single-dimension biome parameter distance (squared).
+// Returns 0 inside [p_min, p_max], otherwise the squared edge-distance.
+float biome_dim_dist_sq(float q, float p_min, float p_max) {
+    float d = max(p_min - q, q - p_max);
+    return max(d, 0.0) * max(d, 0.0);
+}
+
+// Brute-force 7D nearest-neighbour biome classification.
+// All inputs are de-quantised floats (NOT ×10000).
+// Returns canonical biome ID (0–53) or 255 if palette is empty or no match.
+int mc_classify_biome(float temp, float hum, float cont, float ero, float depth, float weird) {
+    int   best_id   = 255;
+    float best_dist = 1.0e30;
+    int   count     = router.biome_palette_count;
+    for (int i = 0; i < count; i++) {
+        int   base  = i * BIOME_PALETTE_STRIDE;
+        float t_min = biome_palette.data[base + 0],  t_max = biome_palette.data[base + 1];
+        float h_min = biome_palette.data[base + 2],  h_max = biome_palette.data[base + 3];
+        float c_min = biome_palette.data[base + 4],  c_max = biome_palette.data[base + 5];
+        float e_min = biome_palette.data[base + 6],  e_max = biome_palette.data[base + 7];
+        float d_min = biome_palette.data[base + 8],  d_max = biome_palette.data[base + 9];
+        float w_min = biome_palette.data[base + 10], w_max = biome_palette.data[base + 11];
+        float offset = biome_palette.data[base + 12];
+        int   biome  = floatBitsToInt(biome_palette.data[base + 13]);
+        float dist =
+            biome_dim_dist_sq(temp,  t_min, t_max) +
+            biome_dim_dist_sq(hum,   h_min, h_max) +
+            biome_dim_dist_sq(cont,  c_min, c_max) +
+            biome_dim_dist_sq(ero,   e_min, e_max) +
+            biome_dim_dist_sq(depth, d_min, d_max) +
+            biome_dim_dist_sq(weird, w_min, w_max) +
+            offset * offset;          // 7th dimension: query-point is always 0
+        if (dist < best_dist) {
+            best_dist = dist;
+            best_id   = biome;
+        }
+    }
+    return best_id;
 }
 
 // DensityFunctions.YClampedGradient.compute():
@@ -467,6 +535,56 @@ void main() {
     // Column index in the output array (XZ-major)
     int col     = localX + 16 * localZ;         // 0..255
     int col_off = col * Y_LEVELS;               // stride into density_out
+
+    // -- Pass 0: Biome classification (4×4×BIOME_Y_LEVELS lattice) ----------
+    // Threads where (localX % 4 == 0 && localZ % 4 == 0) own one XZ lattice column.
+    // They sample all 6 climate signals, run the terrain shaper MLP once for the
+    // depth offset, then classify BIOME_Y_LEVELS Y-quart positions writing to biome_out.
+    // Guard: disabled when palette count is 0 or temperature noise is not yet wired.
+    if (router.biome_palette_count > 0 && router.nn_temperature >= 0
+            && (localX % 4 == 0) && (localZ % 4 == 0)) {
+        int qx = localX / 4;   // 0..3
+        int qz = localZ / 4;   // 0..3
+
+        float bxF = float(blockX);
+        float bzF = float(blockZ);
+
+        // Shifted XZ coordinates (same as the density pass)
+        float sx, sz;
+        if (router.nn_shift_a >= 0) {
+            float shift_x = mc_normal_noise(router.nn_shift_a, bxF * 0.25, 0.0,       bzF * 0.25) * 4.0;
+            float shift_z = mc_normal_noise(router.nn_shift_a, bzF * 0.25, bxF * 0.25, 0.0      ) * 4.0;
+            sx = bxF * 0.25 + shift_x;
+            sz = bzF * 0.25 + shift_z;
+        } else {
+            sx = bxF * 0.25;
+            sz = bzF * 0.25;
+        }
+
+        // Sample all 6 XZ-only climate signals
+        float b_temp  = mc_normal_noise(router.nn_temperature, sx, 0.0, sz);
+        float b_hum   = mc_normal_noise(router.nn_vegetation,  sx, 0.0, sz);
+        float b_cont  = mc_normal_noise(router.nn_continents,  sx, 0.0, sz);
+        float b_ero   = mc_normal_noise(router.nn_erosion,     sx, 0.0, sz);
+        float b_weird = mc_normal_noise(router.nn_ridges,      sx, 0.0, sz);
+
+        // Compute terrain_offset via MLP for biome depth: depth ≈ gradient + offset
+        float b_ridges_abs    = abs(b_weird) * 2.0 - 1.0;
+        float b_ridges_folded = mc_half_negative(1.0 - abs(b_ridges_abs));
+        vec3  b_shaper        = mc_terrain_shaper_mlp(vec4(b_cont, b_ero, b_ridges_folded, b_weird));
+        float b_terrain_off   = b_shaper.x;   // terrain offset (offset component)
+
+        // Classify one biome per quart-Y position for this XZ column
+        for (int qy = 0; qy < BIOME_Y_LEVELS; qy++) {
+            float byF    = float(Y_MIN + qy * 4);
+            float b_depth = mc_y_gradient(byF,
+                                          router.grad_from_y,   router.grad_to_y,
+                                          router.grad_from_value, router.grad_to_value)
+                           + b_terrain_off;
+            int biome_id = mc_classify_biome(b_temp, b_hum, b_cont, b_ero, b_depth, b_weird);
+            biome_out.data[qx * (4 * BIOME_Y_LEVELS) + qz * BIOME_Y_LEVELS + qy] = biome_id;
+        }
+    }
 
     // -- Pass 1: Density field (written to density_out) ---------------------
     for (int yi = 0; yi < Y_LEVELS; yi++) {

@@ -554,11 +554,14 @@ public class NoiseRouterExtractor {
         data.nnContinents    = indexForShiftedNoise(noiseRouter, "continents");
         data.nnErosion       = indexForShiftedNoise(noiseRouter, "erosion");
         data.nnRidges        = indexForShiftedNoise(noiseRouter, "ridges");
+        data.nnTemperature   = indexForShiftedNoise(noiseRouter, "temperature");
+        data.nnVegetation    = indexForShiftedNoise(noiseRouter, "vegetation");
         data.shiftNoiseIndex = indexForShiftNoise(noiseRouter, "continents");
         // nnDepthNoise and nnJagged are buried deep in finalDensity — tracked separately (WS-1.2 ext.)
 
-        LOGGER.info("Named noise indices: continents={}, erosion={}, ridges={}, shift={}",
-                data.nnContinents, data.nnErosion, data.nnRidges, data.shiftNoiseIndex);
+        LOGGER.info("Named noise indices: continents={}, erosion={}, ridges={}, temp={}, veg={}, shift={}",
+                data.nnContinents, data.nnErosion, data.nnRidges,
+                data.nnTemperature, data.nnVegetation, data.shiftNoiseIndex);
     }
 
     /**
@@ -645,6 +648,8 @@ public class NoiseRouterExtractor {
         public int nnContinents    = -1;
         public int nnErosion       = -1;
         public int nnRidges        = -1;
+        public int nnTemperature   = -1;  // NoiseRouter.temperature (biome climate signal)
+        public int nnVegetation    = -1;  // NoiseRouter.vegetation  (= humidity in biome terms)
         public int nnDepthNoise    = -1;  // TODO: extract from finalDensity tree (WS-1.2 ext.)
         public int nnJagged        = -1;  // TODO: extract from finalDensity tree (WS-1.2 ext.)
         public int shiftNoiseIndex = -1;  // Noises.SHIFT — same index for both ShiftA and ShiftB
