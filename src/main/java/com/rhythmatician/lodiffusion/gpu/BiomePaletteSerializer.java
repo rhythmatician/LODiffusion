@@ -126,7 +126,6 @@ public final class BiomePaletteSerializer {
     /**
      * Extracts a single float[16] palette entry from a {@code Pair<ParameterPoint, RegistryEntry>}.
      */
-    @SuppressWarnings("unchecked")
     private static float[] extractEntry(Object pairObj) {
         try {
             // Pair.getFirst() → ParameterPoint (NoiseHypercube in Yarn)
@@ -156,12 +155,18 @@ public final class BiomePaletteSerializer {
             int biomeId = resolveBiomeId(biomeHolder);
 
             float[] entry = new float[ENTRY_STRIDE];
-            entry[0]  = tRange[0]; entry[1]  = tRange[1];
-            entry[2]  = hRange[0]; entry[3]  = hRange[1];
-            entry[4]  = cRange[0]; entry[5]  = cRange[1];
-            entry[6]  = eRange[0]; entry[7]  = eRange[1];
-            entry[8]  = dRange[0]; entry[9]  = dRange[1];
-            entry[10] = wRange[0]; entry[11] = wRange[1];
+            entry[0]  = tRange[0];
+            entry[1]  = tRange[1];
+            entry[2]  = hRange[0];
+            entry[3]  = hRange[1];
+            entry[4]  = cRange[0];
+            entry[5]  = cRange[1];
+            entry[6]  = eRange[0];
+            entry[7]  = eRange[1];
+            entry[8]  = dRange[0];
+            entry[9]  = dRange[1];
+            entry[10] = wRange[0];
+            entry[11] = wRange[1];
             entry[12] = offset;
             entry[13] = Float.intBitsToFloat(biomeId); // bitcast — recovered in GLSL with floatBitsToInt()
             // [14..15] = 0.0 (pad)

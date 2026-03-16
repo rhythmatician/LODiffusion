@@ -198,6 +198,17 @@ public class WorldGenEventHandler {
             LOGGER.info("Creating ShaderSSBOManager and uploading to GPU...");
             ShaderSSBOManager manager = new ShaderSSBOManager();
             manager.uploadNoiseData(data); // Also compiles shader program
+
+            // Wire GPU biome palette (world-load-time, biome entries are static per dimension)
+            Object biomeSource = extractBiomeSource(level);
+            if (biomeSource != null) {
+                LOGGER.info("Wiring GPU biome palette from {} ...",
+                        biomeSource.getClass().getSimpleName());
+                manager.initBiomePalette(biomeSource);
+            } else {
+                LOGGER.warn("Could not extract BiomeSource — GPU biome classification pass disabled");
+            }
+
             activeLevels.put(level, manager);
 
             // Dispatch GPU compute for chunk (0,0) as a cold-start validation pass
@@ -355,6 +366,49 @@ public class WorldGenEventHandler {
             }
         } catch (Exception e) {
             LOGGER.error("Error during WorldGenEventHandler.onWorldUnload", e);
+        }
+    }
+
+    /**
+     * Extracts the {@code BiomeSource} from a ServerLevel using reflection.
+     *
+     * <p>The chain is: {@code level → getChunkSource() → getGenerator() → getBiomeSource()}.
+     * For overworld levels this is a {@code MultiNoiseBiomeSource}.
+     *
+     * @param level ServerLevel instance
+     * @return the BiomeSource object, or {@code null} if unavailable
+     */
+    private Object extractBiomeSource(Object level) {
+        try {
+            if (level == null || getChunkSourceMethod == null || getGeneratorMethod == null) return null;
+
+            Object chunkSource = getChunkSourceMethod.invoke(level);
+            if (chunkSource == null) return null;
+
+            Object generator = getGeneratorMethod.invoke(chunkSource);
+            if (generator == null) return null;
+
+            // ChunkGenerator.getBiomeSource() is stable across Mojmap/Yarn mappings
+            Method getBiomeSourceMethod = findMethodOrNull(generator.getClass(), "getBiomeSource");
+            if (getBiomeSourceMethod == null) {
+                // Walk the class hierarchy in case the method is declared on a superclass
+                Class<?> cls = generator.getClass().getSuperclass();
+                while (cls != null && getBiomeSourceMethod == null) {
+                    getBiomeSourceMethod = findMethodOrNull(cls, "getBiomeSource");
+                    cls = cls.getSuperclass();
+                }
+            }
+            if (getBiomeSourceMethod != null) {
+                getBiomeSourceMethod.setAccessible(true);
+                return getBiomeSourceMethod.invoke(generator);
+            }
+
+            LOGGER.warn("extractBiomeSource: getBiomeSource() not found on {}",
+                    generator.getClass().getName());
+            return null;
+        } catch (Exception e) {
+            LOGGER.warn("Failed to extract BiomeSource: {}", e.getMessage());
+            return null;
         }
     }
 

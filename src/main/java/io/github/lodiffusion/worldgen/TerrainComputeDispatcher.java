@@ -144,7 +144,7 @@ public class TerrainComputeDispatcher {
     public RouterConfig initBiomePalette(Object biomeSource, RouterConfig config) {
         try {
             java.nio.FloatBuffer palette = BiomePaletteSerializer.buildPalette(biomeSource);
-            int count = (palette.limit() / BiomePaletteSerializer.ENTRY_STRIDE);
+            int count = palette.limit() / BiomePaletteSerializer.ENTRY_STRIDE;
             if (count == 0) {
                 LOGGER.warn("TerrainComputeDispatcher: biome palette is empty — GPU biome pass disabled");
                 return config;

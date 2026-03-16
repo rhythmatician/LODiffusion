@@ -30,6 +30,7 @@
   - All 8 SSBOs declared with binding numbers
   - RouterConfig UBO for per-dispatch parameters
   - `computeFinalDensity()` with 5-step vanilla graph
+  - Biome classifier pass (4×4×96 lattice, 7D nearest-neighbor over biome palette)
   - Helper functions (squeeze, half_negative, y_gradient, spline_eval)
   - Status: **Functionally complete**, spline evaluation stubbed with linear fallback
 

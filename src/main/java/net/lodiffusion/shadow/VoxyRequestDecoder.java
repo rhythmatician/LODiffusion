@@ -1,5 +1,7 @@
 package net.lodiffusion.shadow;
 
+import org.lwjgl.system.MemoryUtil;
+
 /**
  * Decodes Voxy request queue entries (8-byte uvec2 format).
  * 
@@ -102,18 +104,10 @@ public class VoxyRequestDecoder {
     }
     
     /**
-     * Read 4-byte little-endian signed integer.
-     * In actual use, this would delegate to MemoryUtil or sun.misc.Unsafe.
+     * Read 4-byte little-endian signed integer directly from native memory.
      */
     private static long readNativeInt32(long addr) {
-        // Placeholder: in actual implementation, use:
-        // - net.minecraft.util.Mth / Unsafe
-        // - org.lwjgl.system.MemoryUtil.memGetInt(addr)
-        // For now, throw to indicate external implementation needed
-        throw new UnsupportedOperationException(
-            "readNativeInt32 requires LWJGL MemoryUtil: " +
-            "MemoryUtil.memGetInt(addr) from org.lwjgl.system"
-        );
+        return MemoryUtil.memGetInt(addr);
     }
     
     /**

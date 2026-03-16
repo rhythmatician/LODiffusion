@@ -53,6 +53,9 @@ public class ShaderSSBOManager {
     // Per-chunk compute dispatcher (owns the RouterConfig UBO at binding 8)
     private TerrainComputeDispatcher dispatcher = new TerrainComputeDispatcher();
 
+    /** RouterConfig in effect after uploadNoiseData(); kept for late biome-palette wiring. */
+    private TerrainComputeDispatcher.RouterConfig currentConfig;
+
     // OpenGL buffer IDs (one per binding)
     private int[] bufferIds = new int[BUFFER_COUNT];
     private boolean initialized = false;
@@ -113,6 +116,8 @@ public class ShaderSSBOManager {
 
             // Build RouterConfig from extracted named indices (wires continents, erosion, ridges, shift).
             // Falls back to -1 for any index not yet resolved (shader uses simplified path).
+            // Temperature and vegetation indices are wired here; biome palette count starts at 0
+            // and is updated later by initBiomePalette().
             TerrainComputeDispatcher.RouterConfig config = TerrainComputeDispatcher.RouterConfig.overworldDefaults()
                     .withNamedIndices(
                             data.nnContinents,
@@ -122,7 +127,9 @@ public class ShaderSSBOManager {
                             data.nnJagged,
                             data.shiftNoiseIndex,  // nn_shift_a: SHIFT noise at (bx*0.25, 0, bz*0.25)
                             data.shiftNoiseIndex   // nn_shift_b: same noise, coords swapped in GLSL
-                    );
+                    )
+                    .withBiomePalette(data.nnTemperature, data.nnVegetation, 0);
+            currentConfig = config;
 
             // Initialise the per-chunk dispatcher (uploads RouterConfig UBO)
             dispatcher.init(shaderManager, config);
@@ -132,6 +139,31 @@ public class ShaderSSBOManager {
         } catch (Exception e) {
             LOGGER.error("ShaderSSBOManager: Failed to initialize GPU pipeline", e);
             throw new RuntimeException("GPU pipeline initialization failed", e);
+        }
+    }
+
+    /**
+     * Initialises the GPU biome palette from the world's {@code BiomeSource}.
+     *
+     * <p>Call this after {@link #uploadNoiseData} when the world's biome source is
+     * available (typically in the same {@code onWorldLoad} handler, right after the
+     * chunk generator is resolved).  On success the RouterConfig UBO is updated with
+     * the palette entry count, enabling Pass 0 of the compute shader.
+     *
+     * <p>Safe to call even if reflection fails — the GPU biome pass is simply
+     * left disabled (biome_palette_count stays 0).
+     *
+     * @param biomeSource the runtime {@code MultiNoiseBiomeSource} instance (passed as Object)
+     */
+    public void initBiomePalette(Object biomeSource) {
+        if (!initialized || !dispatcher.isReady() || currentConfig == null) {
+            LOGGER.warn("ShaderSSBOManager: initBiomePalette called before uploadNoiseData — skipping");
+            return;
+        }
+        try {
+            currentConfig = dispatcher.initBiomePalette(biomeSource, currentConfig);
+        } catch (Exception e) {
+            LOGGER.error("ShaderSSBOManager: initBiomePalette failed — GPU biome pass disabled", e);
         }
     }
 
