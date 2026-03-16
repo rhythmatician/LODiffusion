@@ -4,7 +4,9 @@ import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
@@ -30,7 +32,7 @@ import ai.djl.translate.TranslateException;
  *   sparse_root.onnx
  *     Input:
  *       noise_3d   float32[1, 13, 4, 2, 4]   (13 noise channels, 4×2×4 cells)
- *       [TODO: biome_ids int32[1, 4, 2, 4]   (discrete biome palette indices)]
+ *       biome_ids  int32[1, 4, 2, 4]   (discrete biome palette indices, optional)
  *
  *     Outputs (teacher-forced, all nodes expanded at every level):
  *       split_L4   float32[1,    1]           split logits at level 4 (root)
@@ -90,6 +92,15 @@ public final class SparseRootModelRunner implements AutoCloseable {
     /** Shape of the noise_2d input tensor, if present. */
     private final long[] noise2dShape;
 
+    /** Whether the model expects biome IDs input (biome_ids). */
+    private final boolean hasBiomeIds;
+
+    /** Shape of the biome_ids input tensor, if present. */
+    private final long[] biomeIdsShape;
+
+    /** Ordered ONNX/model-config input tensor names for name-based mapping. */
+    private final List<String> inputOrder;
+
     // ── Node counts per level ──────────────────────────────────────────
     /** Number of nodes in the fully-expanded octree at each level 4-0. */
     private static final int[] LEVEL_NODES = { 1, 8, 64, 512, 4096 };
@@ -109,7 +120,10 @@ public final class SparseRootModelRunner implements AutoCloseable {
                                   int numClasses,
                                   float splitThreshold,
                                   boolean hasNoise2d,
-                                  long[] noise2dShape) {
+                                  long[] noise2dShape,
+                                  boolean hasBiomeIds,
+                                  long[] biomeIdsShape,
+                                  List<String> inputOrder) {
         this.manager        = manager;
         this.model          = model;
         this.vocabulary     = vocabulary;
@@ -117,6 +131,9 @@ public final class SparseRootModelRunner implements AutoCloseable {
         this.splitThreshold = splitThreshold;
         this.hasNoise2d     = hasNoise2d;
         this.noise2dShape   = noise2dShape;
+        this.hasBiomeIds    = hasBiomeIds;
+        this.biomeIdsShape  = biomeIdsShape;
+        this.inputOrder     = List.copyOf(inputOrder);
     }
 
     // ------------------------------------------------------------------
@@ -153,6 +170,9 @@ public final class SparseRootModelRunner implements AutoCloseable {
                 int numClassesFromConfig = 256;
                 boolean hasNoise2d = false;
                 long[] noise2dShape = null;
+                boolean hasBiomeIds = false;
+                long[] biomeIdsShape = null;
+                List<String> inputOrder = List.of("noise_3d");
                 Path configPath = modelDir.resolve(CONFIG);
                 if (Files.exists(configPath)) {
                     ModelConfig cfg = ConfigLoader.load(configPath);
@@ -178,6 +198,15 @@ public final class SparseRootModelRunner implements AutoCloseable {
                         for (int i = 0; i < shape.length; i++) noise2dShape[i] = shape[i];
                     }
 
+                    hasBiomeIds = cfg.hasInput("biome_ids");
+                    if (hasBiomeIds) {
+                        int[] shape = cfg.getInputShape("biome_ids");
+                        biomeIdsShape = new long[shape.length];
+                        for (int i = 0; i < shape.length; i++) biomeIdsShape[i] = shape[i];
+                    }
+
+                    inputOrder = resolveInputOrder(cfg);
+
                     LOGGER.info("[SparseRoot] Loaded — vocab={} numClasses={} provider={}",
                             vocab != null ? vocab.size() : "none", nc, provider);
                 } else {
@@ -187,7 +216,8 @@ public final class SparseRootModelRunner implements AutoCloseable {
                         .getDouble("sparseRootSplitThreshold", 0.6);
                 LOGGER.debug("[SparseRoot] splitThreshold={}", splitThreshold);
                 return new SparseRootModelRunner(manager, zm, vocab, numClassesFromConfig,
-                        splitThreshold, hasNoise2d, noise2dShape);
+                        splitThreshold, hasNoise2d, noise2dShape,
+                        hasBiomeIds, biomeIdsShape, inputOrder);
 
             } catch (Exception e) {
                 manager.close();
@@ -249,6 +279,29 @@ public final class SparseRootModelRunner implements AutoCloseable {
     // Inference
     // ------------------------------------------------------------------
 
+    static List<String> resolveInputOrder(ModelConfig cfg) {
+        List<String> order = new ArrayList<>();
+        if (cfg.inputs() != null) {
+            for (String name : cfg.inputs().keySet()) {
+                if (name.equals("noise_2d") || name.equals("noise_3d") || name.equals("biome_ids")) {
+                    order.add(name);
+                }
+            }
+        }
+        if (cfg.optionalInputs() != null) {
+            for (String name : cfg.optionalInputs().keySet()) {
+                if (!order.contains(name)
+                        && (name.equals("noise_2d") || name.equals("noise_3d") || name.equals("biome_ids"))) {
+                    order.add(name);
+                }
+            }
+        }
+        if (!order.contains("noise_3d")) {
+            order.add("noise_3d");
+        }
+        return order;
+    }
+
     /**
      * Run inference for a single 16³ subchunk.
      *
@@ -281,19 +334,31 @@ public final class SparseRootModelRunner implements AutoCloseable {
             // Build input tensor: [1, 13, 4, 2, 4]
             NDArray noise3d = sub.create(noiseFlat,
                     new Shape(1, 13, 4, 2, 4));
+            NDArray noise2d = (hasNoise2d && noise2dShape != null)
+                    ? sub.zeros(new Shape(noise2dShape))
+                    : null;
+            NDArray biome = hasBiomeIds ? buildBiomeTensor(sub, biomeIds) : null;
 
-            NDList inputs;
-            if (hasNoise2d && noise2dShape != null) {
-                inputs = new NDList(sub.zeros(new Shape(noise2dShape)), noise3d);
-            } else {
-                inputs = new NDList(noise3d);
+            NDList inputs = new NDList();
+            for (String name : inputOrder) {
+                switch (name) {
+                    case "noise_2d" -> {
+                        if (noise2d != null) inputs.add(noise2d);
+                    }
+                    case "noise_3d" -> inputs.add(noise3d);
+                    case "biome_ids" -> {
+                        if (biome != null) inputs.add(biome);
+                    }
+                    default -> {
+                        // ignored
+                    }
+                }
             }
-
-            // If biome_ids tensor is present in ONNX model, add it
-            // TODO: Add ONNX biome_ids input tensor [1, 4, 2, 4] int32
-            // For now, this is stubbed — regenerate sparse_root.onnx with biome branch
-            // and update ONNX input contracts once training is complete.
-            // Until then, the model will run with biome_embed(0) as a fallback.
+            if (inputs.isEmpty()) {
+                inputs.add(noise3d);
+                if (noise2d != null) inputs.add(0, noise2d);
+                if (biome != null) inputs.add(biome);
+            }
 
             long t0 = System.currentTimeMillis();
             int[][][] blocks;
@@ -311,6 +376,50 @@ public final class SparseRootModelRunner implements AutoCloseable {
         } finally {
             Thread.currentThread().setContextClassLoader(prevCl);
         }
+    }
+
+    private NDArray buildBiomeTensor(NDManager sub, int[][][] biomeIds) {
+        final int by = 4;
+        final int bz = 2;
+        final int bx = 4;
+
+        int[] flattened = new int[by * bz * bx];
+        if (biomeIds == null) {
+            LOGGER.debug("[SparseRoot] biome_ids expected but null was provided; using zeros fallback");
+            return sub.create(flattened, new Shape(1, by, bz, bx));
+        }
+        if (biomeIds.length != by) {
+            LOGGER.warn("[SparseRoot] biome_ids y-size {} != {}; using zeros fallback", biomeIds.length, by);
+            return sub.create(flattened, new Shape(1, by, bz, bx));
+        }
+
+        int idx = 0;
+        for (int y = 0; y < by; y++) {
+            if (biomeIds[y] == null || biomeIds[y].length != bz) {
+                LOGGER.warn("[SparseRoot] biome_ids z-size mismatch at y={}; using zeros fallback", y);
+                return sub.create(new int[by * bz * bx], new Shape(1, by, bz, bx));
+            }
+            for (int z = 0; z < bz; z++) {
+                if (biomeIds[y][z] == null || biomeIds[y][z].length != bx) {
+                    LOGGER.warn("[SparseRoot] biome_ids x-size mismatch at y={}, z={}; using zeros fallback", y, z);
+                    return sub.create(new int[by * bz * bx], new Shape(1, by, bz, bx));
+                }
+                for (int x = 0; x < bx; x++) {
+                    int biome = biomeIds[y][z][x];
+                    if (biome < 0) {
+                        LOGGER.warn("[SparseRoot] biome_ids contains negative value {}; using zeros fallback", biome);
+                        return sub.create(new int[by * bz * bx], new Shape(1, by, bz, bx));
+                    }
+                    flattened[idx++] = biome;
+                }
+            }
+        }
+        if (biomeIdsShape != null && biomeIdsShape.length == 4
+                && (biomeIdsShape[1] != by || biomeIdsShape[2] != bz || biomeIdsShape[3] != bx)) {
+            LOGGER.warn("[SparseRoot] biome_ids config shape {} differs from runtime [1,4,2,4]; using runtime shape",
+                    java.util.Arrays.toString(biomeIdsShape));
+        }
+        return sub.create(flattened, new Shape(1, by, bz, bx));
     }
 
     // ------------------------------------------------------------------
