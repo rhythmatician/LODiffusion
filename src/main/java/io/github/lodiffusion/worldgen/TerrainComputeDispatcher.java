@@ -321,12 +321,18 @@ public class TerrainComputeDispatcher {
     /**
      * Carries the static (per-dimension) portion of the RouterConfig UBO.
      *
-     * Named noise indices correspond to positions within the flat NormalNoise arrays
+     * <p>Named noise indices correspond to positions within the flat NormalNoise arrays
      * (normalNoiseInts / normalNoiseFloats) uploaded to Bindings 4 & 5.  A value of
-     * {@code -1} signals the GLSL shader to use its simplified fallback path.
+     * {@code -1} signals the GLSL shader to skip that noise contribution (the guard in
+     * {@code mc_normal_noise()} returns 0.0 for invalid indices).
      *
-     * Use {@link #overworldDefaults()} until {@code NoiseRouterExtractor} exposes
-     * per-output indices; then call {@link #withNamedIndices} to wire them in.
+     * <p>Parity status as of current implementation:
+     * <ul>
+     *   <li>continents, erosion, ridges, temperature, vegetation, shift — wired ({@code != -1})</li>
+     *   <li>nnJagged — wired via xzScale=1500 detection in {@code NoiseRouterExtractor}</li>
+     *   <li>nnDepthNoise — always {@code -1}; BASE_3D_NOISE_OVERWORLD is a BlendedNoise
+     *       and cannot be evaluated by {@code mc_normal_noise()}.  Tracked: WS-1.2-BlendedNoise.</li>
+     * </ul>
      */
     public static class RouterConfig {
 
@@ -334,7 +340,7 @@ public class TerrainComputeDispatcher {
         public int nnContinents  = -1;
         public int nnErosion     = -1;
         public int nnRidges      = -1;
-        public int nnDepthNoise  = -1;
+        public int nnDepthNoise  = -1;  // BASE_3D_NOISE_OVERWORLD is a BlendedNoise — cannot use mc_normal_noise(); stays -1 (WS-1.2-BlendedNoise)
         public int nnJagged      = -1;
         public int nnShiftA      = -1;
         public int nnShiftB      = -1;
@@ -371,8 +377,11 @@ public class TerrainComputeDispatcher {
         }
 
         /**
-         * Returns a copy with explicit named NormalNoise indices set.
-         * Call this once {@code NoiseRouterExtractor} tracks per-output names.
+         * Returns a copy with explicit named NormalNoise indices set, preserving all
+         * other fields (gradient, spline offsets, cave noise indices).
+         *
+         * <p>Note: {@code depthNoise} should always be {@code -1} until WS-1.2-BlendedNoise
+         * is resolved — pass {@code data.nnDepthNoise} directly from {@code NoiseRouterData}.
          */
         public RouterConfig withNamedIndices(
                 int continents, int erosion, int ridges,

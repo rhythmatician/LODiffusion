@@ -36,7 +36,11 @@
 
 // Evaluate a NormalNoise instance at (x, y, z).
 // Matches Java's NormalNoise.getValue(x, y, z).
+// Returns 0.0 when idx < 0 (noise not wired) — safe additive identity for all
+// density-field use sites.  Without this guard, a negative index would produce
+// an out-of-bounds SSBO read (undefined behaviour).
 float mc_normal_noise(int idx, float x, float y, float z) {
+    if (idx < 0) return 0.0;
     int first_perlin_idx  = normal_noise_int.data[idx * 4 + 0];
     int second_perlin_idx = normal_noise_int.data[idx * 4 + 1];
     float value_factor    = normal_noise_float.data[idx];

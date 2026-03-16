@@ -87,6 +87,16 @@ public class NoiseRouterExtractor {
     /** Discovered NormalNoise instances */
     private final List<Object> normalNoises = new ArrayList<>();
 
+    /**
+     * Scale parameters recorded when a NormalNoise is encountered inside a
+     * {@code DensityFunctions.Noise} wrapper.  Keyed by the NormalNoise instance;
+     * value is {@code [xzScale, yScale]} as declared on the wrapper.
+     *
+     * Used to identify Noises.JAGGED (xzScale ≈ 1500, yScale = 0) without needing
+     * to compare resource keys at runtime.
+     */
+    private final Map<Object, double[]> normalNoiseScaleMap = new IdentityHashMap<>();
+
     /** Spline control point buffer and offsets */
     private final List<Float> splineDataFloats = new ArrayList<>();
     private final Map<Object, Integer> splineOffsets = new IdentityHashMap<>();
@@ -268,6 +278,17 @@ public class NoiseRouterExtractor {
 
                 registerPerlinNoise(first);
                 registerPerlinNoise(second);
+            }
+
+            // Record the xzScale / yScale from the DensityFunctions.Noise wrapper so that
+            // wireNamedIndices() can identify noises by their distinctive scale signature
+            // (e.g. Noises.JAGGED at xzScale = 1500, yScale = 0).
+            try {
+                double xzScale = getDoubleField(noiseFunc, "xzScale");
+                double yScale  = getDoubleField(noiseFunc, "yScale");
+                normalNoiseScaleMap.put(noiseObj, new double[]{xzScale, yScale});
+            } catch (Exception ignored) {
+                // Field may be absent on some mod-injected wrappers; safe to skip.
             }
         } catch (Exception e) {
             LOGGER.warn("Failed to process Noise node", e);
@@ -557,11 +578,14 @@ public class NoiseRouterExtractor {
         data.nnTemperature   = indexForShiftedNoise(noiseRouter, "temperature");
         data.nnVegetation    = indexForShiftedNoise(noiseRouter, "vegetation");
         data.shiftNoiseIndex = indexForShiftNoise(noiseRouter, "continents");
-        // nnDepthNoise and nnJagged are buried deep in finalDensity — tracked separately (WS-1.2 ext.)
+        data.nnJagged        = indexForJaggedNoise();
+        // nnDepthNoise (BASE_3D_NOISE_OVERWORLD) is a BlendedNoise, not a NormalNoise.
+        // mc_normal_noise() cannot evaluate it; tracked as WS-1.2-BlendedNoise.
+        // data.nnDepthNoise remains -1 until a mc_blended_noise() GLSL function is added.
 
-        LOGGER.info("Named noise indices: continents={}, erosion={}, ridges={}, temp={}, veg={}, shift={}",
+        LOGGER.info("Named noise indices: continents={}, erosion={}, ridges={}, temp={}, veg={}, shift={}, jagged={}",
                 data.nnContinents, data.nnErosion, data.nnRidges,
-                data.nnTemperature, data.nnVegetation, data.shiftNoiseIndex);
+                data.nnTemperature, data.nnVegetation, data.shiftNoiseIndex, data.nnJagged);
     }
 
     /**
@@ -620,6 +644,33 @@ public class NoiseRouterExtractor {
         }
     }
 
+    /**
+     * Finds the NormalNoise SSBO index for {@code Noises.JAGGED} by matching its
+     * distinctive {@code xzScale ≈ 1500, yScale = 0} signature recorded during the
+     * {@link #processNoise} pass.
+     *
+     * <p>Rationale: {@code NoiseRouterData.java} wraps Noises.JAGGED as
+     * {@code DensityFunctions.noise(noises.getOrThrow(Noises.JAGGED), 1500.0, 0.0)}.
+     * No other terrain noise uses an xzScale near 1500, so scale matching is robust.
+     */
+    private int indexForJaggedNoise() {
+        for (Map.Entry<Object, double[]> entry : normalNoiseScaleMap.entrySet()) {
+            double xzScale = entry.getValue()[0];
+            double yScale  = entry.getValue()[1];
+            if (xzScale >= 1450.0 && xzScale <= 1550.0 && Math.abs(yScale) < 0.01) {
+                Integer idx = noiseIndexMap.get(entry.getKey());
+                if (idx != null) {
+                    LOGGER.debug("Resolved Noises.JAGGED at NormalNoise index {} (xzScale={})",
+                            idx, xzScale);
+                    return idx;
+                }
+            }
+        }
+        LOGGER.warn("Noises.JAGGED not found in normalNoiseScaleMap — nnJagged remains -1. "
+                + "({} NormalNoise/scale entries available)", normalNoiseScaleMap.size());
+        return -1;
+    }
+
     /** Invokes a no-arg accessor method by name on the given object. */
     private Object invokeAccessor(Object obj, String methodName) {
         try {
@@ -650,8 +701,17 @@ public class NoiseRouterExtractor {
         public int nnRidges        = -1;
         public int nnTemperature   = -1;  // NoiseRouter.temperature (biome climate signal)
         public int nnVegetation    = -1;  // NoiseRouter.vegetation  (= humidity in biome terms)
-        public int nnDepthNoise    = -1;  // TODO: extract from finalDensity tree (WS-1.2 ext.)
-        public int nnJagged        = -1;  // TODO: extract from finalDensity tree (WS-1.2 ext.)
+        /**
+         * BASE_3D_NOISE_OVERWORLD = BlendedNoise(xzScale=0.25, yScale=0.125, xzFactor=80,
+         * yFactor=160, smearScale=8).  BlendedNoise is composed of three PerlinNoise
+         * instances blended by smooth interpolation and CANNOT be evaluated by
+         * mc_normal_noise().  This index remains -1 until a dedicated mc_blended_noise()
+         * GLSL function is added (tracked: WS-1.2-BlendedNoise).
+         */
+        public int nnDepthNoise    = -1;
+        /** Noises.JAGGED with xzScale=1500, yScale=0.  Resolved by scale-matching in
+         *  {@link NoiseRouterExtractor#indexForJaggedNoise()}. */
+        public int nnJagged        = -1;
         public int shiftNoiseIndex = -1;  // Noises.SHIFT — same index for both ShiftA and ShiftB
 
         public void uploadToGPU() {

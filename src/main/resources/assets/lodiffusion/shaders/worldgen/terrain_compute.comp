@@ -6,7 +6,8 @@
 // Computes a 16 × Y_LEVELS × 16 density field for one chunk column.
 // Density > 0 → solid block; density <= 0 → air.
 //
-// Mirrors the vanilla Overworld NoiseRouter / finalDensity evaluation.
+// GOAL: Vanilla-parity Overworld NoiseRouter / finalDensity evaluation.
+// PARITY STATUS: partial — see IMPLEMENTATION STATUS near computeFinalDensity().
 // Loaded and concatenated by com.rhythmatician.lodiffusion.gpu.GlslShaderLoader:
 //   [this file from #version to before "// --- INCLUDE CUT ---"]
 //   + mc_improved_noise.glsl
@@ -375,15 +376,24 @@ float mc_spline_eval(int offset, float t) {
 // Now uses the TerrainShaperMLP for continents/erosion/ridges -> offset/factor/jaggedness
 // mapping instead of the stubbed spline_eval calls.
 //
-//  IMPLEMENTATION STATUS:
-//   [x] YClampedGradient (depth base)
-//   [x] NormalNoise sampling (sloped_cheese, jaggedness)
-//   [x] SQUEEZE, HALF_NEGATIVE, QUARTER_NEGATIVE
-//   [x] TerrainShaperMLP (continents/erosion/ridges/weirdness shaping) ← REPLACED with MLP
-//   [x] ShiftedNoise (XZ coordinate distortion via shift_a/shift_b)
-//   [ ] WeirdScaledSampler (cave/ravine scaling)
-//   [ ] RangeChoice (cave carver switching)
-//   [ ] FindTopSurface (preliminary surface level Y search)
+//  IMPLEMENTATION STATUS (snapshot-26.1, 2026-03-16):
+//   [x] YClampedGradient  (depth base: y=-64→1.5, y=320→-1.5 — exact)
+//   [x] ShiftedNoise XZ distortion  (Noises.SHIFT/offset, wired via extractor)
+//   [x] Continents, erosion, ridges/weirdness NormalNoise  (wired via extractor)
+//   [x] Temperature & vegetation NormalNoise  (biome classification, wired)
+//   [x] SQUEEZE, HALF_NEGATIVE, QUARTER_NEGATIVE  (exact)
+//   [x] peaksAndValleys (ridges_folded)  (exact vanilla formula; MLP needs retrain)
+//   [x] Noises.JAGGED xzScale=1500 (wired by extractor normalNoiseScaleMap)
+//   [~] TerrainShaperMLP  (continents/erosion/ridges → offset/factor/jag — approx)
+//   [~] Cave NormalNoises  (cheese, spaghetti, entrances, noodle — first-order approx)
+//   [ ] BASE_3D_NOISE_OVERWORLD  (BlendedNoise — WS-1.2-BlendedNoise; currently 0)
+//   [ ] WeirdScaledSampler / RangeChoice  (exact cave gate logic)
+//   [ ] FindTopSurface  (preliminary surface level)
+//   [ ] Aquifer / fluid noises
+//
+//  PARITY THRESHOLD (validate_shader_parity.py):
+//   Acceptance: solid/air agreement ≥ 95 %, density MAE < 0.5 per block
+//   Expected FAIL until WS-1.2-BlendedNoise is implemented.
 // ---------------------------------------------------------------------------
 float computeFinalDensity(float bx, float by, float bz) {
     // -- Step 1: Compute XZ coordinate distortion (ShiftedNoise) ---------------
@@ -418,11 +428,12 @@ float computeFinalDensity(float bx, float by, float bz) {
     float erosion    = mc_normal_noise(router.nn_erosion,    sx, 0.0, sz);
     float weirdness  = mc_normal_noise(router.nn_ridges,     sx, 0.0, sz);
 
-    // Vanilla "peaks and valleys" transform (NoiseRouterData.peaksAndValleys):
-    //   peaksAndValleys(x) = 1 - |1 - |x + 0.5| * 2|   (approximately)
-    // Folds the raw weirdness noise into a [~-1, ~0.5] range that peaks at ridges.
-    float ridges_abs    = abs(weirdness) * 2.0 - 1.0;
-    float ridges_folded = mc_half_negative(1.0 - abs(ridges_abs));
+    // Exact vanilla formula from NoiseRouterData.peaksAndValleys(float):
+    //   result = -(|{|weirdness| - 2/3}| - 1/3) * 3
+    // Peaks at |weirdness| ≈ 0.667 (value = +1.0), troughs at 0 and 1 (value = -1.0).
+    // NOTE: The MLP was trained with the previous approximate formula; if ridges/shaping
+    //       quality regresses, retrain with training data that uses this corrected formula.
+    float ridges_folded = -(abs(abs(weirdness) - 0.6666667) - 0.3333333) * 3.0;
 
     // -- Step 3: TerrainShaperMLP evaluation -----------------------------------
     // The MLP replaces the nested cubic splines that map
@@ -444,14 +455,23 @@ float computeFinalDensity(float bx, float by, float bz) {
 
     float depth = depth_gradient + terrain_offset;
 
-    // -- Step 5: 3D "sloped cheese" noise (large-scale vertical variation) -----
-    // Corresponds to the interpolated noise sampled at (x, y, z) that forms the
-    // base of the density field — what Mojang calls "slopedCheese" internally.
+    // -- Step 5: BASE_3D_NOISE_OVERWORLD contribution (currently absent) ---------
+    // In vanilla: slopedCheese = initialDensity + BASE_3D_NOISE_OVERWORLD
+    // BASE_3D_NOISE_OVERWORLD = BlendedNoise(xzScale=0.25, yScale=0.125,
+    //                            xzFactor=80, yFactor=160, smearScale=8)
+    // BlendedNoise blends three PerlinNoise instances via a smooth interpolation;
+    // it is NOT a NormalNoise, so mc_normal_noise() cannot evaluate it.
+    // nn_depth_noise is always -1 until a dedicated mc_blended_noise() GLSL function
+    // and matching SSBO indices are added (WS-1.2-BlendedNoise).
+    // EFFECT OF ABSENCE: terrain variation is driven only by the y-gradient +
+    // jaggedness; large-scale 3D density modulation (caves, mountains) is flattened.
     float sloped_cheese = mc_normal_noise(router.nn_depth_noise, bx, by, bz);
+    // sloped_cheese == 0.0 until WS-1.2-BlendedNoise is resolved.
 
     // -- Step 6: Jaggedness bias (high-frequency detail near surface) ----------
-    // This adds sharp vertical variation near the surface (cliffs, overhangs).
-    // In vanilla: jaggedness * heightNoise * mc_half_negative(jagged_noise)
+    // Noises.JAGGED with xzScale=1500, yScale=0 — wired by NoiseRouterExtractor
+    // via normalNoiseScaleMap (unique scale signature).  mc_normal_noise() returns
+    // 0.0 safely when nn_jagged == -1 (index-guard added in mc_normal_noise.glsl).
     float jagged_noise = mc_normal_noise(router.nn_jagged, bx, by, bz);
     float jaggedness_applied = jaggedness_factor * mc_half_negative(jagged_noise);
 
