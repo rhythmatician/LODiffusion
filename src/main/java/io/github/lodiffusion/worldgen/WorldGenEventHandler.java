@@ -36,6 +36,17 @@ public class WorldGenEventHandler {
     /** Current singleton instance (one per server lifecycle) */
     private static WorldGenEventHandler instance;
 
+    /**
+     * Debug readback toggles (all disabled by default for production runtime).
+     *
+     * <p>-Dlodiffusion.worldgen.debugDensityReadback=true  -> reads full density buffer
+     * <p>-Dlodiffusion.worldgen.debugBlockReadback=true    -> reads full block-material buffer
+     * <p>-Dlodiffusion.worldgen.writeParityReport=true     -> writes parity JSON (implies density readback)
+     */
+    private static final boolean DEBUG_DENSITY_READBACK = Boolean.getBoolean("lodiffusion.worldgen.debugDensityReadback");
+    private static final boolean DEBUG_BLOCK_READBACK = Boolean.getBoolean("lodiffusion.worldgen.debugBlockReadback");
+    private static final boolean WRITE_PARITY_REPORT = Boolean.getBoolean("lodiffusion.worldgen.writeParityReport");
+
     // Cached reflection metadata for Minecraft classes (loaded lazily)
     private final Class<?> serverLevelClass;
     private final Class<?> minecraftServerClass;
@@ -211,27 +222,35 @@ public class WorldGenEventHandler {
 
             activeLevels.put(level, manager);
 
-            // Dispatch GPU compute for chunk (0,0) as a cold-start validation pass
-            LOGGER.info("Dispatching GPU compute for validation (chunk 0,0)...");
-            FloatBuffer allDensity = manager.dispatchAndRead(0, 0);
-            LOGGER.info("Compute dispatch complete — validating Binding 7 output...");
+            // Production path: dispatch and hand off GPU buffer handles for staging.
+            LOGGER.info("Dispatching GPU compute for startup chunk (0,0) without CPU readback...");
+            ShaderSSBOManager.ChunkGpuOutputs outputs = manager.dispatchForStaging(0, 0);
+            stageGpuOutputs(outputs, dimensionInfo);
 
-            if (allDensity != null && allDensity.hasRemaining()) {
-                // Log first 10 samples for quick liveness check
-                StringBuilder log = new StringBuilder("GPU Density Samples [0-9]: ");
-                for (int i = 0; i < 10 && allDensity.hasRemaining(); i++) {
-                    log.append(String.format("%.4f", allDensity.get())).append(" ");
+            // Optional debug/parity validation path (explicitly gated).
+            if (DEBUG_DENSITY_READBACK || WRITE_PARITY_REPORT) {
+                FloatBuffer allDensity = manager.readDensityDebug();
+                if (allDensity != null && allDensity.hasRemaining()) {
+                    StringBuilder log = new StringBuilder("GPU Density Samples [0-9]: ");
+                    for (int i = 0; i < 10 && allDensity.hasRemaining(); i++) {
+                        log.append(String.format("%.4f", allDensity.get())).append(" ");
+                    }
+                    LOGGER.info(log.toString());
+
+                    if (WRITE_PARITY_REPORT) {
+                        writeGpuParityFile(allDensity, dimensionInfo);
+                    }
+                } else {
+                    LOGGER.warn("Unable to read density output from GPU (null or empty buffer)");
                 }
-                LOGGER.info(log.toString());
-
-                // Write full density output for WS-1.3 parity validation
-                writeGpuParityFile(allDensity, dimensionInfo);
-            } else {
-                LOGGER.warn("Unable to read density output from GPU (null or empty buffer)");
             }
 
-            // WS-2: Read block-material output and push to Voxy
-            writeBlocksToVoxy(manager, level, dimensionInfo);
+            // WS-2 debug path: only read block materials when explicitly enabled.
+            if (DEBUG_BLOCK_READBACK) {
+                writeBlocksToVoxy(manager, level, dimensionInfo);
+            } else {
+                LOGGER.debug("WS-2: block readback disabled (set -Dlodiffusion.worldgen.debugBlockReadback=true to enable)");
+            }
 
             long elapsedMs = System.currentTimeMillis() - startTime;
             LOGGER.info("WorldGenEventHandler.onWorldLoad complete in {} ms", elapsedMs);
@@ -258,7 +277,7 @@ public class WorldGenEventHandler {
             return;
         }
         try {
-            IntBuffer blockMat = manager.readBlockOutput();
+            IntBuffer blockMat = manager.readBlockOutputDebug();
             if (blockMat == null) {
                 LOGGER.warn("WS-2: block output buffer is null — skipping Voxy write");
                 return;
@@ -346,6 +365,29 @@ public class WorldGenEventHandler {
         } catch (Exception e) {
             LOGGER.warn("WS-1.3 parity: failed to write GPU density file", e);
         }
+    }
+
+
+    /**
+     * Production dataflow boundary: pass GPU-resident chunk outputs to downstream staging.
+     *
+     * <p>This method intentionally does not materialize density/block payloads on CPU.
+     * It defines the contract needed for model input staging (or a direct GPU-resident
+     * ingest path) to consume compute outputs by buffer ID + metadata.
+     */
+    private void stageGpuOutputs(ShaderSSBOManager.ChunkGpuOutputs outputs, String dimensionInfo) {
+        LOGGER.debug(
+                "GPU staging contract ready for {} chunk ({}, {}): density[binding={}, id={}, floats={}], block[binding={}, id={}, ints={}]",
+                dimensionInfo,
+                outputs.chunkX(),
+                outputs.chunkZ(),
+                outputs.densityBinding(),
+                outputs.densityBufferId(),
+                outputs.densityFloatCount(),
+                outputs.blockBinding(),
+                outputs.blockBufferId(),
+                outputs.blockIntCount()
+        );
     }
 
     /**
