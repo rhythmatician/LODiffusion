@@ -6,6 +6,8 @@ import org.lwjgl.opengl.GL43C;
 
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
+import java.util.HashMap;
+import java.util.Map;
 
 /**
  * Manages OpenGL Shader Storage Buffer Objects (SSBOs) for GPU terrain generation.
@@ -60,6 +62,32 @@ public class ShaderSSBOManager {
     private int[] bufferIds = new int[BUFFER_COUNT];
     private boolean initialized = false;
     private long lastUploadTime = 0L;
+    private int lastDispatchedChunkX = 0;
+    private int lastDispatchedChunkZ = 0;
+
+    /** Readback telemetry counters (debug/parity path only). */
+    private long readbackWindowStartMs = System.currentTimeMillis();
+    private long readbackWindowCalls = 0;
+    private double readbackCallsPerSec = 0.0d;
+    private final Map<Long, Long> readbackBytesByChunk = new HashMap<>();
+
+    /**
+     * Production contract between compute output buffers and model-input staging.
+     *
+     * <p>This object intentionally contains GPU buffer handles only (no CPU copies),
+     * so call sites can wire GPU-resident pipelines and materialize to CPU only when
+     * explicitly requested by debug tooling.
+     */
+    public record ChunkGpuOutputs(
+            int chunkX,
+            int chunkZ,
+            int densityBinding,
+            int densityBufferId,
+            int densityFloatCount,
+            int blockBinding,
+            int blockBufferId,
+            int blockIntCount
+    ) {}
 
     public ShaderSSBOManager() {
         // Buffers will be created on-demand during first upload
@@ -179,7 +207,27 @@ public class ShaderSSBOManager {
      */
     public void dispatch(int chunkX, int chunkZ) {
         if (!initialized || !shaderManager.isCompiled() || !dispatcher.isReady()) return;
+        lastDispatchedChunkX = chunkX;
+        lastDispatchedChunkZ = chunkZ;
         dispatcher.dispatch(chunkX, chunkZ);
+    }
+
+    /**
+     * Production dispatch path: executes terrain compute and returns GPU buffer handles
+     * for downstream staging without any CPU readback.
+     */
+    public ChunkGpuOutputs dispatchForStaging(int chunkX, int chunkZ) {
+        dispatch(chunkX, chunkZ);
+        return new ChunkGpuOutputs(
+                chunkX,
+                chunkZ,
+                DENSITY_OUTPUT_BINDING,
+                bufferIds[DENSITY_OUTPUT_BINDING],
+                DENSITY_FLOATS,
+                BLOCK_OUTPUT_BINDING,
+                bufferIds[BLOCK_OUTPUT_BINDING],
+                BLOCK_INT_COUNT
+        );
     }
 
     /**
@@ -341,9 +389,9 @@ public class ShaderSSBOManager {
      * @return FloatBuffer of {@value #DENSITY_FLOATS} floats, indexed
      *         {@code [lx + 16*lz] * 384 + (by + 64)}, or {@code null} on failure.
      */
-    public FloatBuffer dispatchAndRead(int chunkX, int chunkZ) {
+    public FloatBuffer dispatchAndReadDebug(int chunkX, int chunkZ) {
         dispatch(chunkX, chunkZ);
-        return readBuffer(DENSITY_OUTPUT_BINDING, DENSITY_FLOATS);
+        return readDensityDebug();
     }
 
     /** Number of floats in one dispatched chunk density field ({@value}). */
@@ -362,8 +410,13 @@ public class ShaderSSBOManager {
      * @return IntBuffer of {@value #BLOCK_INT_COUNT} ints (positioned at 0), or
      *         {@code null} on error.
      */
-    public IntBuffer readBlockOutput() {
-        return readIntBuffer(BLOCK_OUTPUT_BINDING, BLOCK_INT_COUNT);
+    public IntBuffer readBlockOutputDebug() {
+        return readIntBufferDebug(BLOCK_OUTPUT_BINDING, BLOCK_INT_COUNT);
+    }
+
+    /** Read density output from binding 7 for parity/debug use only. */
+    public FloatBuffer readDensityDebug() {
+        return readBufferDebug(DENSITY_OUTPUT_BINDING, DENSITY_FLOATS);
     }
 
     /**
@@ -373,7 +426,7 @@ public class ShaderSSBOManager {
      * @param elementCount number of ints to read
      * @return IntBuffer positioned at 0, or {@code null} on error
      */
-    public IntBuffer readIntBuffer(int bindingPoint, int elementCount) {
+    public IntBuffer readIntBufferDebug(int bindingPoint, int elementCount) {
         if (bindingPoint < 0 || bindingPoint >= BUFFER_COUNT || bufferIds[bindingPoint] == 0) {
             return null;
         }
@@ -382,6 +435,7 @@ public class ShaderSSBOManager {
             org.lwjgl.opengl.GL43C.glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferIds[bindingPoint]);
             org.lwjgl.opengl.GL43C.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, result);
             result.rewind();
+            recordReadback((long) elementCount * Integer.BYTES);
             return result;
         } catch (Exception e) {
             LOGGER.error("ShaderSSBOManager: Failed to read int buffer from binding {}", bindingPoint, e);
@@ -397,7 +451,7 @@ public class ShaderSSBOManager {
      * @param elementCount Number of floats to read
      * @return A FloatBuffer containing the GPU-side data
      */
-    public FloatBuffer readBuffer(int bindingPoint, int elementCount) {
+    public FloatBuffer readBufferDebug(int bindingPoint, int elementCount) {
         if (bindingPoint < 0 || bindingPoint >= BUFFER_COUNT || bufferIds[bindingPoint] == 0) {
             return null;
         }
@@ -407,6 +461,7 @@ public class ShaderSSBOManager {
             glBindBuffer(GL_SHADER_STORAGE_BUFFER, bufferIds[bindingPoint]);
             GL43C.glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, result);
             result.rewind();
+            recordReadback((long) elementCount * Float.BYTES);
             return result;
         } catch (Exception e) {
             LOGGER.error("ShaderSSBOManager: Failed to read buffer from binding {}", bindingPoint, e);
@@ -470,6 +525,28 @@ public class ShaderSSBOManager {
             return 0;
         }
         return bufferIds[bindingPoint];
+    }
+
+    private void recordReadback(long bytes) {
+        long now = System.currentTimeMillis();
+        readbackWindowCalls++;
+        long elapsed = now - readbackWindowStartMs;
+        if (elapsed >= 1000) {
+            readbackCallsPerSec = (readbackWindowCalls * 1000.0d) / Math.max(1L, elapsed);
+            readbackWindowCalls = 0;
+            readbackWindowStartMs = now;
+        }
+
+        long chunkKey = (((long) lastDispatchedChunkX) << 32) | (lastDispatchedChunkZ & 0xffffffffL);
+        long chunkBytes = readbackBytesByChunk.merge(chunkKey, bytes, Long::sum);
+
+        LOGGER.info(
+                "ShaderSSBOManager metrics: readback_bytes_chunk[{},{}]={} readback_calls_sec={}",
+                lastDispatchedChunkX,
+                lastDispatchedChunkZ,
+                chunkBytes,
+                String.format("%.2f", readbackCallsPerSec)
+        );
     }
 
     // ============================================================================

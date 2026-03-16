@@ -33,7 +33,8 @@ import java.nio.ByteOrder;
  *   d.init(shaderProgramManager, RouterConfig.overworldDefaults(data));
  *   // per chunk:
  *   d.dispatch(chunkX, chunkZ);
- *   FloatBuffer result = ssboManager.readBuffer(7, 16 * 384 * 16);
+ *   // optional debug/parity only:
+ *   FloatBuffer result = ssboManager.readDensityDebug();
  *   // on world unload:
  *   d.cleanup();
  * </pre>
