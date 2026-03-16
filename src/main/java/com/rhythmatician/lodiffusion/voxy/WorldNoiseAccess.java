@@ -741,4 +741,62 @@ public final class WorldNoiseAccess {
         }
         return flat;
     }
+
+    /**
+     * Sample biome IDs at 4×2×4 noise cell resolution for a section.
+     *
+     * <p>Used by SparseRoot training data export. Biomes are sampled at
+     * quarter-block resolution and mapped to stable integer IDs via
+     * biome registry position.
+     *
+     * @param chunkX   chunk X coordinate
+     * @param chunkZ   chunk Z coordinate
+     * @param sectionY section Y in native units, range [-4, 19]
+     * @return {@code int[4][2][4]} grid, {@code [cx][localCy][cz]} order
+     */
+    public int[][][] sampleBiomeIdsForSection(int chunkX, int chunkZ, int sectionY) {
+        int[][][] result = new int[4][2][4];
+        int cyStart = (sectionY + 4) * 2;
+        cyStart = Math.max(0, Math.min(46, cyStart));
+
+        int baseX = chunkX * 16;
+        int baseZ = chunkZ * 16;
+
+        try {
+            Registry<Biome> biomeReg = serverWorld.getRegistryManager()
+                    .getOrThrow(RegistryKeys.BIOME);
+
+            for (int cx = 0; cx < 4; cx++) {
+                int x = baseX + cx * 4 + 2;
+                for (int localCy = 0; localCy < 2; localCy++) {
+                    int cy = cyStart + localCy;
+                    int y = -64 + cy * 8 + 4;
+                    for (int cz = 0; cz < 4; cz++) {
+                        int z = baseZ + cz * 4 + 2;
+
+                        // Sample biome at quart coordinates
+                        RegistryEntry<Biome> biomeEntry = biomeSource.getBiome(
+                                x >> 2, y >> 2, z >> 2,
+                                noiseConfig.getMultiNoiseSampler());
+
+                        // Get the index in the biome registry
+                        int biomeId = biomeReg.getRawId(biomeEntry.value());
+                        result[cx][localCy][cz] = biomeId >= 0 ? biomeId : 0;
+                    }
+                }
+            }
+        } catch (Exception e) {
+            HelloTerrainMod.LOGGER.warn(
+                    "[WorldNoiseAccess] Failed to sample biome IDs: {}", e.getMessage());
+            // Return all zeros on error
+            for (int cx = 0; cx < 4; cx++) {
+                for (int cy = 0; cy < 2; cy++) {
+                    for (int cz = 0; cz < 4; cz++) {
+                        result[cx][cy][cz] = 0;
+                    }
+                }
+            }
+        }
+        return result;
+    }
 }

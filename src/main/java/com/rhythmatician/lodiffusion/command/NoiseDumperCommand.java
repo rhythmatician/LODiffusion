@@ -93,6 +93,14 @@ public final class NoiseDumperCommand {
                 .then(CommandManager.argument("radius", IntegerArgumentType.integer(1, 512))
                     .executes(ctx -> executeStage1(ctx,
                             IntegerArgumentType.getInteger(ctx, "radius")))))
+            // /dumpnoise sparse_root [radius]   — WS-5.1+
+            // Dumps the 13 noise_3d channels + biome_ids per section (4×2×4 spatial resolution).
+            // Output: run/sparse_root_dumps/section_<cx>_<cy>_<cz>.json
+            .then(CommandManager.literal("sparse_root")
+                .executes(ctx -> executeSparseRoot(ctx, 4))
+                .then(CommandManager.argument("radius", IntegerArgumentType.integer(1, 512))
+                    .executes(ctx -> executeSparseRoot(ctx,
+                            IntegerArgumentType.getInteger(ctx, "radius")))))
         );
     }
 
@@ -712,4 +720,306 @@ public final class NoiseDumperCommand {
         sb.append("}\n");
         Files.writeString(file, sb.toString());
     }
+
+    // ------------------------------------------------------------------
+    //  SparseRoot training data — /dumpnoise sparse_root <radius>  (WS-5.1+)
+    // ------------------------------------------------------------------
+
+    /**
+     * Names for the 13 SparseRoot noise_3d channels sampled from the density
+     * function registry.  Order must match {@link WorldNoiseAccess#NOISE_3D_PATHS}.
+     *
+     * <ul>
+     *   <li>Indices 0-2: TerrainShaper inputs (offset, factor, jaggedness)</li>
+     *   <li>Index 3: depth (from router.depth())</li>
+     *   <li>Index 4: sloped_cheese</li>
+     *   <li>Index 5: y (cell centre Y — block coordinates)</li>
+     *   <li>Indices 6-10: Cave noise (entrances, pillars, spaghetti_2d, spaghetti_roughness, noodle)</li>
+     *   <li>Index 11: base_3d_noise</li>
+     *   <li>Index 12: final_density (from router.finalDensity())</li>
+     * </ul>
+     */
+    private static final String[][] SPARSE_ROOT_NOISE_FIELDS = {
+        {"offset",             "overworld/offset"},
+        {"factor",             "overworld/factor"},
+        {"jaggedness",         "overworld/jaggedness"},
+        {"depth",              null},                                   // router.depth()
+        {"sloped_cheese",      "overworld/sloped_cheese"},
+        {"y",                  null},                                   // cell centre Y
+        {"entrances",          "overworld/caves/entrances"},
+        {"pillars",            "overworld/caves/pillars"},
+        {"spaghetti_2d",       "overworld/caves/spaghetti_2d"},
+        {"spaghetti_roughness", "overworld/caves/spaghetti_roughness_function"},
+        {"noodle",             "overworld/caves/noodle"},
+        {"base_3d_noise",      "overworld/base_3d_noise"},
+        {"final_density",      null},                                   // router.finalDensity()
+    };
+
+    /**
+     * Execute {@code /dumpnoise sparse_root <radius>}.
+     *
+     * <p>Dumps one JSON file per section under {@code run/sparse_root_dumps/},
+     * each containing the 13 noise_3d input channels + biome_ids output
+     * sampled at 4×2×4 spatial resolution (matching the sparse_root model training).
+     *
+     * <p>Coordinates match {@link WorldNoiseAccess#sampleNoise3DForSection}:
+     * <pre>
+     *   For section (chunkX, sectionY, chunkZ):
+     *   - cyStart = (sectionY + 4) * 2  (vanilla noise cell start)
+     *   - For each (cx, localCy, cz) in [0-3] × [0-1] × [0-3]:
+     *     x = chunkX*16 + cx*4 + 2
+     *     y = -64 + (cyStart + localCy)*8 + 4  (cell centre Y)
+     *     z = chunkZ*16 + cz*4 + 2
+     * </pre>
+     */
+    private static int executeSparseRoot(CommandContext<ServerCommandSource> ctx,
+                                         int radius) {
+        ServerCommandSource source = ctx.getSource();
+        ServerWorld world = source.getWorld();
+
+        Path outDir = Path.of("sparse_root_dumps");
+        try {
+            Files.createDirectories(outDir);
+        } catch (IOException e) {
+            source.sendError(Text.literal("[SparseRootDump] Cannot create output dir: " + e.getMessage()));
+            return 0;
+        }
+
+        WorldNoiseAccess noise = WorldNoiseAccess.tryCreate(world);
+        if (noise == null) {
+            source.sendError(Text.literal(
+                    "[SparseRootDump] Failed to initialise noise pipeline."));
+            return 0;
+        }
+
+        long seed = world.getSeed();
+        int[] centre = {0, 0};
+        try {
+            BlockPos origin = BlockPos.ofFloored(source.getPosition());
+            centre[0] = origin.getX() >> 4;
+            centre[1] = origin.getZ() >> 4;
+        } catch (UnsupportedOperationException e) {
+            // keep (0,0)
+        }
+        final int centerCx = centre[0];
+        final int centerCz = centre[1];
+
+        int totalSections = (2 * radius + 1) * (2 * radius + 1) * 24;  // 24 sections per chunk column
+        source.sendFeedback(
+                () -> Text.literal(String.format(
+                        "[SparseRootDump] Dumping %d sections r=%d centred (%d,%d) → %s",
+                        totalSections, radius, centerCx, centerCz,
+                        outDir.toAbsolutePath())),
+                false);
+
+        // Resolve all 13 DensityFunction objects once
+        NoiseRouter router = noise.getNoiseRouter();
+        DensityFunction[] dfs = resolveSparseRootDensityFunctions(noise, router);
+        if (dfs == null) {
+            source.sendError(Text.literal(
+                    "[SparseRootDump] Failed to resolve density functions — check server log."));
+            return 0;
+        }
+
+        int threadCount = 4;
+        ExecutorService pool = Executors.newFixedThreadPool(threadCount, r -> {
+            Thread t = new Thread(r, "SparseRootDumper-Worker");
+            t.setDaemon(true);
+            return t;
+        });
+
+        AtomicInteger dumped = new AtomicInteger();
+        AtomicInteger failed = new AtomicInteger();
+        long startTime = System.currentTimeMillis();
+        List<Future<?>> futures = new ArrayList<>(totalSections);
+
+        for (int dx = -radius; dx <= radius; dx++) {
+            for (int dz = -radius; dz <= radius; dz++) {
+                final int cx = centerCx + dx;
+                final int cz = centerCz + dz;
+                // Dump all 24 sections in this chunk column (sectionY -4 to 19)
+                for (int sy = -4; sy <= 19; sy++) {
+                    final int sectionY = sy;
+                    futures.add(pool.submit(() -> {
+                        try {
+                            dumpSectionNoiseSparseRoot(noise, dfs, cx, sectionY, cz, seed, outDir);
+                            dumped.incrementAndGet();
+                        } catch (Exception e) {
+                            LOG.warn("[SparseRootDump] Failed section ({},{},{}): {}",
+                                    cx, sectionY, cz, e.getMessage());
+                            failed.incrementAndGet();
+                        }
+                        int done = dumped.get() + failed.get();
+                        if (done % 100 == 0 || done == totalSections) {
+                            double elapsed = (System.currentTimeMillis() - startTime) / 1000.0;
+                            double rate = elapsed > 0 ? done / elapsed : 0;
+                            source.sendFeedback(
+                                    () -> Text.literal(String.format(
+                                            "[SparseRootDump] %d/%d (%.1f/s)", done, totalSections, rate)),
+                                    false);
+                        }
+                    }));
+                }
+            }
+        }
+
+        Thread coordinator = new Thread(() -> {
+            for (Future<?> f : futures) {
+                try { f.get(); } catch (Exception e) { LOG.warn("[SparseRootDump] {}", e.getMessage()); }
+            }
+            pool.shutdown();
+            double totalSec = (System.currentTimeMillis() - startTime) / 1000.0;
+            final int d = dumped.get(), fl = failed.get();
+            source.sendFeedback(
+                    () -> Text.literal(String.format(
+                            "[SparseRootDump] Done. %d dumped, %d failed in %.1fs",
+                            d, fl, totalSec)),
+                    false);
+        }, "SparseRootDumper-Coordinator");
+        coordinator.setDaemon(true);
+        coordinator.start();
+
+        return 1;
+    }
+
+    /**
+     * Resolve all 13 SparseRoot density functions from the registry.
+     *
+     * <p>{@code dfs[i] == null} for special-handled fields (y, depth/finalDensity via router).
+     */
+    private static DensityFunction[] resolveSparseRootDensityFunctions(WorldNoiseAccess noise,
+                                                                       NoiseRouter router) {
+        DensityFunction[] dfs = new DensityFunction[SPARSE_ROOT_NOISE_FIELDS.length];
+        for (int i = 0; i < SPARSE_ROOT_NOISE_FIELDS.length; i++) {
+            String fieldName = SPARSE_ROOT_NOISE_FIELDS[i][0];
+            String path = SPARSE_ROOT_NOISE_FIELDS[i][1];
+
+            if (path == null) {
+                if ("depth".equals(fieldName)) {
+                    dfs[i] = router.depth();
+                } else if ("final_density".equals(fieldName)) {
+                    dfs[i] = router.finalDensity();
+                }
+                // "y" field: dfs[i] stays null → handled per cell in dump loop
+                continue;
+            }
+
+            DensityFunction df = noise.lookupDensityFunction(path);
+            if (df == null) {
+                LOG.warn("[SparseRootDump] Could not resolve '{}' — will use 0.0", path);
+                df = net.minecraft.world.gen.densityfunction.DensityFunctionTypes.zero();
+            }
+            dfs[i] = df;
+        }
+        return dfs;
+    }
+
+    /**
+     * Dump SparseRoot training data for a single section to JSON.
+     *
+     * <p>Samples all 13 noise_3d channels + biome_ids at the standard
+     * 4×2×4 cell resolution used by sparse_root training (matching
+     * {@link WorldNoiseAccess#sampleNoise3DForSection}).
+     *
+     * <p>JSON layout (all fields flat arrays, cx-outer / localCy-middle / cz-inner,
+     * length 32 = 4×2×4):
+     * <pre>
+     *   chunk_x, section_y, chunk_z, seed
+     *   13 noise_3d channels
+     *   biome_ids (discrete biome indices 0–255)
+     * </pre>
+     */
+    static void dumpSectionNoiseSparseRoot(WorldNoiseAccess noise,
+                                           DensityFunction[] dfs,
+                                           int cx, int sy, int cz,
+                                           long seed,
+                                           Path outDir) throws IOException {
+        String filename = String.format("section_%d_%d_%d.json", cx, sy, cz);
+        Path file = outDir.resolve(filename);
+
+        // Sample all 13 noise fields + biome IDs for this section
+        float[][][][] noiseSamples = new float[13][4][2][4];
+        for (int field = 0; field < 13; field++) {
+            float[][][] fieldData = noiseSamples[field];
+            int cyStart = (sy + 4) * 2;
+            int baseX = cx * 16;
+            int baseZ = cz * 16;
+
+            DensityFunction df = dfs[field];
+            for (int cx_cell = 0; cx_cell < 4; cx_cell++) {
+                int x = baseX + cx_cell * 4 + 2;
+                for (int localCy = 0; localCy < 2; localCy++) {
+                    int cy = cyStart + localCy;
+                    int y = -64 + cy * 8 + 4;  // cell-centre Y in blocks
+
+                    if (df == null) {
+                        // field index 5 = Y: broadcast cell-centre Y across all Z cells
+                        for (int cz_cell = 0; cz_cell < 4; cz_cell++) {
+                            fieldData[cx_cell][localCy][cz_cell] = (float) y;
+                        }
+                    } else {
+                        // Sample this field at each cell centre — no Z averaging
+                        for (int cz_cell = 0; cz_cell < 4; cz_cell++) {
+                            int z = baseZ + cz_cell * 4 + 2;
+                            DensityFunction.UnblendedNoisePos pos =
+                                    new DensityFunction.UnblendedNoisePos(x, y, z);
+                            fieldData[cx_cell][localCy][cz_cell] = (float) df.sample(pos);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sample biome IDs at 4x2x4 resolution
+        int[][][] biomeIds = noise.sampleBiomeIdsForSection(cx, sy, cz);
+
+        // --- Write JSON
+        StringBuilder sb = new StringBuilder(16 * 1024);
+        sb.append("{\n");
+        sb.append("  \"chunk_x\": ").append(cx).append(",\n");
+        sb.append("  \"section_y\": ").append(sy).append(",\n");
+        sb.append("  \"chunk_z\": ").append(cz).append(",\n");
+        sb.append("  \"seed\": ").append(seed).append(",\n");
+        sb.append("  \"cell_resolution\": \"4x2x4\",\n");
+        sb.append("  \"note\": \"flat arrays indexed [cx*2*4 + localCy*4 + cz]\",\n");
+
+        // Write all 13 noise_3d fields
+        String[] fieldNames = {
+            "offset", "factor", "jaggedness", "depth", "sloped_cheese",
+            "y", "entrances", "pillars", "spaghetti_2d", "spaghetti_roughness",
+            "noodle", "base_3d_noise", "final_density"
+        };
+        for (int fieldIdx = 0; fieldIdx < 13; fieldIdx++) {
+            sb.append("  \"").append(fieldNames[fieldIdx]).append("\": [");
+            boolean first = true;
+            for (int cx_cell = 0; cx_cell < 4; cx_cell++) {
+                for (int localCy = 0; localCy < 2; localCy++) {
+                    for (int cz_cell = 0; cz_cell < 4; cz_cell++) {
+                        if (!first) sb.append(',');
+                        first = false;
+                        sb.append(String.format("%.6g", noiseSamples[fieldIdx][cx_cell][localCy][cz_cell]));
+                    }
+                }
+            }
+            sb.append(fieldIdx < 12 ? "],\n" : "],\n");
+        }
+
+        // Write biome IDs
+        sb.append("  \"biome_ids\": [");
+        boolean first = true;
+        for (int cx_cell = 0; cx_cell < 4; cx_cell++) {
+            for (int localCy = 0; localCy < 2; localCy++) {
+                for (int cz_cell = 0; cz_cell < 4; cz_cell++) {
+                    if (!first) sb.append(',');
+                    first = false;
+                    sb.append(biomeIds[cx_cell][localCy][cz_cell]);
+                }
+            }
+        }
+        sb.append("]\n");
+
+        sb.append("}\n");
+        Files.writeString(file, sb.toString());
+    }
 }
+

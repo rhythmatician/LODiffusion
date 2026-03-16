@@ -4,5 +4,6 @@
   "adapter": "unified_v1",
   "inferenceThreads": 2,
   "threshold": 0.5,
-  "inferenceDevice": "auto"
+  "inferenceDevice": "auto",
+  "sparseRootSplitThreshold": 0.43
 }

@@ -5,6 +5,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayDeque;
 import java.util.Deque;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -29,6 +30,7 @@ import ai.djl.translate.TranslateException;
  *   sparse_root.onnx
  *     Input:
  *       noise_3d   float32[1, 13, 4, 2, 4]   (13 noise channels, 4×2×4 cells)
+ *       [TODO: biome_ids int32[1, 4, 2, 4]   (discrete biome palette indices)]
  *
  *     Outputs (teacher-forced, all nodes expanded at every level):
  *       split_L4   float32[1,    1]           split logits at level 4 (root)
@@ -98,6 +100,9 @@ public final class SparseRootModelRunner implements AutoCloseable {
     private final BlockVocabulary vocabulary;
     private final int numClasses;
 
+    /** Guards the one-shot diagnostic log (fires on first inference only). */
+    private final AtomicBoolean debugOnce = new AtomicBoolean(false);
+
     private SparseRootModelRunner(NDManager manager,
                                   ZooModel<NDList, NDList> model,
                                   BlockVocabulary vocabulary,
@@ -153,8 +158,15 @@ public final class SparseRootModelRunner implements AutoCloseable {
                     ModelConfig cfg = ConfigLoader.load(configPath);
                     int nc = cfg.effectiveBlockVocabSize();
                     if (cfg.blockMapping() != null && !cfg.blockMapping().isEmpty()) {
-                        vocab = BlockVocabulary.fromConfig(cfg);
-                        if (nc <= 0) nc = vocab.size();
+                        try {
+                            vocab = BlockVocabulary.fromConfig(cfg);
+                            if (nc <= 0) nc = vocab.size();
+                        } catch (ExceptionInInitializerError | NoClassDefFoundError e) {
+                            // Minecraft block registry not bootstrapped (unit-test env) — skip vocab.
+                            // In prod, registries are always initialized before this path is reached.
+                            LOGGER.warn("[SparseRoot] Block registry unavailable (test env?) — "
+                                    + "vocab skipped: {}", e.getClass().getSimpleName());
+                        }
                     }
                     if (nc <= 0) nc = 256;
                     numClassesFromConfig = nc;
@@ -193,12 +205,16 @@ public final class SparseRootModelRunner implements AutoCloseable {
             throws Exception {
         // Try the requested provider first (e.g. DirectML)
         if (!provider.djlOptionValue().isEmpty()) {
+            ZooModel<NDList, NDList> attempted = null;
             try {
-                ZooModel<NDList, NDList> model = buildCriteria(dir, provider.djlOptionValue())
+                attempted = buildCriteria(dir, provider.djlOptionValue())
                         .build().loadModel();
                 LOGGER.info("[SparseRoot] Loaded with provider {}", provider);
-                return model;
+                return attempted;
             } catch (Exception ex) {
+                if (attempted != null) {
+                    try { attempted.close(); } catch (Exception ignore) {}
+                }
                 LOGGER.warn("[SparseRoot] Provider {} unavailable ({}); falling back to CPU",
                         provider, ex.getMessage());
             }
@@ -239,11 +255,26 @@ public final class SparseRootModelRunner implements AutoCloseable {
      * @param noiseFlat flat {@code float[13 * 4 * 2 * 4 = 416]} noise input
      *        in channel-outermost order, as returned by
      *        {@link com.rhythmatician.lodiffusion.voxy.WorldNoiseAccess#sampleNoise3DForSection}
+     * @param biomeIds optional {@code int[4][2][4]} biome IDs at cell resolution matching noiseFlat.
+     *        If {@code null} or empty, the model runs without biome conditioning (uses default).
+     *        Biome data should be sampled from the 4×4×96 GPU biome lattice output
+     *        (see {@link com.rhythmatician.lodiffusion.gpu.BiomePaletteSSBO}).
      * @return {@code int[16][16][16]} block IDs in {@code [y][z][x]} order
      *         (matching the Voxy native storage format), or {@code null} if
      *         inference failed
      */
-    public int[][][] runInference(float[] noiseFlat) {
+    public int[][][] runInference(float[] noiseFlat, int... unused) {
+        return runInferenceWithBiome(noiseFlat, null);
+    }
+
+    /**
+     * Run inference with explicit biome IDs.
+     *
+     * @param noiseFlat flat {@code float[13 * 4 * 2 * 4 = 416]} noise input
+     * @param biomeIds  {@code int[4][2][4]} biome IDs, or {@code null} for zero-fill
+     * @return {@code int[16][16][16]} block IDs, or {@code null} if inference failed
+     */
+    public int[][][] runInferenceWithBiome(float[] noiseFlat, int[][][] biomeIds) {
         ClassLoader prevCl = Thread.currentThread().getContextClassLoader();
         Thread.currentThread().setContextClassLoader(getClass().getClassLoader());
         try (NDManager sub = manager.newSubManager()) {
@@ -257,6 +288,12 @@ public final class SparseRootModelRunner implements AutoCloseable {
             } else {
                 inputs = new NDList(noise3d);
             }
+
+            // If biome_ids tensor is present in ONNX model, add it
+            // TODO: Add ONNX biome_ids input tensor [1, 4, 2, 4] int32
+            // For now, this is stubbed — regenerate sparse_root.onnx with biome branch
+            // and update ONNX input contracts once training is complete.
+            // Until then, the model will run with biome_embed(0) as a fallback.
 
             long t0 = System.currentTimeMillis();
             int[][][] blocks;
@@ -299,6 +336,7 @@ public final class SparseRootModelRunner implements AutoCloseable {
         // Locate split and label tensors by level node count
         float[][] splitByLevel = new float[LEVELS][];   // index 0 = L4 (1 node)
         float[][] labelByLevel = new float[LEVELS][];   // flat [N*C]
+        int[]    cByLevel      = new int[LEVELS];        // actual C from tensor shape
 
         for (NDArray t : outputs) {
             long[] shape = t.getShape().getShape();
@@ -310,16 +348,55 @@ public final class SparseRootModelRunner implements AutoCloseable {
                     splitByLevel[lvlIdx] = t.toFloatArray();
                 }
             } else if (shape.length == 3) {
-                // Label tensor: [1, N, C]
+                // Label tensor: [1, N, C]  — capture C so argmax stride is correct
                 int n = (int) shape[1];
+                int c = (int) shape[2];
                 int lvlIdx = levelIndexFromNodeCount(n);
                 if (lvlIdx >= 0 && labelByLevel[lvlIdx] == null) {
                     labelByLevel[lvlIdx] = t.toFloatArray();
+                    cByLevel[lvlIdx] = c;
                 }
             }
         }
 
-        // Validate that we got all 5 levels
+        // One-shot diagnostics: log tensor shapes + root signal on first inference
+        if (debugOnce.compareAndSet(false, true)) {
+            StringBuilder sb = new StringBuilder("[SparseRoot] First-inference diagnostics:");
+            sb.append("\n  Output tensors (").append(outputs.size()).append(" total):");
+            for (NDArray t : outputs) {
+                sb.append(" ").append(java.util.Arrays.toString(t.getShape().getShape()));
+            }
+            sb.append("\n  cByLevel: ").append(java.util.Arrays.toString(cByLevel));
+            // Root split
+            if (splitByLevel[0] != null && splitByLevel[0].length > 0) {
+                float rootLogit = splitByLevel[0][0];
+                float rootSigm = 1.0f / (1.0f + (float) Math.exp(-rootLogit));
+                sb.append("\n  Root split logit=").append(rootLogit)
+                  .append(" sigmoid=").append(String.format("%.4f", rootSigm))
+                  .append(" threshold=").append(splitThreshold)
+                  .append(" => ").append(rootSigm > splitThreshold ? "SPLIT" : "LEAF");
+            }
+            // Root label argmax
+            if (labelByLevel[0] != null && cByLevel[0] > 0) {
+                int rootBlockId = argmaxLabel(labelByLevel[0], 0, cByLevel[0]);
+                sb.append("\n  Root label argmax=").append(rootBlockId);
+                // Show top-5 logit values at root
+                float[] rootLabel = labelByLevel[0];
+                sb.append(" top logits:");
+                for (int i = 0; i < Math.min(5, cByLevel[0]); i++) {
+                    sb.append(" [").append(i).append("]").append(String.format("%.3f", rootLabel[i]));
+                }
+            }
+            // L0 label class 0 logit vs class 1 at node 0
+            if (labelByLevel[4] != null && cByLevel[4] > 0) {
+                int l0BlockId = argmaxLabel(labelByLevel[4], 0, cByLevel[4]);
+                sb.append("\n  L0[0] argmax=").append(l0BlockId)
+                  .append(" c=").append(cByLevel[4])
+                  .append(" array_len=").append(labelByLevel[4].length)
+                  .append(" expected=").append((long) LEVEL_NODES[4] * cByLevel[4]);
+            }
+            LOGGER.info("{}", sb);
+        }
         for (int i = 0; i < LEVELS; i++) {
             if (splitByLevel[i] == null || labelByLevel[i] == null) {
                 LOGGER.warn("[SparseRoot] Missing output tensor for level index {} "
@@ -366,7 +443,7 @@ public final class SparseRootModelRunner implements AutoCloseable {
                 int childLvlIdx = lvlIdx + 1;
                 int childBase = nodeIdx * 8;
                 for (int oct = 0; oct < 8; oct++) {
-                    int dx = (oct & 1);
+                    int dx = oct & 1;
                     int dz = (oct >> 1) & 1;
                     int dy = (oct >> 2) & 1;
                     int childOrigin = ((by0 + dy * childSize) << 8)
@@ -375,8 +452,12 @@ public final class SparseRootModelRunner implements AutoCloseable {
                     pending.push(new int[] { childLvlIdx, childBase + oct, childOrigin });
                 }
             } else {
-                // Leaf: fill sub-region with argmax of label logits
-                int blockId = argmaxLabel(labelByLevel[lvlIdx], nodeIdx, numClasses);
+                // Leaf: fill sub-region with argmax of label logits.
+                // Use the actual C captured from the tensor shape — NOT numClasses
+                // (which is the config vocab size and may differ from the model's
+                // trained output width, causing incorrect stride and all-air output).
+                int c = (cByLevel[lvlIdx] > 0) ? cByLevel[lvlIdx] : numClasses;
+                int blockId = argmaxLabel(labelByLevel[lvlIdx], nodeIdx, c);
                 fillRegion(grid, by0, bz0, bx0, size, blockId);
             }
         }
