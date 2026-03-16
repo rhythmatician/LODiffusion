@@ -203,4 +203,34 @@ public final class Config {
     JsonObject o = merged();
     return o.has(key) ? o.get(key).getAsDouble() : def;
   }
+
+  // ========== Dataset Export Configuration ==========
+
+  /**
+   * Check if dataset export is enabled.
+   *
+   * @return true if dataset export should be active
+   */
+  public static boolean isDatasetExportEnabled() {
+    return getBoolean("datasetExportEnabled", false);
+  }
+
+  /**
+   * Get the dataset export directory path.
+   *
+   * @return Path to the dataset export directory (relative to instance directory)
+   */
+  public static Path getDatasetExportPath() {
+    return Paths.get(getString("datasetExportPath", "dataset/"));
+  }
+
+  /**
+   * Get the dataset export format.
+   *
+   * @return Export format as a string (BINARY or PARQUET)
+   */
+  public static String getDatasetExportFormat() {
+    return getString("datasetExportFormat", "BINARY");
+  }
 }
+
