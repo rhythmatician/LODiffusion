@@ -68,6 +68,10 @@ public final class SparseRootModelRunner implements AutoCloseable {
     private static final String STEM = "sparse_root";
     /** Config sidecar filename. */
     private static final String CONFIG = "sparse_root_config.json";
+    /** Runtime config key for split expansion probability threshold. */
+    static final String SPLIT_THRESHOLD_CONFIG_KEY = "sparseRootSplitThreshold";
+    /** Default split expansion threshold used when runtime config does not override it. */
+    static final float DEFAULT_SPLIT_THRESHOLD = 0.43f;
 
     /** Octree depth. L4 = root, L0 = leaf (individual blocks). */
     private static final int LEVELS = 5;
@@ -79,7 +83,7 @@ public final class SparseRootModelRunner implements AutoCloseable {
     /**
      * Split threshold: sigmoid(split_logit) &gt; this → expand to children.
      * Set once at load time from runtime config key {@code "sparseRootSplitThreshold"}
-     * (default 0.6).  The same value is written to {@code sparse_root_config.json}
+     * (default 0.43). The same value is written to {@code sparse_root_config.json}
      * by {@code export_sparse_root.py} so training and runtime stay in sync.
      */
     private final float splitThreshold;
@@ -184,7 +188,7 @@ public final class SparseRootModelRunner implements AutoCloseable {
                     LOGGER.warn("[SparseRoot] {} not found — using raw block indices (no vocab)", configPath);
                 }
                 float splitThreshold = (float) com.rhythmatician.lodiffusion.Config
-                        .getDouble("sparseRootSplitThreshold", 0.6);
+                        .getDouble(SPLIT_THRESHOLD_CONFIG_KEY, DEFAULT_SPLIT_THRESHOLD);
                 LOGGER.debug("[SparseRoot] splitThreshold={}", splitThreshold);
                 return new SparseRootModelRunner(manager, zm, vocab, numClassesFromConfig,
                         splitThreshold, hasNoise2d, noise2dShape);
@@ -323,7 +327,7 @@ public final class SparseRootModelRunner implements AutoCloseable {
      * <p>Performs greedy top-down traversal:
      * <ol>
      *   <li>Start at the single L4 root node.</li>
-     *   <li>At each node, check {@code sigmoid(split_logit) > splitThreshold}.</li>
+     *   <li>At each node, evaluate {@link #shouldExpandNode(float, float)}.</li>
      *   <li>If <em>split</em>: enqueue all 8 children at the next finer level.</li>
      *   <li>If <em>leaf</em>: fill the node's sub-region with
      *       {@code argmax(label_logits)}.</li>
@@ -370,11 +374,11 @@ public final class SparseRootModelRunner implements AutoCloseable {
             // Root split
             if (splitByLevel[0] != null && splitByLevel[0].length > 0) {
                 float rootLogit = splitByLevel[0][0];
-                float rootSigm = 1.0f / (1.0f + (float) Math.exp(-rootLogit));
+                float rootSigm = sigmoid(rootLogit);
                 sb.append("\n  Root split logit=").append(rootLogit)
                   .append(" sigmoid=").append(String.format("%.4f", rootSigm))
                   .append(" threshold=").append(splitThreshold)
-                  .append(" => ").append(rootSigm > splitThreshold ? "SPLIT" : "LEAF");
+                  .append(" => ").append(shouldExpandNode(rootLogit, splitThreshold) ? "SPLIT" : "LEAF");
             }
             // Root label argmax
             if (labelByLevel[0] != null && cByLevel[0] > 0) {
@@ -432,9 +436,7 @@ public final class SparseRootModelRunner implements AutoCloseable {
             boolean isSplit = false;
             float[] splitArr = splitByLevel[lvlIdx];
             if (splitArr != null && lvlIdx < LEVELS - 1) {
-                float logit = splitArr[nodeIdx];
-                float sigm = 1.0f / (1.0f + (float) Math.exp(-logit));
-                isSplit = sigm > thresh;
+                isSplit = shouldExpandNode(splitArr[nodeIdx], thresh);
             }
 
             if (isSplit && lvlIdx < LEVELS - 1) {
@@ -521,6 +523,19 @@ public final class SparseRootModelRunner implements AutoCloseable {
             if (LEVEL_NODES[i] == n) return i;
         }
         return -1;
+    }
+
+
+    static boolean shouldExpandNode(float splitLogit, float splitThreshold) {
+        return sigmoid(splitLogit) > splitThreshold;
+    }
+
+    static float sigmoid(float value) {
+        return 1.0f / (1.0f + (float) Math.exp(-value));
+    }
+
+    static float logitForThreshold(float threshold) {
+        return (float) Math.log(threshold / (1.0f - threshold));
     }
 
     // ------------------------------------------------------------------

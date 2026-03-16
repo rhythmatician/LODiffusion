@@ -15,7 +15,8 @@ Architecture
    features ready for the next level.
 
    Training: all nodes at every level are always expanded (teacher forcing).
-   Inference: only expand nodes where ``split_logit > 0`` (see inference note).
+   Inference: expand nodes by applying a sigmoid to ``split_logit`` and
+   comparing against the runtime split threshold (commonly 0.43).
 
 Output keys are **integers** (4, 3, 2, 1, 0) matching
 ``build_sparse_octree_targets``.
