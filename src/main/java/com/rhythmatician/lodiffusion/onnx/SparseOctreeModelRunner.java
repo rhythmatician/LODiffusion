@@ -31,8 +31,10 @@ import ai.djl.translate.TranslateException;
  * <pre>
  *   sparse_octree.onnx
  *     Input:
- *       noise_3d   float32[1, 13, 4, 2, 4]   (13 noise channels, 4×2×4 cells)
- *       biome_ids  int32[1, 4, 2, 4]   (discrete biome palette indices, optional)
+ *       noise_3d   float32[1, C, Dy, Dz, Dx]  (noise channels × spatial cells)
+ *                  Legacy models:  [1, 13, 4, 2, 4]   (13 intermediate channels, 4×2×4)
+ *                  v7+ models:     [1, 15, 4, 4, 4]   (15 NoiseRouter fields, 4×4×4 quarts)
+ *       biome_ids  int32[1, ...]   (discrete biome palette indices, optional)
  *
  *     Outputs (teacher-forced, all nodes expanded at every level):
  *       split_L4   float32[1,    1]           split logits at level 4 (root)
@@ -102,6 +104,14 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     /** Shape of the biome_ids input tensor, if present. */
     private final long[] biomeIdsShape;
 
+    /**
+     * Shape of the noise_3d input tensor as declared in the model config sidecar.
+     * Legacy (v6): {@code [1, 13, 4, 2, 4]}.  New (v7+): {@code [1, 15, 4, 4, 4]}.
+     * Used by {@link #runInferenceWithBiome} to reshape the flat noise array.
+     * Falls back to {@code [1, 13, 4, 2, 4]} if the config doesn't declare a shape.
+     */
+    private final long[] noise3dShape;
+
     /** Ordered ONNX/model-config input tensor names for name-based mapping. */
     private final List<String> inputOrder;
 
@@ -127,6 +137,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                                   long[] noise2dShape,
                                   boolean hasBiomeIds,
                                   long[] biomeIdsShape,
+                                  long[] noise3dShape,
                                   List<String> inputOrder) {
         this.manager        = manager;
         this.model          = model;
@@ -137,6 +148,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
         this.noise2dShape   = noise2dShape;
         this.hasBiomeIds    = hasBiomeIds;
         this.biomeIdsShape  = biomeIdsShape;
+        this.noise3dShape   = noise3dShape;
         this.inputOrder     = List.copyOf(inputOrder);
     }
 
@@ -176,6 +188,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 long[] noise2dShape = null;
                 boolean hasBiomeIds = false;
                 long[] biomeIdsShape = null;
+                long[] noise3dShape = new long[]{1, 13, 4, 2, 4}; // legacy default
                 List<String> inputOrder = List.of("noise_3d");
                 Path configPath = modelDir.resolve(CONFIG);
                 if (Files.exists(configPath)) {
@@ -209,6 +222,17 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                         for (int i = 0; i < shape.length; i++) biomeIdsShape[i] = shape[i];
                     }
 
+                    // Discover noise_3d shape from config sidecar.
+                    // Legacy (v6) models declare [1, 13, 4, 2, 4].
+                    // New (v7+) models declare [1, 15, 4, 4, 4] (15 NoiseRouter fields, quart res).
+                    if (cfg.hasInput("noise_3d")) {
+                        int[] shape = cfg.getInputShape("noise_3d");
+                        if (shape != null && shape.length > 0) {
+                            noise3dShape = new long[shape.length];
+                            for (int i = 0; i < shape.length; i++) noise3dShape[i] = shape[i];
+                        }
+                    }
+
                     inputOrder = resolveInputOrder(cfg);
 
                     LOGGER.info("[SparseOctree] Loaded — vocab={} numClasses={} provider={}",
@@ -219,9 +243,11 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 float splitThreshold = (float) com.rhythmatician.lodiffusion.Config
                         .getDouble(SPLIT_THRESHOLD_CONFIG_KEY, DEFAULT_SPLIT_THRESHOLD);
                 LOGGER.debug("[SparseOctree] splitThreshold={}", splitThreshold);
+                LOGGER.info("[SparseOctree] noise_3d shape: {}",
+                        java.util.Arrays.toString(noise3dShape));
                 return new SparseOctreeModelRunner(manager, zm, vocab, numClassesFromConfig,
                         splitThreshold, hasNoise2d, noise2dShape,
-                        hasBiomeIds, biomeIdsShape, inputOrder);
+                        hasBiomeIds, biomeIdsShape, noise3dShape, inputOrder);
 
             } catch (Exception e) {
                 manager.close();
@@ -309,13 +335,13 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     /**
      * Run inference for a single 16³ subchunk.
      *
-     * @param noiseFlat flat {@code float[13 * 4 * 2 * 4 = 416]} noise input
-     *        in channel-outermost order, as returned by
-     *        {@link com.rhythmatician.lodiffusion.voxy.WorldNoiseAccess#sampleNoise3DForSection}
-     * @param biomeIds optional {@code int[4][2][4]} biome IDs at cell resolution matching noiseFlat.
-     *        If {@code null} or empty, the model runs without biome conditioning (uses default).
-     *        Biome data should be sampled from the 4×4×96 GPU biome lattice output
-     *        (see {@link com.rhythmatician.lodiffusion.gpu.BiomePaletteSSBO}).
+     * @param noiseFlat flat noise input in channel-outermost order.
+     *        Legacy (v6): {@code float[13 * 4 * 2 * 4 = 416]} from
+     *        {@code WorldNoiseAccess.sampleNoise3DForSection}.
+     *        New (v7+): {@code float[15 * 4 * 4 * 4 = 960]} from
+     *        {@link com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler}.
+     * @param biomeIds optional biome IDs at cell resolution matching noiseFlat.
+     *        If {@code null} or empty, the model runs without biome conditioning.
      * @return {@code int[16][16][16]} block IDs in {@code [y][z][x]} order
      *         (matching the Voxy native storage format), or {@code null} if
      *         inference failed
@@ -327,17 +353,18 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     /**
      * Run inference with explicit biome IDs.
      *
-     * @param noiseFlat flat {@code float[13 * 4 * 2 * 4 = 416]} noise input
-     * @param biomeIds  {@code int[4][2][4]} biome IDs, or {@code null} for zero-fill
+     * @param noiseFlat flat noise input (length must match the product of
+     *        {@link #noise3dShape()} dimensions)
+     * @param biomeIds  biome IDs array, or {@code null} for zero-fill
      * @return {@code int[16][16][16]} block IDs, or {@code null} if inference failed
      */
     public int[][][] runInferenceWithBiome(float[] noiseFlat, int[][][] biomeIds) {
         ClassLoader prevCl = Thread.currentThread().getContextClassLoader();
         Thread.currentThread().setContextClassLoader(getClass().getClassLoader());
         try (NDManager sub = manager.newSubManager()) {
-            // Build input tensor: [1, 13, 4, 2, 4]
+            // Build input tensor using the model's declared shape
             NDArray noise3d = sub.create(noiseFlat,
-                    new Shape(1, 13, 4, 2, 4));
+                    new Shape(noise3dShape));
             NDArray noise2d = (hasNoise2d && noise2dShape != null)
                     ? sub.zeros(new Shape(noise2dShape))
                     : null;
@@ -659,6 +686,29 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     /** Number of block classes the model was trained with. */
     public int numClasses() {
         return numClasses;
+    }
+
+    /**
+     * The expected shape of the noise_3d input tensor, as declared in
+     * the model config sidecar.
+     *
+     * <p>Legacy (v6) models: {@code [1, 13, 4, 2, 4]} (416 floats).<br>
+     * New (v7+) models: {@code [1, 15, 4, 4, 4]} (960 floats).
+     *
+     * @return defensive copy of the shape array
+     */
+    public long[] noise3dShape() {
+        return noise3dShape.clone();
+    }
+
+    /**
+     * Expected flat length of the noise_3d input array
+     * (product of all shape dimensions).
+     */
+    public int noise3dFlatLength() {
+        long product = 1;
+        for (long d : noise3dShape) product *= d;
+        return (int) product;
     }
 
     // ------------------------------------------------------------------

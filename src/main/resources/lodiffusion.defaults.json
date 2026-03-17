@@ -1,4 +1,5 @@
 {
+  "terrainBackend": "auto",
   "useOnnxTerrain": true,
   "modelPath": "config/lodiffusion/model.onnx",
   "adapter": "unified_v1",

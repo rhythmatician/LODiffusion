@@ -146,15 +146,21 @@ public final class OctreeTask implements Comparable<OctreeTask> {
     public volatile long[] parentContextFlat;
 
     /**
-     * Flat noise input for the sparse-root model: {@code float[13 * 4 * 2 * 4 = 416]}.
+     * Flat noise input for the sparse-root model.
      *
-     * <p>Channel-outermost layout matching Python's {@code noise_3d [C, 4, 2, 4]}:
-     * index = {@code ch * 32 + cy_local * 16 + cz * 4 + cx_local}
-     * where {@code cy_local ∈ {0,1}}, {@code cz ∈ {0..3}}, {@code cx_local ∈ {0..3}}.
+     * <p>The exact shape depends on the model config sidecar:
+     * <ul>
+     *   <li><b>Legacy (v6):</b> {@code float[13 * 4 * 2 * 4 = 416]}.
+     *       Channel-outermost layout matching
+     *       {@code noise_3d [C=13, 4, 2, 4]}.</li>
+     *   <li><b>New (v7+):</b> {@code float[15 * 4 * 4 * 4 = 960]}.
+     *       15 NoiseRouter fields at quart resolution, from
+     *       {@link com.rhythmatician.lodiffusion.world.noise.SectionNoiseData#flat()}.</li>
+     * </ul>
      *
-     * <p>Set by {@link LodGenerationService} from
-     * {@code WorldNoiseAccess.sampleNoise3DForSection(wsX, wsY, wsZ)} before enqueue.
-     * {@code null} if the noise access is unavailable.
+     * <p>Set by {@link LodGenerationService} via
+     * {@link com.rhythmatician.lodiffusion.world.noise.NoiseRouterSamplerFactory}
+     * before enqueue.  {@code null} if the noise access is unavailable.
      */
     public volatile float[] noiseFlat;
 

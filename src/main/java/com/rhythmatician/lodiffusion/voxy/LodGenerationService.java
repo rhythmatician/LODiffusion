@@ -17,6 +17,9 @@ import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import com.rhythmatician.lodiffusion.onnx.OctreeModelRunner;
 import com.rhythmatician.lodiffusion.onnx.SparseOctreeModelRunner;
+import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler;
+import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSamplerFactory;
+import com.rhythmatician.lodiffusion.world.noise.SectionNoiseData;
 
 import net.minecraft.registry.Registry;
 import net.minecraft.registry.RegistryKeys;
@@ -247,6 +250,15 @@ public final class LodGenerationService {
     /** Server-side noise access — null if unavailable (dedicated server). */
     private volatile WorldNoiseAccess noiseAccess;
 
+    /**
+     * Hot-swappable sampler factory for the 15 NoiseRouter fields.
+     * Reads {@code terrainBackend} config on each call to
+     * {@link NoiseRouterSamplerFactory#getSampler()}.
+     * Null until the world's {@link net.minecraft.world.gen.noise.NoiseConfig}
+     * is available.
+     */
+    private volatile NoiseRouterSamplerFactory samplerFactory;
+
     /** Server reference for noise access (integrated server in singleplayer). */
     private volatile MinecraftServer server;
 
@@ -320,6 +332,10 @@ public final class LodGenerationService {
         noiseAccessSections.set(0);
         skippedAirSections.set(0);
         diagnosticCount.set(0);
+        if (samplerFactory != null) {
+            try { samplerFactory.close(); } catch (Exception ignored) {}
+            samplerFactory = null;
+        }
         noiseAccess = null;
         this.server = server;
 
@@ -354,6 +370,10 @@ public final class LodGenerationService {
         columnContextCache.clear();
         if (q != null) q.clear();
         activeQueue = null;
+        if (samplerFactory != null) {
+            try { samplerFactory.close(); } catch (Exception ignored) {}
+            samplerFactory = null;
+        }
         HelloTerrainMod.LOGGER.info("[LodGen] Service stopped");
     }
 
@@ -418,6 +438,11 @@ public final class LodGenerationService {
             if (noiseAccess != null) {
                 HelloTerrainMod.LOGGER.info("[LodGen] Using REAL noise access — " +
                         "no synthetic fallback needed");
+
+                // Create the hot-swappable sampler factory (reads terrainBackend config).
+                samplerFactory = NoiseRouterSamplerFactory.create(noiseAccess.noiseConfig());
+                HelloTerrainMod.LOGGER.info("[LodGen] NoiseRouterSamplerFactory ready — backend={}",
+                        samplerFactory.getSampler().backendName());
             } else {
                 HelloTerrainMod.LOGGER.warn("[LodGen] Noise access unavailable — " +
                         "will fall back to heightmap-only generation");
@@ -831,8 +856,11 @@ public final class LodGenerationService {
                         continue;
                     }
 
-                    // Sample noise and run sparse-root inference for this 16³ subchunk
-                    float[] noise = noiseAccess.sampleNoise3DForSection(sx, sz, sy);
+                    // Sample noise via the hot-swappable sampler (vanilla CPU or GPU)
+                    // and run sparse-root inference for this 16³ subchunk.
+                    NoiseRouterSampler sampler = samplerFactory.getSampler();
+                    SectionNoiseData snd = sampler.sampleSection(sx, sy, sz);
+                    float[] noise = snd.flat();
                     int[][][] blocks = sparseRootRunner.runInference(noise);
 
                     if (blocks != null) {
@@ -1590,13 +1618,15 @@ public final class LodGenerationService {
                 // Populate noise input for the sparse-root model if not already set.
                 // Only meaningful for L0 tasks where (wsX, wsZ) equal chunk coordinates
                 // and wsY equals the section-Y (range [-4, 19]).
-                if (task.noiseFlat == null && task.level == 0 && noiseAccess != null) {
+                if (task.noiseFlat == null && task.level == 0 && samplerFactory != null) {
                     try {
-                        task.noiseFlat = noiseAccess.sampleNoise3DForSection(
-                                task.wsX, task.wsZ, task.wsY);
+                        NoiseRouterSampler sampler = samplerFactory.getSampler();
+                        SectionNoiseData snd = sampler.sampleSection(
+                                task.wsX, task.wsY, task.wsZ);
+                        task.noiseFlat = snd.flat();
                     } catch (Exception ex) {
                         HelloTerrainMod.LOGGER.debug(
-                                "[LodGen] sampleNoise3DForSection failed for ({},{},{}) L{}: {}",
+                                "[LodGen] sampleSection failed for ({},{},{}) L{}: {}",
                                 task.wsX, task.wsY, task.wsZ, task.level, ex.getMessage());
                     }
                 }
@@ -1670,16 +1700,17 @@ public final class LodGenerationService {
                     if (task.level == 0) {
                         int[][][] blockGrid = null;
                         SparseOctreeModelRunner srr = sparseRootRunner;
-                        if (srr != null && noiseAccess != null) {
+                        if (srr != null && samplerFactory != null) {
                             blockGrid = new int[32][32][32];
+                            NoiseRouterSampler sampler = samplerFactory.getSampler();
                             for (int dy = 0; dy < 2; dy++) {
                                 for (int dz = 0; dz < 2; dz++) {
                                     for (int dx = 0; dx < 2; dx++) {
-                                        float[] subNoise = noiseAccess.sampleNoise3DForSection(
+                                        SectionNoiseData subSnd = sampler.sampleSection(
                                                 task.wsX * 2 + dx,
-                                                task.wsZ * 2 + dz,
-                                                task.wsY * 2 + dy);
-                                        int[][][] sub16 = srr.runInference(subNoise);
+                                                task.wsY * 2 + dy,
+                                                task.wsZ * 2 + dz);
+                                        int[][][] sub16 = srr.runInference(subSnd.flat());
                                         if (sub16 != null) {
                                             int by0 = dy * 16, bz0 = dz * 16, bx0 = dx * 16;
                                             for (int by = 0; by < 16; by++)

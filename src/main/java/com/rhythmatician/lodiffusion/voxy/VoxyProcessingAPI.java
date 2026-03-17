@@ -1,10 +1,9 @@
 package com.rhythmatician.lodiffusion.voxy;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.concurrent.ConcurrentLinkedDeque;
 import java.util.function.Consumer;
-
-import net.minecraft.client.Minecraft;
-import net.minecraft.world.level.chunk.LevelChunk;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -101,7 +100,7 @@ public final class VoxyProcessingAPI {
      *
      * @param snapshot The VoxelizedSectionSnapshot to pass to listeners
      */
-    static void fireCaptureSectionCallbacks(VoxelizedSectionSnapshot snapshot) {
+    public static void fireCaptureSectionCallbacks(VoxelizedSectionSnapshot snapshot) {
         for (Consumer<VoxelizedSectionSnapshot> listener : SECTION_LISTENERS) {
             try {
                 listener.accept(snapshot);
@@ -133,21 +132,106 @@ public final class VoxyProcessingAPI {
             return false;
         }
 
-        Minecraft mc = Minecraft.getInstance();
-        if (mc.level == null) {
-            LOGGER.warn("No world loaded; cannot process chunk ({}, {})", chunkX, chunkZ);
+        try {
+            Class<?> minecraftClass = Class.forName("net.minecraft.client.Minecraft");
+            Method getInstance = minecraftClass.getMethod("getInstance");
+            Object mc = getInstance.invoke(null);
+            if (mc == null) {
+                LOGGER.warn("No Minecraft instance available; cannot process chunk ({}, {})", chunkX, chunkZ);
+                return false;
+            }
+
+            Object level = getField(mc, "level", "world");
+            if (level == null) {
+                LOGGER.warn("No world loaded; cannot process chunk ({}, {})", chunkX, chunkZ);
+                return false;
+            }
+
+            Object chunk = getChunkFromLevel(level, chunkX, chunkZ);
+            if (chunk == null) {
+                LOGGER.debug("Chunk ({}, {}) not loaded in client cache", chunkX, chunkZ);
+                return false;
+            }
+
+            // Try to ingest the chunk using Voxy's static API
+            return tryIngestChunkViaReflection(chunk, chunkX, chunkZ);
+        } catch (ClassNotFoundException e) {
+            LOGGER.warn("Minecraft client classes not found; must be running in a client environment", e);
+            return false;
+        } catch (Exception e) {
+            LOGGER.warn("Error processing chunk ({}, {})", chunkX, chunkZ, e);
             return false;
         }
+    }
 
-        // Get the chunk from the client cache
-        LevelChunk chunk = mc.level.getChunk(chunkX, chunkZ);
-        if (chunk == null) {
-            LOGGER.debug("Chunk ({}, {}) not loaded in client cache", chunkX, chunkZ);
-            return false;
+    private static Object getField(Object obj, String... names) {
+        if (obj == null) {
+            return null;
         }
 
-        // Try to ingest the chunk using Voxy's static API
-        return tryIngestChunkViaReflection(chunk);
+        Class<?> cls = obj.getClass();
+        for (String name : names) {
+            try {
+                Field field = cls.getDeclaredField(name);
+                field.setAccessible(true);
+                return field.get(obj);
+            } catch (NoSuchFieldException | IllegalAccessException ignored) {
+                // Try next name
+            }
+        }
+        // Search in superclass hierarchy
+        Class<?> superClass = cls.getSuperclass();
+        while (superClass != null) {
+            for (String name : names) {
+                try {
+                    Field field = superClass.getDeclaredField(name);
+                    field.setAccessible(true);
+                    return field.get(obj);
+                } catch (NoSuchFieldException | IllegalAccessException ignored) {
+                    // Try next name
+                }
+            }
+            superClass = superClass.getSuperclass();
+        }
+        return null;
+    }
+
+    private static Object getChunkFromLevel(Object level, int chunkX, int chunkZ) {
+        if (level == null) {
+            return null;
+        }
+
+        Class<?> cls = level.getClass();
+        // Try common method signatures for getting a loaded chunk
+        for (Method method : cls.getMethods()) {
+            if (!method.getName().equals("getChunk")) {
+                continue;
+            }
+            Class<?>[] params = method.getParameterTypes();
+            try {
+                if (params.length == 2 && params[0] == int.class && params[1] == int.class) {
+                    return method.invoke(level, chunkX, chunkZ);
+                }
+                if (params.length == 3 && params[0] == int.class && params[1] == int.class && params[2] == boolean.class) {
+                    // avoid creating chunks if we can
+                    return method.invoke(level, chunkX, chunkZ, false);
+                }
+            } catch (Exception ignored) {
+                // ignore and try other overloads
+            }
+        }
+
+        // Fallback: try method names that differ across MC versions
+        for (String candidate : new String[]{"getChunkAt", "getLoadedChunk"}) {
+            try {
+                Method method = cls.getMethod(candidate, int.class, int.class);
+                return method.invoke(level, chunkX, chunkZ);
+            } catch (Exception ignored) {
+                // ignore
+            }
+        }
+
+        return null;
     }
 
     /**
@@ -157,30 +241,44 @@ public final class VoxyProcessingAPI {
      * chunk to the correct world engine based on the chunk's level.
      *
      * @param chunk The chunk to ingest
+     * @param chunkX The chunk X coordinate (for logging)
+     * @param chunkZ The chunk Z coordinate (for logging)
      * @return true if ingestion was successful or enqueued, false otherwise
      */
-    private static boolean tryIngestChunkViaReflection(LevelChunk chunk) {
+    private static boolean tryIngestChunkViaReflection(Object chunk, int chunkX, int chunkZ) {
         try {
             // Load the VoxelIngestService class via reflection
             Class<?> voxelIngestServiceClass =
                     Class.forName("me.cortex.voxy.common.world.service.VoxelIngestService");
-            java.lang.reflect.Method tryAutoIngestMethod =
-                    voxelIngestServiceClass.getMethod("tryAutoIngestChunk", LevelChunk.class);
+
+            Method tryAutoIngestMethod = null;
+            for (Method method : voxelIngestServiceClass.getMethods()) {
+                if (!method.getName().equals("tryAutoIngestChunk")) {
+                    continue;
+                }
+                Class<?>[] params = method.getParameterTypes();
+                if (params.length == 1) {
+                    tryAutoIngestMethod = method;
+                    break;
+                }
+            }
+
+            if (tryAutoIngestMethod == null) {
+                LOGGER.warn("VoxelIngestService.tryAutoIngestChunk method not found");
+                return false;
+            }
 
             // Call VoxelIngestService.tryAutoIngestChunk(chunk)
             Boolean result = (Boolean) tryAutoIngestMethod.invoke(null, chunk);
             if (Boolean.TRUE.equals(result)) {
-                LOGGER.debug("Chunk ({}, {}) enqueued for processing", chunk.getPos().x, chunk.getPos().z);
+                LOGGER.debug("Chunk ({}, {}) enqueued for processing", chunkX, chunkZ);
             } else {
                 LOGGER.debug("Chunk ({}, {}) was not enqueued (possibly invalid or no valid world)",
-                        chunk.getPos().x, chunk.getPos().z);
+                        chunkX, chunkZ);
             }
             return result;
         } catch (ClassNotFoundException e) {
             LOGGER.warn("VoxelIngestService class not found; Voxy may not be installed", e);
-            return false;
-        } catch (NoSuchMethodException e) {
-            LOGGER.warn("VoxelIngestService.tryAutoIngestChunk method not found", e);
             return false;
         } catch (Exception e) {
             LOGGER.warn("Error invoking VoxelIngestService.tryAutoIngestChunk", e);

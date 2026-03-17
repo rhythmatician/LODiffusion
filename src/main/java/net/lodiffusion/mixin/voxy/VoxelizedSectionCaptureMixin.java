@@ -158,8 +158,7 @@ public class VoxelizedSectionCaptureMixin {
                     return field.get(obj);
                 } catch (NoSuchFieldException e3) {
                     // Field not found with any pattern
-                    throw new NoSuchFieldException(
-                            "Field " + fieldName + " not found in " + cls.getName());
+                    return null;
                 }
             }
         }

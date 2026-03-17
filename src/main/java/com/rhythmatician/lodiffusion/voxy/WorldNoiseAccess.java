@@ -65,6 +65,15 @@ public final class WorldNoiseAccess {
         this.biomeSource = generator.getBiomeSource();
     }
 
+    /**
+     * The world's {@link NoiseConfig}, needed by
+     * {@link com.rhythmatician.lodiffusion.world.noise.NoiseRouterSamplerFactory}
+     * to build a {@link com.rhythmatician.lodiffusion.world.noise.VanillaNoiseRouterSampler}.
+     */
+    public NoiseConfig noiseConfig() {
+        return noiseConfig;
+    }
+
     // ------------------------------------------------------------------
     // Factory
     // ------------------------------------------------------------------
