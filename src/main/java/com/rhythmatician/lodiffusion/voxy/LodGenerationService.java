@@ -16,7 +16,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import com.rhythmatician.lodiffusion.onnx.OctreeModelRunner;
-import com.rhythmatician.lodiffusion.onnx.SparseRootModelRunner;
+import com.rhythmatician.lodiffusion.onnx.SparseOctreeModelRunner;
 
 import net.minecraft.registry.Registry;
 import net.minecraft.registry.RegistryKeys;
@@ -194,15 +194,15 @@ public final class LodGenerationService {
      * before the world fully joins (e.g. during "Loading terrain...").
      * {@code null} if pre-loading was not requested.
      */
-    private volatile CompletableFuture<SparseRootModelRunner> preloadFuture;
+    private volatile CompletableFuture<SparseOctreeModelRunner> preloadFuture;
 
     /**
      * Sparse-root model runner — the primary terrain generation model.
-     * {@code null} if {@code sparse_root.onnx} is absent or failed to load.
+     * {@code null} if {@code sparse_octree.onnx} is absent or failed to load.
      * When loaded, drives the flat subchunk pipeline that replaces the old
      * octree init/refine/leaf hierarchy.
      */
-    private volatile SparseRootModelRunner sparseRootRunner;
+    private volatile SparseOctreeModelRunner sparseRootRunner;
 
     /** Updated each tick from the client thread. */
     private volatile int playerSectionX;
@@ -278,7 +278,7 @@ public final class LodGenerationService {
         preloadFuture = CompletableFuture.supplyAsync(() -> {
             try {
                 java.nio.file.Path modelDir = Config.modelDir();
-                SparseRootModelRunner runner = SparseRootModelRunner.tryLoad(modelDir);
+                SparseOctreeModelRunner runner = SparseOctreeModelRunner.tryLoad(modelDir);
                 if (runner != null) {
                     HelloTerrainMod.LOGGER.info("[LodGen] Sparse-root pre-load complete");
                 } else {
@@ -425,7 +425,7 @@ public final class LodGenerationService {
 
             // ── Primary path: sparse-root model ─────────────────────────
             // Resolve from pre-loaded future if available, otherwise load synchronously.
-            sparseRootRunner = resolveSparseRootModel();
+            sparseRootRunner = resolveSparseOctreeModel();
 
             Object voxyMapper = VoxyCompat.getMapper(worldEngine);
             Registry<Biome> biomeRegistry =
@@ -451,7 +451,7 @@ public final class LodGenerationService {
                         "[LodGen] Starting SPARSE-ROOT generation from player section ({}, {}, {})",
                         playerSectionX, playerSectionY, playerSectionZ);
 
-                runSparseRootPipeline(world, worldEngine, writer, blockMapper, voxyMapper);
+                runSparseOctreePipeline(world, worldEngine, writer, blockMapper, voxyMapper);
                 return;
             }
 
@@ -760,7 +760,7 @@ public final class LodGenerationService {
      *
      * <p>This replaces the old octree init/refine/leaf pipeline.
      */
-    private void runSparseRootPipeline(World world, Object worldEngine,
+    private void runSparseOctreePipeline(World world, Object worldEngine,
                                         VoxySectionWriter writer,
                                         VoxyBlockMapper blockMapper,
                                         Object voxyMapper) {
@@ -1091,14 +1091,14 @@ public final class LodGenerationService {
      *
      * @return loaded runner, or {@code null} if the model is absent / failed
      */
-    private SparseRootModelRunner resolveSparseRootModel() {
-        CompletableFuture<SparseRootModelRunner> future = preloadFuture;
+    private SparseOctreeModelRunner resolveSparseOctreeModel() {
+        CompletableFuture<SparseOctreeModelRunner> future = preloadFuture;
         preloadFuture = null;  // consume so we don't reuse a stale instance
 
         if (future != null) {
             try {
                 HelloTerrainMod.LOGGER.info("[LodGen] Waiting for pre-loaded sparse-root model...");
-                SparseRootModelRunner preloaded = future.get(60, TimeUnit.SECONDS);
+                SparseOctreeModelRunner preloaded = future.get(60, TimeUnit.SECONDS);
                 if (preloaded != null) {
                     HelloTerrainMod.LOGGER.info("[LodGen] Using pre-loaded sparse-root model");
                     return preloaded;
@@ -1114,7 +1114,7 @@ public final class LodGenerationService {
         try {
             java.nio.file.Path modelDir = Config.modelDir();
             HelloTerrainMod.LOGGER.info("[LodGen] Loading sparse-root model from {}...", modelDir);
-            return SparseRootModelRunner.tryLoad(modelDir);
+            return SparseOctreeModelRunner.tryLoad(modelDir);
         } catch (Exception e) {
             HelloTerrainMod.LOGGER.error("[LodGen] Sparse-root model load failed: {}",
                     e.getMessage(), e);
@@ -1669,7 +1669,7 @@ public final class LodGenerationService {
                     //     replaced by finer data as the octree expands.
                     if (task.level == 0) {
                         int[][][] blockGrid = null;
-                        SparseRootModelRunner srr = sparseRootRunner;
+                        SparseOctreeModelRunner srr = sparseRootRunner;
                         if (srr != null && noiseAccess != null) {
                             blockGrid = new int[32][32][32];
                             for (int dy = 0; dy < 2; dy++) {

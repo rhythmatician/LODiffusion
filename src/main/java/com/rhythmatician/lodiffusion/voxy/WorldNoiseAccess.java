@@ -603,11 +603,11 @@ public final class WorldNoiseAccess {
     }
 
     // ------------------------------------------------------------------
-    // SparseRoot noise input (Stage 2 model: noise_3d)
+    // SparseOctree noise input (Stage 2 model: noise_3d)
     // ------------------------------------------------------------------
 
     /**
-     * Registry paths and special handling for the 13 SparseRoot noise channels.
+     * Registry paths and special handling for the 13 SparseOctree noise channels.
      *
      * <p>Layout matches the Python training pipeline:
      * <pre>
@@ -642,7 +642,7 @@ public final class WorldNoiseAccess {
         null,   // final_density → router.finalDensity()
     };
 
-    /** Number of SparseRoot noise channels. */
+    /** Number of SparseOctree noise channels. */
     public static final int N_NOISE_3D = NOISE_3D_PATHS.length; // 13
 
     /**
@@ -654,7 +654,7 @@ public final class WorldNoiseAccess {
 
     /**
      * Resolve (once) and cache all {@link DensityFunction} objects needed for
-     * the 13-channel SparseRoot noise input.
+     * the 13-channel SparseOctree noise input.
      */
     private DensityFunction[] getNoise3dFunctions() {
         if (noise3dFunctions != null) return noise3dFunctions;
@@ -685,7 +685,7 @@ public final class WorldNoiseAccess {
     }
 
     /**
-     * Sample the 13-channel SparseRoot noise input for a single L0 Voxy section.
+     * Sample the 13-channel SparseOctree noise input for a single L0 Voxy section.
      *
      * <p>Returns a flat {@code float[N_NOISE_3D * 4 * 2 * 4]} array in
      * {@code [field][cx][cy][cz]} (channel-outermost, C-contiguous) order,
@@ -745,7 +745,7 @@ public final class WorldNoiseAccess {
     /**
      * Sample biome IDs at 4×2×4 noise cell resolution for a section.
      *
-     * <p>Used by SparseRoot training data export. Biomes are sampled at
+     * <p>Used by SparseOctree training data export. Biomes are sampled at
      * quarter-block resolution and mapped to stable integer IDs via
      * biome registry position.
      *

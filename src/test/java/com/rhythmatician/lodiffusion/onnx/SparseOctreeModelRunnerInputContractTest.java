@@ -23,7 +23,7 @@ import ai.djl.ndarray.NDManager;
 import ai.djl.ndarray.types.Shape;
 import ai.djl.repository.zoo.ZooModel;
 
-class SparseRootModelRunnerInputContractTest {
+class SparseOctreeModelRunnerInputContractTest {
 
     @Test
     void resolveInputOrder_prefersNamedOrderFromConfig() {
@@ -32,10 +32,10 @@ class SparseRootModelRunnerInputContractTest {
         inputs.put("biome_ids", new int[] {1, 4, 2, 4});
         inputs.put("noise_3d", new int[] {1, 13, 4, 2, 4});
         ModelConfig cfg = new ModelConfig(
-                "sparse_root", "1", inputs, null, Map.of("block_logits", new int[] {1, 16, 16, 16, 16}),
+                "sparse_octree", "1", inputs, null, Map.of("block_logits", new int[] {1, 16, 16, 16, 16}),
                 null, null, null, null, null, 256, null, null);
 
-        List<String> order = SparseRootModelRunner.resolveInputOrder(cfg);
+        List<String> order = SparseOctreeModelRunner.resolveInputOrder(cfg);
 
         assertEquals(List.of("noise_2d", "biome_ids", "noise_3d"), order);
     }
@@ -50,7 +50,7 @@ class SparseRootModelRunnerInputContractTest {
             when(predictor.predict(any())).thenReturn(new NDList(
                     manager.create(new float[] {0f, 1f}, new Shape(1, 1, 2))));
 
-            SparseRootModelRunner runner = newRunner(manager, model,
+            SparseOctreeModelRunner runner = newRunner(manager, model,
                     true, new long[] {1, 6, 4, 4},
                     false, null,
                     List.of("noise_2d", "noise_3d"));
@@ -80,7 +80,7 @@ class SparseRootModelRunnerInputContractTest {
             when(predictor.predict(any())).thenReturn(new NDList(
                     manager.create(new float[] {0f, 1f}, new Shape(1, 1, 2))));
 
-            SparseRootModelRunner runner = newRunner(manager, model,
+            SparseOctreeModelRunner runner = newRunner(manager, model,
                     true, new long[] {1, 6, 4, 4},
                     true, new long[] {1, 4, 2, 4},
                     List.of("noise_2d", "biome_ids", "noise_3d"));
@@ -104,7 +104,7 @@ class SparseRootModelRunnerInputContractTest {
         }
     }
 
-    private static SparseRootModelRunner newRunner(
+    private static SparseOctreeModelRunner newRunner(
             NDManager manager,
             ZooModel<NDList, NDList> model,
             boolean hasNoise2d,
@@ -112,7 +112,7 @@ class SparseRootModelRunnerInputContractTest {
             boolean hasBiomeIds,
             long[] biomeShape,
             List<String> inputOrder) throws Exception {
-        Constructor<SparseRootModelRunner> ctor = SparseRootModelRunner.class.getDeclaredConstructor(
+        Constructor<SparseOctreeModelRunner> ctor = SparseOctreeModelRunner.class.getDeclaredConstructor(
                 NDManager.class,
                 ZooModel.class,
                 BlockVocabulary.class,

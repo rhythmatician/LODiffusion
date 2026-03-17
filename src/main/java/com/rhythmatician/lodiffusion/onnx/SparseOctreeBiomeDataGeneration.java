@@ -1,12 +1,12 @@
 package com.rhythmatician.lodiffusion.onnx;
 
 /**
- * TODO: Data generation for biome_ids channel in sparse_root training npz files.
+ * TODO: Data generation for biome_ids channel in sparse_octree training npz files.
  *
  * <h3>Scope</h3>
- * The sparse_root.py model now requires a third input: biome_ids [B, 4, 2, 4].
+ * The sparse_octree.py model now requires a third input: biome_ids [B, 4, 2, 4].
  * All existing training npz files must be regenerated with this key:
- *  - VoxelTree/noise_training_data/sparse_root_pairs.npz (296 samples)
+ *  - VoxelTree/noise_training_data/sparse_octree_pairs.npz (296 samples)
  *  - Any future batches collected via data-cli.py
  *
  * <h3>Biome ID Shape and Layout</h3>
@@ -34,14 +34,14 @@ package com.rhythmatician.lodiffusion.onnx;
  * - [ ] Add BiomePaletteSSBO.sampleBiomeIdsForSection(int chunkX, int chunkZ, int sectionY)
  *       or similar public method to extract [4][2][4] biome array
  * - [ ] Update VoxelTree/data-cli.py or generation script to call biome sampler
- * - [ ] Regenerate sparse_root_pairs.npz with biome_ids key
+ * - [ ] Regenerate sparse_octree_pairs.npz with biome_ids key
  * - [ ] Remove this stub file once implementation is live
  *
  * @see com.rhythmatician.lodiffusion.gpu.BiomePaletteSSBO
  * @see com.rhythmatician.lodiffusion.voxy.WorldNoiseAccess#sampleNoise3DForSection
  */
-public final class SparseRootBiomeDataGeneration {
-    private SparseRootBiomeDataGeneration() {
+public final class SparseOctreeBiomeDataGeneration {
+    private SparseOctreeBiomeDataGeneration() {
         throw new UnsupportedOperationException("Stub class for documentation only");
     }
 }

@@ -1,4 +1,4 @@
-"""Small demo to validate the SparseRootModel forward pass."""
+"""Small demo to validate the SparseOctreeModel forward pass."""
 
 import sys
 import pathlib
@@ -7,7 +7,7 @@ import torch
 # Ensure repo root is on sys.path so the demo can be run as a script
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[2]))
 
-from LODiffusion.models import SparseRootModel
+from LODiffusion.models import SparseOctreeModel
 
 
 def main():
@@ -18,7 +18,7 @@ def main():
     # synthetic root features
     root = torch.randn(B, N_root, in_ch)
 
-    model = SparseRootModel(in_channels=in_ch, hidden=64, num_classes=20, levels=5)
+    model = SparseOctreeModel(in_channels=in_ch, hidden=64, num_classes=20, levels=5)
     out = model(root)
 
     for lvl in sorted(out.keys(), reverse=True):

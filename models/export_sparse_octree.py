@@ -1,17 +1,17 @@
-"""Export a trained SparseRootModel checkpoint to ONNX + sidecar config.
+"""Export a trained SparseOctreeModel checkpoint to ONNX + sidecar config.
 
 Usage
 -----
-  python LODiffusion/models/export_sparse_root.py \\
-      --checkpoint path/to/sparse_root_best.pt \\
+  python LODiffusion/models/export_sparse_octree.py \\
+      --checkpoint path/to/sparse_octree_best.pt \\
       --out-dir    LODiffusion/run/models \\
       [--n2d 0] [--n3d 13] [--hidden 128] [--num-classes 1040]
 
 The script writes:
-  <out-dir>/sparse_root.onnx          (ONNX model)
-  <out-dir>/sparse_root_config.json   (sidecar for SparseRootModelRunner)
+  <out-dir>/sparse_octree.onnx          (ONNX model)
+  <out-dir>/sparse_octree_config.json   (sidecar for SparseOctreeModelRunner)
 
-ONNX contract: ``lodiffusion.v6.sparse_root``
+ONNX contract: ``lodiffusion.v6.sparse_octree``
 ---------------------------------------------
 Input:
   noise_3d   float32[1, n3d, 4, 2, 4]   (n2d=0 → no noise_2d input)
@@ -28,7 +28,7 @@ Outputs (10 tensors, levels 4 down to 0):
   split_L0   float32[1, 4096]
   label_L0   float32[1, 4096, C]
 
-The Java decoder (SparseRootModelRunner) identifies tensors by shape, so
+The Java decoder (SparseOctreeModelRunner) identifies tensors by shape, so
 the output name order is informational only.
 """
 
@@ -51,9 +51,9 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent.parent  # …/MC
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-from LODiffusion.models.sparse_root import (
-    SparseRootFastModel,
-    SparseRootModel,
+from LODiffusion.models.sparse_octree import (
+    SparseOctreeFastModel,
+    SparseOctreeModel,
 )  # noqa: E402
 
 
@@ -105,7 +105,7 @@ def _flatten_outputs(
 
 
 class _OnnxWrapperWith2d(nn.Module):
-    """Wraps SparseRootModel for export when noise_2d is present."""
+    """Wraps SparseOctreeModel for export when noise_2d is present."""
 
     def __init__(self, model: nn.Module) -> None:
         super().__init__()
@@ -121,7 +121,7 @@ class _OnnxWrapperWith2d(nn.Module):
 
 
 class _OnnxWrapperNo2d(nn.Module):
-    """Wraps SparseRootModel for export when no noise_2d input exists."""
+    """Wraps SparseOctreeModel for export when no noise_2d input exists."""
 
     def __init__(self, model: nn.Module) -> None:
         super().__init__()
@@ -202,7 +202,7 @@ def _load_block_vocab(path: "Path | None") -> dict[str, int]:
     return {}
 
 
-def export_sparse_root(
+def export_sparse_octree(
     checkpoint: Path,
     out_dir: Path,
     *,
@@ -216,8 +216,8 @@ def export_sparse_root(
     block_vocab: Path | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
-    onnx_path = out_dir / "sparse_root.onnx"
-    config_path = out_dir / "sparse_root_config.json"
+    onnx_path = out_dir / "sparse_octree.onnx"
+    config_path = out_dir / "sparse_octree_config.json"
 
     # ── Load checkpoint ────────────────────────────────────────────────
     state = torch.load(checkpoint, map_location="cpu", weights_only=True)
@@ -249,14 +249,14 @@ def export_sparse_root(
 
     # ── Build model ────────────────────────────────────────────────────
     if model_variant == "fast":
-        model: nn.Module = SparseRootFastModel(
+        model: nn.Module = SparseOctreeFastModel(
             n2d=n2d,
             n3d=n3d,
             hidden=hidden,
             num_classes=num_classes,
         )
     else:
-        model = SparseRootModel(
+        model = SparseOctreeModel(
             n2d=n2d,
             n3d=n3d,
             hidden=hidden,
@@ -362,12 +362,12 @@ def export_sparse_root(
     )
 
     # ── Sidecar config ─────────────────────────────────────────────────
-    # ModelConfig fields understood by SparseRootModelRunner / ConfigLoader:
+    # ModelConfig fields understood by SparseOctreeModelRunner / ConfigLoader:
     #   version, blockVocabSize, blockMapping (can be empty)
     config = {
-        "modelName": "sparse_root",
-        "version": "lodiffusion.v6.sparse_root",
-        "contract": "lodiffusion.v6.sparse_root",
+        "modelName": "sparse_octree",
+        "version": "lodiffusion.v6.sparse_octree",
+        "contract": "lodiffusion.v6.sparse_octree",
         "blockVocabSize": num_classes,
         # blockMapping: name→index dict loaded from standard_minecraft_blocks.json
         # (or a custom --block-vocab file).  Empty dict only if the file is absent.
@@ -379,7 +379,7 @@ def export_sparse_root(
             if n3d == len(_STANDARD_NOISE_3D_CHANNELS)
             else [f"ch_{i}" for i in range(n3d)]
         ),
-        # Inference parameters consumed by SparseRootModelRunner at runtime.
+        # Inference parameters consumed by SparseOctreeModelRunner at runtime.
         # splitThreshold: sigmoid(split_logit) > threshold → expand node (0.6 is
         #   more conservative than 0.5, reducing octree flicker between frames).
         # softmaxTemperature: logits are divided by this before argmax; < 1.0
@@ -422,20 +422,20 @@ def export_sparse_root(
 
 def _parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Export SparseRootModel checkpoint to ONNX",
+        description="Export SparseOctreeModel checkpoint to ONNX",
     )
     p.add_argument(
         "--checkpoint",
         required=True,
         type=Path,
-        help="Path to .pt file saved by train_sparse_root()",
+        help="Path to .pt file saved by train_sparse_octree()",
     )
     p.add_argument(
         "--out-dir",
         required=True,
         type=Path,
         help="Output directory (will be created).  "
-        "Writes sparse_root.onnx and sparse_root_config.json here.",
+        "Writes sparse_octree.onnx and sparse_octree_config.json here.",
     )
     p.add_argument(
         "--n2d", type=int, default=0, help="Number of 2-D noise channels (default: 0)"
@@ -482,7 +482,7 @@ def _parse_args() -> argparse.Namespace:
 
 if __name__ == "__main__":
     args = _parse_args()
-    export_sparse_root(
+    export_sparse_octree(
         checkpoint=args.checkpoint,
         out_dir=args.out_dir,
         n2d=args.n2d,

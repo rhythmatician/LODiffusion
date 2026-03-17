@@ -1,3 +1,3 @@
-from .sparse_root import SparseRootFastModel, SparseRootModel
+from .sparse_octree import SparseOctreeFastModel, SparseOctreeModel
 
-__all__ = ["SparseRootModel", "SparseRootFastModel"]
+__all__ = ["SparseOctreeModel", "SparseOctreeFastModel"]

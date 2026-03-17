@@ -22,14 +22,14 @@ import ai.djl.translate.NoopTranslator;
 import ai.djl.translate.TranslateException;
 
 /**
- * Loads and runs the single {@code sparse_root.onnx} model that replaces the
+ * Loads and runs the single {@code sparse_octree.onnx} model that replaces the
  * three-model octree pipeline (init / refine / leaf) for Stage 2 block
  * selection.
  *
- * <h3>Contract: {@code lodiffusion.v6.sparse_root}</h3>
+ * <h3>Contract: {@code lodiffusion.v6.sparse_octree}</h3>
  *
  * <pre>
- *   sparse_root.onnx
+ *   sparse_octree.onnx
  *     Input:
  *       noise_3d   float32[1, 13, 4, 2, 4]   (13 noise channels, 4×2×4 cells)
  *       biome_ids  int32[1, 4, 2, 4]   (discrete biome palette indices, optional)
@@ -62,14 +62,14 @@ import ai.djl.translate.TranslateException;
  *
  * @see com.rhythmatician.lodiffusion.voxy.WorldNoiseAccess#sampleNoise3DForSection
  */
-public final class SparseRootModelRunner implements AutoCloseable {
+public final class SparseOctreeModelRunner implements AutoCloseable {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(SparseRootModelRunner.class);
+    private static final Logger LOGGER = LoggerFactory.getLogger(SparseOctreeModelRunner.class);
 
     /** ONNX model stem (no extension). */
-    private static final String STEM = "sparse_root";
+    private static final String STEM = "sparse_octree";
     /** Config sidecar filename. */
-    private static final String CONFIG = "sparse_root_config.json";
+    private static final String CONFIG = "sparse_octree_config.json";
     /** Runtime config key for split expansion probability threshold. */
     static final String SPLIT_THRESHOLD_CONFIG_KEY = "sparseRootSplitThreshold";
     /** Default split expansion threshold used when runtime config does not override it. */
@@ -85,8 +85,8 @@ public final class SparseRootModelRunner implements AutoCloseable {
     /**
      * Split threshold: sigmoid(split_logit) &gt; this → expand to children.
      * Set once at load time from runtime config key {@code "sparseRootSplitThreshold"}
-     * (default 0.43). The same value is written to {@code sparse_root_config.json}
-     * by {@code export_sparse_root.py} so training and runtime stay in sync.
+     * (default 0.43). The same value is written to {@code sparse_octree_config.json}
+     * by {@code export_sparse_octree.py} so training and runtime stay in sync.
      */
     private final float splitThreshold;
 
@@ -118,7 +118,7 @@ public final class SparseRootModelRunner implements AutoCloseable {
     /** Guards the one-shot diagnostic log (fires on first inference only). */
     private final AtomicBoolean debugOnce = new AtomicBoolean(false);
 
-    private SparseRootModelRunner(NDManager manager,
+    private SparseOctreeModelRunner(NDManager manager,
                                   ZooModel<NDList, NDList> model,
                                   BlockVocabulary vocabulary,
                                   int numClasses,
@@ -145,25 +145,25 @@ public final class SparseRootModelRunner implements AutoCloseable {
     // ------------------------------------------------------------------
 
     /**
-     * Try to load {@code sparse_root.onnx} from {@code modelDir}.
+     * Try to load {@code sparse_octree.onnx} from {@code modelDir}.
      *
      * @param modelDir directory containing model files
      * @return loaded runner, or {@code null} if the file is absent
      * @throws IOException if the file is present but cannot be loaded
      */
-    public static SparseRootModelRunner tryLoad(Path modelDir) throws IOException {
+    public static SparseOctreeModelRunner tryLoad(Path modelDir) throws IOException {
         Path onnxPath = modelDir.resolve(STEM + ".onnx");
         if (!Files.exists(onnxPath)) {
-            LOGGER.info("[SparseRoot] {} not found — sparse-root model unavailable", onnxPath);
+            LOGGER.info("[SparseOctree] {} not found — sparse-root model unavailable", onnxPath);
             return null;
         }
 
         InferenceDeviceSelector.Provider provider = InferenceDeviceSelector.selectProvider();
-        LOGGER.info("[SparseRoot] Loading {} (provider={})", onnxPath, provider);
+        LOGGER.info("[SparseOctree] Loading {} (provider={})", onnxPath, provider);
 
         ClassLoader prevCl = Thread.currentThread().getContextClassLoader();
         Thread.currentThread().setContextClassLoader(
-                SparseRootModelRunner.class.getClassLoader());
+                SparseOctreeModelRunner.class.getClassLoader());
         try {
             NDManager manager = NDManager.newBaseManager();
             try {
@@ -188,7 +188,7 @@ public final class SparseRootModelRunner implements AutoCloseable {
                         } catch (ExceptionInInitializerError | NoClassDefFoundError e) {
                             // Minecraft block registry not bootstrapped (unit-test env) — skip vocab.
                             // In prod, registries are always initialized before this path is reached.
-                            LOGGER.warn("[SparseRoot] Block registry unavailable (test env?) — "
+                            LOGGER.warn("[SparseOctree] Block registry unavailable (test env?) — "
                                     + "vocab skipped: {}", e.getClass().getSimpleName());
                         }
                     }
@@ -211,22 +211,22 @@ public final class SparseRootModelRunner implements AutoCloseable {
 
                     inputOrder = resolveInputOrder(cfg);
 
-                    LOGGER.info("[SparseRoot] Loaded — vocab={} numClasses={} provider={}",
+                    LOGGER.info("[SparseOctree] Loaded — vocab={} numClasses={} provider={}",
                             vocab != null ? vocab.size() : "none", nc, provider);
                 } else {
-                    LOGGER.warn("[SparseRoot] {} not found — using raw block indices (no vocab)", configPath);
+                    LOGGER.warn("[SparseOctree] {} not found — using raw block indices (no vocab)", configPath);
                 }
                 float splitThreshold = (float) com.rhythmatician.lodiffusion.Config
                         .getDouble(SPLIT_THRESHOLD_CONFIG_KEY, DEFAULT_SPLIT_THRESHOLD);
-                LOGGER.debug("[SparseRoot] splitThreshold={}", splitThreshold);
-                return new SparseRootModelRunner(manager, zm, vocab, numClassesFromConfig,
+                LOGGER.debug("[SparseOctree] splitThreshold={}", splitThreshold);
+                return new SparseOctreeModelRunner(manager, zm, vocab, numClassesFromConfig,
                         splitThreshold, hasNoise2d, noise2dShape,
                         hasBiomeIds, biomeIdsShape, inputOrder);
 
             } catch (Exception e) {
                 manager.close();
                 if (e instanceof IOException) throw (IOException) e;
-                throw new IOException("Failed to load sparse_root from " + modelDir, e);
+                throw new IOException("Failed to load sparse_octree from " + modelDir, e);
             }
         } finally {
             Thread.currentThread().setContextClassLoader(prevCl);
@@ -243,22 +243,22 @@ public final class SparseRootModelRunner implements AutoCloseable {
             try {
                 attempted = buildCriteria(dir, provider.djlOptionValue())
                         .build().loadModel();
-                LOGGER.info("[SparseRoot] Loaded with provider {}", provider);
+                LOGGER.info("[SparseOctree] Loaded with provider {}", provider);
                 return attempted;
             } catch (Exception ex) {
                 if (attempted != null) {
                     try { attempted.close(); } catch (Exception ignore) {}
                 }
-                LOGGER.warn("[SparseRoot] Provider {} unavailable ({}); falling back to CPU",
+                LOGGER.warn("[SparseOctree] Provider {} unavailable ({}); falling back to CPU",
                         provider, ex.getMessage());
             }
         }
         // CPU fallback (or initial attempt when provider == CPU)
         ZooModel<NDList, NDList> model = buildCriteria(dir, null).build().loadModel();
         if (!provider.djlOptionValue().isEmpty()) {
-            LOGGER.info("[SparseRoot] Loaded with CPU fallback");
+            LOGGER.info("[SparseOctree] Loaded with CPU fallback");
         } else {
-            LOGGER.info("[SparseRoot] Loaded (CPU)");
+            LOGGER.info("[SparseOctree] Loaded (CPU)");
         }
         return model;
     }
@@ -369,13 +369,13 @@ public final class SparseRootModelRunner implements AutoCloseable {
             try (var predictor = model.newPredictor()) {
                 NDList outputs = predictor.predict(inputs);
                 long elapsedMs = System.currentTimeMillis() - t0;
-                LOGGER.debug("[SparseRoot] Inference complete in {}ms", elapsedMs);
+                LOGGER.debug("[SparseOctree] Inference complete in {}ms", elapsedMs);
                 blocks = decodeOutputs(outputs, sub);
             }
             return blocks;
 
         } catch (TranslateException e) {
-            LOGGER.warn("[SparseRoot] Inference failed: {}", e.getMessage());
+            LOGGER.warn("[SparseOctree] Inference failed: {}", e.getMessage());
             return null;
         } finally {
             Thread.currentThread().setContextClassLoader(prevCl);
@@ -389,29 +389,29 @@ public final class SparseRootModelRunner implements AutoCloseable {
 
         int[] flattened = new int[by * bz * bx];
         if (biomeIds == null) {
-            LOGGER.debug("[SparseRoot] biome_ids expected but null was provided; using zeros fallback");
+            LOGGER.debug("[SparseOctree] biome_ids expected but null was provided; using zeros fallback");
             return sub.create(flattened, new Shape(1, by, bz, bx));
         }
         if (biomeIds.length != by) {
-            LOGGER.warn("[SparseRoot] biome_ids y-size {} != {}; using zeros fallback", biomeIds.length, by);
+            LOGGER.warn("[SparseOctree] biome_ids y-size {} != {}; using zeros fallback", biomeIds.length, by);
             return sub.create(flattened, new Shape(1, by, bz, bx));
         }
 
         int idx = 0;
         for (int y = 0; y < by; y++) {
             if (biomeIds[y] == null || biomeIds[y].length != bz) {
-                LOGGER.warn("[SparseRoot] biome_ids z-size mismatch at y={}; using zeros fallback", y);
+                LOGGER.warn("[SparseOctree] biome_ids z-size mismatch at y={}; using zeros fallback", y);
                 return sub.create(new int[by * bz * bx], new Shape(1, by, bz, bx));
             }
             for (int z = 0; z < bz; z++) {
                 if (biomeIds[y][z] == null || biomeIds[y][z].length != bx) {
-                    LOGGER.warn("[SparseRoot] biome_ids x-size mismatch at y={}, z={}; using zeros fallback", y, z);
+                    LOGGER.warn("[SparseOctree] biome_ids x-size mismatch at y={}, z={}; using zeros fallback", y, z);
                     return sub.create(new int[by * bz * bx], new Shape(1, by, bz, bx));
                 }
                 for (int x = 0; x < bx; x++) {
                     int biome = biomeIds[y][z][x];
                     if (biome < 0) {
-                        LOGGER.warn("[SparseRoot] biome_ids contains negative value {}; using zeros fallback", biome);
+                        LOGGER.warn("[SparseOctree] biome_ids contains negative value {}; using zeros fallback", biome);
                         return sub.create(new int[by * bz * bx], new Shape(1, by, bz, bx));
                     }
                     flattened[idx++] = biome;
@@ -420,7 +420,7 @@ public final class SparseRootModelRunner implements AutoCloseable {
         }
         if (biomeIdsShape != null && biomeIdsShape.length == 4
                 && (biomeIdsShape[1] != by || biomeIdsShape[2] != bz || biomeIdsShape[3] != bx)) {
-            LOGGER.warn("[SparseRoot] biome_ids config shape {} differs from runtime [1,4,2,4]; using runtime shape",
+            LOGGER.warn("[SparseOctree] biome_ids config shape {} differs from runtime [1,4,2,4]; using runtime shape",
                     java.util.Arrays.toString(biomeIdsShape));
         }
         return sub.create(flattened, new Shape(1, by, bz, bx));
@@ -474,7 +474,7 @@ public final class SparseRootModelRunner implements AutoCloseable {
 
         // One-shot diagnostics: log tensor shapes + root signal on first inference
         if (debugOnce.compareAndSet(false, true)) {
-            StringBuilder sb = new StringBuilder("[SparseRoot] First-inference diagnostics:");
+            StringBuilder sb = new StringBuilder("[SparseOctree] First-inference diagnostics:");
             sb.append("\n  Output tensors (").append(outputs.size()).append(" total):");
             for (NDArray t : outputs) {
                 sb.append(" ").append(java.util.Arrays.toString(t.getShape().getShape()));
@@ -512,7 +512,7 @@ public final class SparseRootModelRunner implements AutoCloseable {
         }
         for (int i = 0; i < LEVELS; i++) {
             if (splitByLevel[i] == null || labelByLevel[i] == null) {
-                LOGGER.warn("[SparseRoot] Missing output tensor for level index {} "
+                LOGGER.warn("[SparseOctree] Missing output tensor for level index {} "
                         + "(nodeCount={}); using dense L0 fallback", i, LEVEL_NODES[i]);
                 // Fall back to filling the whole block with argmax of L0 label
             }

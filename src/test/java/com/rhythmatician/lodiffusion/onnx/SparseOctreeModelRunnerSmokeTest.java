@@ -7,12 +7,12 @@ import java.nio.file.Path;
 import org.junit.jupiter.api.Test;
 
 /**
- * Smoke test that verifies the sparse_root ONNX model can be loaded and executed.
+ * Smoke test that verifies the sparse_octree ONNX model can be loaded and executed.
  *
  * <p>This is intended as a minimal end-to-end sanity check (model file + sidecar
  * config + runtime ONNX inference) and does not validate output correctness.
  */
-class SparseRootModelRunnerSmokeTest {
+class SparseOctreeModelRunnerSmokeTest {
 
     @Test
     void loadAndRunDummyInference() throws Exception {
@@ -24,8 +24,8 @@ class SparseRootModelRunnerSmokeTest {
             Path modelDir = Path.of("config", "lodiffusion");
             assertTrue(modelDir.toFile().exists(), "Expected model directory to exist: " + modelDir);
 
-            SparseRootModelRunner runner = SparseRootModelRunner.tryLoad(modelDir);
-            assertNotNull(runner, "Expected SparseRootModelRunner to load successfully");
+            SparseOctreeModelRunner runner = SparseOctreeModelRunner.tryLoad(modelDir);
+            assertNotNull(runner, "Expected SparseOctreeModelRunner to load successfully");
             try {
                 float[] noise = new float[13 * 4 * 2 * 4];
                 int[][][] blocks = runner.runInference(noise);

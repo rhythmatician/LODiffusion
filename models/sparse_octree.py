@@ -180,7 +180,7 @@ class _LevelFiLM(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-class SparseRootModel(nn.Module):
+class SparseOctreeModel(nn.Module):
     """Noise-conditioned, teacher-forced sparse octree generator.
 
     Parameters
@@ -287,13 +287,13 @@ class SparseRootModel(nn.Module):
         return outputs
 
 
-class SparseRootFastModel(nn.Module):
+class SparseOctreeFastModel(nn.Module):
     """Faster sparse-root variant with factorized heads and level conditioning.
 
     Design goals
     ------------
     - reduce the dominant `label_head` and `child_proj` parameter blocks;
-    - preserve the same external forward contract as `SparseRootModel`;
+    - preserve the same external forward contract as `SparseOctreeModel`;
     - add cheap per-level conditioning to improve fine-level accuracy.
     """
 
@@ -373,4 +373,4 @@ class SparseRootFastModel(nn.Module):
         return outputs
 
 
-__all__ = ["SparseRootModel", "SparseRootFastModel"]
+__all__ = ["SparseOctreeModel", "SparseOctreeFastModel"]
