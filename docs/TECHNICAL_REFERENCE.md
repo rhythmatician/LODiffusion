@@ -487,7 +487,7 @@ To integrate all 4 cave functions into terrain_compute.comp:
       [ ] 4b. Update struct size comment (112 → 128 bytes)
       [ ] 4c. Add padding ints to maintain std140 16-byte alignment
       
-[ ] 5. On Java side (NoiseRouterExtractor.java):
+[ ] 5. On Java side (ShadowRouterExtractor.java):
       [ ] 5a. Extract new NormalNoise indices from NoiseRouter
       [ ] 5b. Update UniformBuffer struct (32 → 48 bytes for 8 new ints)
       [ ] 5c. Set values in UBO upload

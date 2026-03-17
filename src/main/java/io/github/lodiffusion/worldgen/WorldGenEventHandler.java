@@ -15,17 +15,22 @@ import java.util.WeakHashMap;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 
 /**
- * Event handler for world generation integration (reflection-driven).
+ * World-load event handler that bootstraps the <em>shadow router</em> pipeline.
  *
- * Hooks into ServerLevelEvents to extract NoiseRouter parameters when a world loads,
- * then uploads them to GPU SSBOs for parallel terrain generation.
+ * <p>The shadow router is the GPU-side reimplementation of Minecraft's vanilla
+ * {@code NoiseRouter}: a set of GLSL compute shaders that reproduce terrain density
+ * in parallel on the GPU, bypassing per-chunk CPU world-gen for far-LOD terrain.
+ *
+ * <p>This handler hooks into ServerLevelEvents to initialise the shadow router when
+ * a world is loaded:
+ * <ol>
+ *   <li><b>LOAD</b>: Extract the live {@code NoiseRouter} from the server level,
+ *       mirror its noise parameters to the GPU via {@link ShadowRouterExtractor}
+ *       + {@link ShaderSSBOManager}, and build the biome palette SSBO.</li>
+ *   <li><b>UNLOAD</b>: Clean up all GPU resources to prevent VRAM leaks.</li>
+ * </ol>
  *
  * All Minecraft class references use reflection to avoid compile-time classpath issues.
- *
- * Lifecycle:
- * - LOAD: Extract NoiseRouter, create ShaderSSBOManager, upload SSBOs
- * - UNLOAD: Cleanup ShaderSSBOManager, prevent VRAM leaks
- * - Orphan checks: Warn if old SSBO state isn't cleaned up before next load
  */
 public class WorldGenEventHandler {
     private static final Logger LOGGER = LogManager.getLogger();
@@ -193,13 +198,13 @@ public class WorldGenEventHandler {
             }
 
             // Extract parameters using reflection-driven extractor
-            LOGGER.info("Extracting NoiseRouter parameters...");
-            NoiseRouterExtractor extractor = new NoiseRouterExtractor();
-            NoiseRouterExtractor.NoiseRouterData data = extractor.extract(router);
+            LOGGER.info("Extracting shadow router parameters from vanilla NoiseRouter...");
+            ShadowRouterExtractor extractor = new ShadowRouterExtractor();
+            ShadowRouterExtractor.ShadowRouterData data = extractor.extract(router);
 
             // Verify extracted data is non-null
             if (data == null) {
-                LOGGER.error("NoiseRouterExtractor returned null data — aborting GPU setup");
+                LOGGER.error("ShadowRouterExtractor returned null data — aborting GPU setup");
                 return;
             }
             LOGGER.info("Extraction complete: {} noise instances discovered", 
@@ -519,7 +524,7 @@ public class WorldGenEventHandler {
     /**
      * Helper to estimate the number of noise instances extracted.
      */
-    private int countExtractedInstances(NoiseRouterExtractor.NoiseRouterData data) {
+    private int countExtractedInstances(ShadowRouterExtractor.ShadowRouterData data) {
         int count = 0;
         if (data.improvedOrigins != null) count += data.improvedOrigins.capacity() / 4;
         if (data.improvedPerms != null) count += data.improvedPerms.capacity() / 256;

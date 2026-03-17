@@ -16,14 +16,39 @@ import java.util.Map;
 import java.util.ArrayList;
 
 /**
- * Reflection-driven extractor that walks a Minecraft NoiseRouter and serializes
- * its noise parameters into GPU SSBO buffers.
+ * {@code ShadowRouterExtractor} — Java-side initialization stage of the
+ * <em>shadow router</em> pipeline.
  *
- * This class is intentionally written without any direct references to Minecraft
+ * <h3>What is the shadow router?</h3>
+ * Vanilla Minecraft's terrain generation is controlled by a {@code NoiseRouter} —
+ * a directed acyclic graph of 15+ {@code DensityFunction} nodes that, together,
+ * compute the final density value for every block position.  The shadow router
+ * is our GPU-side re-implementation of that same graph: a set of GLSL compute
+ * shaders ({@code improved_noise.glsl}, {@code perlin_noise.glsl},
+ * {@code normal_noise.glsl}, {@code terrain_compute.comp}) that reproduce vanilla
+ * terrain at LOD speed without loading any chunks.
+ *
+ * <h3>Role of this class</h3>
+ * At world load, this extractor <em>mirrors</em> the vanilla {@code NoiseRouter}
+ * onto the GPU by:
+ * <ol>
+ *   <li>Walking the {@code DensityFunction} expression tree via the
+ *       {@code DensityFunction.Visitor} pattern (reflection-based, no compile-time
+ *       Minecraft dependency).</li>
+ *   <li>Discovering every {@code NormalNoise}, {@code PerlinNoise}, and
+ *       {@code ImprovedNoise} instance and assigning each a contiguous GPU index.</li>
+ *   <li>Serializing permutation tables, octave configs, origin offsets, and blend
+ *       scalars into {@link ShadowRouterData} — flat NIO buffers ready for SSBO
+ *       upload via {@link ShaderSSBOManager}.</li>
+ * </ol>
+ * Once extraction is complete, the GPU shaders can evaluate any noise value in
+ * parallel using only the SSBO data — no CPU involvement per block.
+ *
+ * <p>This class is intentionally written without any direct references to Minecraft
  * classes (net.minecraft.*) so that it compiles even if the Minecraft dependency
  * is not present at compile time.
  */
-public class NoiseRouterExtractor {
+public class ShadowRouterExtractor {
     private static final Logger LOGGER = LogManager.getLogger();
 
     // ============================================================================
@@ -105,7 +130,7 @@ public class NoiseRouterExtractor {
     // Constructor (builds reflection metadata)
     // ----------------------------------------------------------------------------------------------------------------
 
-    public NoiseRouterExtractor() {
+    public ShadowRouterExtractor() {
         this.densityFunctionClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunction");
         this.densityFunctionVisitorClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunction$Visitor");
         this.densityFunctionsNoiseClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunctions$Noise");
@@ -132,8 +157,8 @@ public class NoiseRouterExtractor {
      *
      * @param noiseRouter A runtime instance of net.minecraft.world.level.levelgen.NoiseRouter
      */
-    public NoiseRouterData extract(Object noiseRouter) {
-        LOGGER.info("Starting NoiseRouter extraction...");
+    public ShadowRouterData extract(Object noiseRouter) {
+        LOGGER.info("Starting shadow router extraction...");
         if (noiseRouter == null) {
             throw new IllegalArgumentException("noiseRouter must not be null");
         }
@@ -152,7 +177,7 @@ public class NoiseRouterExtractor {
         LOGGER.info("Discovered {} PerlinNoise instances", perlinNoises.size());
         LOGGER.info("Discovered {} NormalNoise instances", normalNoises.size());
 
-        NoiseRouterData data = new NoiseRouterData();
+        ShadowRouterData data = new ShadowRouterData();
         data.improvedOrigins = extractImprovedOrigins();
         data.improvedPerms = extractImprovedPerms();
         data.perlinInts = extractPerlinInts();
@@ -169,7 +194,7 @@ public class NoiseRouterExtractor {
         // Second pass: resolve named noise indices from specific NoiseRouter fields
         wireNamedIndices(noiseRouter, data);
 
-        LOGGER.info("NoiseRouter extraction complete. Spline data size: {} floats", data.splineData.capacity());
+        LOGGER.info("Shadow router extraction complete. Spline data size: {} floats", data.splineData.capacity());
         LOGGER.info("Named indices: continents={} erosion={} ridges={} shift={}",
                 data.nnContinents, data.nnErosion, data.nnRidges, data.shiftNoiseIndex);
         return data;
@@ -571,7 +596,7 @@ public class NoiseRouterExtractor {
      * Populates named noise indices in {@code data} by walking specific fields of the NoiseRouter.
      * Requires that {@code mapAll()} has already been run so {@code noiseIndexMap} is populated.
      */
-    private void wireNamedIndices(Object noiseRouter, NoiseRouterData data) {
+    private void wireNamedIndices(Object noiseRouter, ShadowRouterData data) {
         data.nnContinents    = indexForShiftedNoise(noiseRouter, "continents");
         data.nnErosion       = indexForShiftedNoise(noiseRouter, "erosion");
         data.nnRidges        = indexForShiftedNoise(noiseRouter, "ridges");
@@ -685,7 +710,12 @@ public class NoiseRouterExtractor {
     // Output Data Container
     // ============================================================================
 
-    public static class NoiseRouterData {
+    /**
+     * Serialized shadow router parameters — flat NIO buffers ready for SSBO
+     * upload via {@link ShaderSSBOManager}.  One instance is produced per world
+     * load and reused for the lifetime of that world's noise configuration.
+     */
+    public static class ShadowRouterData {
         public FloatBuffer improvedOrigins;
         public IntBuffer improvedPerms;
         public IntBuffer perlinInts;
@@ -710,7 +740,7 @@ public class NoiseRouterExtractor {
          */
         public int nnDepthNoise    = -1;
         /** Noises.JAGGED with xzScale=1500, yScale=0.  Resolved by scale-matching in
-         *  {@link NoiseRouterExtractor#indexForJaggedNoise()}. */
+         *  {@link ShadowRouterExtractor#indexForJaggedNoise()}. */
         public int nnJagged        = -1;
         public int shiftNoiseIndex = -1;  // Noises.SHIFT — same index for both ShiftA and ShiftB
 

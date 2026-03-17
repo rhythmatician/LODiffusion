@@ -293,7 +293,7 @@ float mc_cave_noodle_val(float x, float y, float z) {
 // If your struct doesn't reach 128 bytes naturally, add padding:
 //   int _pad_new;  // std140 alignment
 //
-// In Java side (NoiseRouterExtractor), also update:
+// In Java side (ShadowRouterExtractor), also update:
 //   - UniformBuffer struct size: 112 → 128 bytes
 //   - Add setter methods for 8 new int fields
 //   - Extract indices from vanilla NoiseRouter

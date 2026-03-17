@@ -20,7 +20,7 @@
                                  │
                                  ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│              NoiseRouterExtractor (Java Visitor Pattern)                 │
+│              ShadowRouterExtractor (Java Visitor Pattern)               │
 ├─────────────────────────────────────────────────────────────────────────┤
 │  Phase 1: Graph Traversal                                                │
 │  ┌──────────────────────────────────────────────────────────────────┐  │
@@ -241,7 +241,7 @@ Time          Event
 ────          ─────
 T+0ms    [World Load] ServerLevelEvent.Load triggered
 T+5ms    NoiseRouter extracted from world generator
-T+15ms   NoiseRouterExtractor.extract() completes
+T+15ms   ShadowRouterExtractor.extract() completes
 T+20ms   Reflection introspection of ImprovedNoise/PerlinNoise/NormalNoise
 T+50ms   ├─ improvedOrigins uploaded to GPU
 T+65ms   ├─ improvedPerms uploaded (1MB+ per spline)
@@ -266,7 +266,7 @@ T+7ms    GPU to CPU density grid streaming
 |-----------|----------|---------|
 | Event Hook | TBD | Capture ServerLevelEvent.Load |
 | NoiseRouter Property | TBD | Extract from ChunkGenerator |
-| NoiseRouterExtractor.java | `src/main/java/...` | Visitor + Extraction |
+| ShadowRouterExtractor.java | `src/main/java/io/github/lodiffusion/worldgen/` | Visitor + Extraction |
 | SSBO Manager | TBD | Allocate & manage GPU buffers |
 | Shader Loader | TBD | Compile & link all 4 .glsl files |
 | Compute Dispatcher | TBD | Invoke glDispatchCompute() |

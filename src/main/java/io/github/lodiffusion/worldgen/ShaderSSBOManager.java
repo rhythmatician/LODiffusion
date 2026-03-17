@@ -10,20 +10,28 @@ import java.util.HashMap;
 import java.util.Map;
 
 /**
- * Manages OpenGL Shader Storage Buffer Objects (SSBOs) for GPU terrain generation.
+ * GPU memory manager for the <em>shadow router</em> pipeline.
  *
- * Allocates and uploads 8 GPU buffers (one per binding 0-7) containing noise parameters,
- * permutation tables, and spline data extracted from the NoiseRouter.
+ * <p>The shadow router is a GLSL compute-shader re-implementation of Minecraft's
+ * vanilla {@code NoiseRouter} that evaluates terrain density in parallel on the GPU,
+ * enabling far-LOD terrain generation without per-chunk CPU world-gen.
  *
- * Memory Layout (std430 alignment rules):
- * - Binding 0: ImprovedNoise origins (vec3 packed as vec4 for alignment)
- * - Binding 1: ImprovedNoise permutation tables (uint arrays)
- * - Binding 2: PerlinNoise octave indices (int array)
- * - Binding 3: PerlinNoise amplitudes (float array)
- * - Binding 4: NormalNoise perlin indices (int array)
- * - Binding 5: NormalNoise value factors (float array)
- * - Binding 6: Spline control point flattening (float array)
- * - Binding 7: Output density grid (read-write, target for compute dispatch)
+ * <p>This class allocates and uploads the 8 Shader Storage Buffer Objects (SSBOs)
+ * that feed the shadow router compute shaders.  The buffer data is produced once per
+ * world load by {@link ShadowRouterExtractor} (which walks the live {@code NoiseRouter}
+ * via reflection), and then lives on the GPU for the lifetime of that world.
+ *
+ * <h3>Memory Layout (std430 alignment rules)</h3>
+ * <ul>
+ *   <li>Binding 0: ImprovedNoise origins (vec3 packed as vec4 for alignment)</li>
+ *   <li>Binding 1: ImprovedNoise permutation tables (uint arrays)</li>
+ *   <li>Binding 2: PerlinNoise octave indices (int array)</li>
+ *   <li>Binding 3: PerlinNoise amplitudes (float array)</li>
+ *   <li>Binding 4: NormalNoise perlin indices (int array)</li>
+ *   <li>Binding 5: NormalNoise value factors (float array)</li>
+ *   <li>Binding 6: Spline control point flattening (float array)</li>
+ *   <li>Binding 7: Output density grid (read-write, target for compute dispatch)</li>
+ * </ul>
  */
 public class ShaderSSBOManager {
     private static final Logger LOGGER = LogManager.getLogger();
@@ -94,22 +102,24 @@ public class ShaderSSBOManager {
     }
 
     /**
-     * Uploads NoiseRouterData to GPU SSBOs and prepares the compute pipeline.
+     * Uploads {@link ShadowRouterExtractor.ShadowRouterData} to GPU SSBOs and
+     * prepares the compute pipeline.
      *
-     * Call this on the render thread after extracting the NoiseRouter.
+     * <p>Call this on the render thread after the shadow router bootstrap
+     * ({@link ShadowRouterExtractor#extract(Object)}) completes at world load.
      * Use GL_STATIC_DRAW for typical dimension/gameplay scenarios.
      *
      * ALIGNMENT NOTE (std430):
      * - vec3 is treated as vec4 for alignment purposes (12 bytes + 4 bytes padding)
      * - This method handles padding automatically for improvedOrigins
      */
-    public void uploadNoiseData(NoiseRouterExtractor.NoiseRouterData data) {
+    public void uploadNoiseData(ShadowRouterExtractor.ShadowRouterData data) {
         if (data == null) {
-            LOGGER.warn("uploadNoiseData called with null NoiseRouterData");
+            LOGGER.warn("uploadNoiseData called with null ShadowRouterData");
             return;
         }
 
-        LOGGER.info("ShaderSSBOManager: Uploading NoiseRouter data to GPU...");
+        LOGGER.info("ShaderSSBOManager: Uploading shadow router data to GPU...");
 
         // Ensure buffers and shaders are allocated
         if (!initialized) {

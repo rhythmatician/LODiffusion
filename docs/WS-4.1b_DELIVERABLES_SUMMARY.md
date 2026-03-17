@@ -105,7 +105,7 @@
 - [ ] Verify registry consistency with Noises.java enum
 
 ### Phase 3: Index Extraction (30 min)
-- [ ] Update `NoiseRouterExtractor.java` or shader loader
+- [ ] Update `ShadowRouterExtractor.java` or shader loader
 - [ ] Extract all 16 new indices from live `RandomState`
 - [ ] Populate RouterConfig UBO buffer at correct byte offsets (use map from ROUTERCONFIG_EXTENSION.glsl)
 - [ ] Test extraction logic (unit test suggested)
@@ -158,7 +158,7 @@ terrain_compute.comp (existing)
 Java Side:
     Noises.java ← ADD 16new entries (WS-4.1b)
         ↓ [used by] NoiseRouterData (existing)
-    NoiseRouterExtractor.java ← ENHANCE extraction (WS-4.1b)
+    ShadowRouterExtractor.java ← ENHANCE extraction (WS-4.1b)
         ↓ [populates] RouterConfig UBO
 ```
 

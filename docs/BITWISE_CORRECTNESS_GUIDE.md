@@ -168,7 +168,7 @@ assert Math.abs(cpuDensity - gpuDensity) < 0.01;  // Tolerance
 Add optional debug logging to verify SSBO contents:
 
 ```java
-public void validateSSBOContents(NoiseRouterData data) {
+public void validateSSBOContents(ShadowRouterExtractor.ShadowRouterData data) {
     // Checksum improved permutations
     int checksum = 0;
     while (data.improvedPerms.hasRemaining()) {

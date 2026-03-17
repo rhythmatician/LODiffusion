@@ -488,7 +488,7 @@ ayout(binding = 8, std140) uniform RouterConfig {
 
 3. **Populate RouterConfig UBO** in the Java shader loader:
    ```java
-   // In com.rhythmatician.lodiffusion.gpu.NoiseRouterExtractor.java or equivalent
+   // In io.github.lodiffusion.worldgen.ShadowRouterExtractor.java (or WorldGenEventHandler):
    routerConfig.nn_pillar_rareness = findIndexForNoise(Noises.CAVE_PILLAR_RARENESS);
    // ... set all 15 new fields
    // Guard all with (-1) if noise not yet registered
@@ -512,8 +512,8 @@ ayout(binding = 8, std140) uniform RouterConfig {
 
 ### ⏳ Implementation TODO (Java Developer)
 - [ ] Add 16 new noise parameter keys to `Noises.java`
-- [ ] Extend `NoiseRouterData` cave DensityFunction graph to wire these indices
-- [ ] Update `com.rhythmatician.lodiffusion.gpu.NoiseRouterExtractor` to extract new indices
+- [ ] Extend `ShadowRouterData` cave DensityFunction graph to wire these indices
+- [ ] Update `io.github.lodiffusion.worldgen.ShadowRouterExtractor` to extract new indices
 - [ ] Populate all 16 new `router.nn_*` fields in ShaderLoader's `updateRouterConfig()`
 
 ### 📋 GLSL Integration Steps

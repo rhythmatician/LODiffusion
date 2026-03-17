@@ -54,7 +54,7 @@ Modify `terrain_compute.comp`:
 - Replace lines 410-455 (cave carving section) with new code from integration guide
 
 ### Step 4: Wire the Noises (Java Side)
-Update `GlslShaderLoader.java` and `NoiseRouterExtractor.java`:
+Update `GlslShaderLoader.java` and `ShadowRouterExtractor.java`:
 - Extract 11 new noise indices from NoiseRouter
 - Write to RouterConfig UBO
 

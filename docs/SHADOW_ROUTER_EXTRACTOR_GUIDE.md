@@ -1,8 +1,15 @@
-# NoiseRouterExtractor Integration Guide
+# ShadowRouterExtractor Integration Guide
 
 ## Overview
 
-The `NoiseRouterExtractor` is the critical bridge between Minecraft's CPU-side `NoiseRouter` (world terrain generation) and your GPU compute shaders. It implements the **Visitor pattern** to walk the `DensityFunction` expression tree and extract all noise parameters into GPU-uploadable SSBOs.
+### What is the Shadow Router?
+
+Minecraft's terrain generation is controlled by the **`NoiseRouter`** — a graph of 15+ `DensityFunction` nodes that compute terrain density for every block position on the CPU.
+The **shadow router** is our GPU-side mirror of that same computation: a set of GLSL compute shaders (`improved_noise.glsl`, `perlin_noise.glsl`, `normal_noise.glsl`, `terrain_compute.comp`) that reproduce vanilla terrain density in parallel on the GPU, enabling far-LOD generation without per-chunk CPU world-gen.
+
+### Role of `ShadowRouterExtractor`
+
+`ShadowRouterExtractor` is the Java-side initialization stage of the shadow router pipeline. It is the critical bridge between Minecraft's CPU-side `NoiseRouter` and the GPU compute shaders: it implements the **Visitor pattern** to walk the `DensityFunction` expression tree and extract all noise parameters into GPU-uploadable SSBOs.
 
 ---
 
@@ -12,7 +19,7 @@ The `NoiseRouterExtractor` is the critical bridge between Minecraft's CPU-side `
 ```
 NoiseRouter (15 DensityFunction nodes)
     └─ mapAll(Visitor)
-        └─ NoiseRouterExtractor walks the tree
+        └─ ShadowRouterExtractor walks the tree
             ├─ Discovers all unique NormalNoise instances
             ├─ Extracts parent PerlinNoise instances
             └─ Extracts parent ImprovedNoise octaves
@@ -50,8 +57,8 @@ public static void onWorldLoad(ServerLevelEvent.Load event) {
     NoiseRouter router = level.getChunkSource().getGenerator()
         .getFirstFitGenerator().noiseRouter();
     
-    NoiseRouterExtractor extractor = new NoiseRouterExtractor();
-    NoiseRouterExtractor.NoiseRouterData data = extractor.extract(router);
+    ShadowRouterExtractor extractor = new ShadowRouterExtractor();
+    ShadowRouterExtractor.ShadowRouterData data = extractor.extract(router);
     
     // Now upload to GPU (see Step 2)
     uploadSSBOsToGPU(data);
@@ -60,7 +67,7 @@ public static void onWorldLoad(ServerLevelEvent.Load event) {
 
 ### Step 2: Upload SSBOs to GPU
 ```java
-public void uploadSSBOsToGPU(NoiseRouterExtractor.NoiseRouterData data) {
+public void uploadSSBOsToGPU(ShadowRouterExtractor.ShadowRouterData data) {
     // Pseudo-code (actual implementation depends on your rendering backend)
     
     glBindBuffer(GL_COPY_WRITE_BUFFER, ssbo[0]);  // improved_origins
@@ -171,7 +178,7 @@ If your GPU terrain doesn't match vanilla:
 
 ## Next Steps
 
-1. **Integrate** `NoiseRouterExtractor` into your world load event
+1. **Integrate** `ShadowRouterExtractor` into your world load event
 2. **Implement GPU upload** via your rendering backend (LWJGL, Iris, etc.)
 3. **Wire compute dispatch** to your chunk rendering pipeline
 4. **Test** with a known seed and compare GPU vs. CPU density output

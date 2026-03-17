@@ -15,9 +15,15 @@ import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 
 /**
- * Drives per-chunk GPU terrain density field computation.
+ * GPU dispatch engine for the <em>shadow router</em> pipeline.
  *
- * One call to {@link #dispatch(int, int)} produces a full 16×384×16 density grid
+ * <p>The shadow router is a GLSL compute-shader re-implementation of Minecraft's
+ * vanilla {@code NoiseRouter} that evaluates terrain density for a full chunk column
+ * in parallel on the GPU, enabling plausible far-LOD terrain without CPU-side world
+ * generation.  This class is the runtime dispatch half; {@link ShadowRouterExtractor}
+ * handles the one-time extraction of vanilla noise parameters at world load.
+ *
+ * <p>One call to {@link #dispatch(int, int)} produces a full 16×384×16 density grid
  * in Binding 7 (DensityOutput) for the requested chunk column. Callers must read
  * Binding 7 before issuing the next dispatch, or manage their own double-buffering.
  *
@@ -329,7 +335,7 @@ public class TerrainComputeDispatcher {
      * <p>Parity status as of current implementation:
      * <ul>
      *   <li>continents, erosion, ridges, temperature, vegetation, shift — wired ({@code != -1})</li>
-     *   <li>nnJagged — wired via xzScale=1500 detection in {@code NoiseRouterExtractor}</li>
+     *   <li>nnJagged — wired via xzScale=1500 detection in {@code ShadowRouterExtractor}</li>
      *   <li>nnDepthNoise — always {@code -1}; BASE_3D_NOISE_OVERWORLD is a BlendedNoise
      *       and cannot be evaluated by {@code mc_normal_noise()}.  Tracked: WS-1.2-BlendedNoise.</li>
      * </ul>
@@ -381,7 +387,7 @@ public class TerrainComputeDispatcher {
          * other fields (gradient, spline offsets, cave noise indices).
          *
          * <p>Note: {@code depthNoise} should always be {@code -1} until WS-1.2-BlendedNoise
-         * is resolved — pass {@code data.nnDepthNoise} directly from {@code NoiseRouterData}.
+         * is resolved — pass {@code data.nnDepthNoise} directly from {@code ShadowRouterData}.
          */
         public RouterConfig withNamedIndices(
                 int continents, int erosion, int ridges,
@@ -446,7 +452,7 @@ public class TerrainComputeDispatcher {
 
         /**
          * Returns a copy with cave noise indices set (WS-4.1a).
-         * Call this once {@code NoiseRouterExtractor} exposes cave noise indices.
+         * Call this once {@code ShadowRouterExtractor} exposes cave noise indices.
          */
         public RouterConfig withCaveIndices(
                 int entrances, int cheeseCaves, int spaghetti2d,

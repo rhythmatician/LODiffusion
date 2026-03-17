@@ -224,7 +224,7 @@ float mc_entrances(
 3. ✅ Write integration guide — **DONE**
 4. ☐ Modify terrain_compute.comp (UBO + includes + function calls)
 5. ☐ Update Java GlslShaderLoader to concatenate new GLSL file
-6. ☐ Wire 11 NormalNoise indices in NoiseRouterExtractor
+6. ☐ Wire 11 NormalNoise indices in ShadowRouterExtractor
 7. ☐ Run shader compilation test
 8. ☐ Validate against vanilla seed (visual + numerical)
 9. ☐ Benchmark GPU performance

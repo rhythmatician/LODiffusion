@@ -227,7 +227,7 @@ layout(binding = 8, std140) uniform RouterConfig {
 //      - Use WeirdScaledSampler with TYPE1/TYPE2 appropriately
 //      - Compose cave functions for the new infrastructure
 //
-// [ ] 4. Java Side (NoiseRouterExtractor.java)
+// [ ] 4. Java Side (ShadowRouterExtractor.java)
 //      - Extract all new NormalNoise indices from live RandomState
 //      - Build index→column mapping as before
 //      - Set all 16 new fields in RouterConfig UBO buffer

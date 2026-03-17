@@ -112,7 +112,7 @@ Render plausible terrain for far chunks via an **octree‑based LOD pipeline** d
 ### **PHASE 5 — UI, Debug, and Metrics (🆕 Planned)**
 
 * Toggles: model packs on/off, optional channels on/off
-* Visual overlays: `air_mask`, seam highlighters, Router-6 inspector
+* Visual overlays: `air_mask`, seam highlighters, shadow router output inspector
 * Counters: cache hit/miss, sampling ms, inference ms per stage
 
 ---
@@ -141,6 +141,12 @@ Render plausible terrain for far chunks via an **octree‑based LOD pipeline** d
 | `DistantHorizonsCompat`   | DH LOD queries + safe guards                                            | ✅ Implemented              |
 | `LodiffusionCommand`      | In-game control: `/lodiffusion status\|toggle\|performance\|reload`       | ✅ Implemented              |
 | `Diagnostics`             | Per-section timers, performance counters, debug overlay                  | ✅ Implemented (expanded)   |
+| **Shadow Router (GPU path)** | | |
+| `ShadowRouterExtractor`   | Walk live vanilla `NoiseRouter` at world load; serialize all noise params to `ShadowRouterData` NIO buffers for SSBO upload | ✅ Implemented |
+| `ShaderSSBOManager`       | Allocate & upload 8 GPU SSBOs (bindings 0–7) from `ShadowRouterData`; holds GPU buffer lifetime | ✅ Implemented |
+| `TerrainComputeDispatcher` | Issue one GL compute dispatch per chunk column; update `RouterConfig` UBO with chunk coords | ✅ Implemented |
+| `ShadowRouterJobQueue`    | Thread-safe priority queue fed by `VoxyShadowBridgeMixin`; supplies work to dispatcher | ✅ Implemented |
+| `WorldGenEventHandler`    | Bootstrap shadow router at world load: extract → upload SSBOs → build biome palette | ✅ Implemented |
 
 ---
 

@@ -106,9 +106,9 @@ public static final Holder<NormalNoise.NoiseParameters> CAVE_PILLAR_RARENESS =
 - Modulation (n_*_modulator): 1-2 octaves (fine-grained control)
 - Structural (n_spaghetti_3d_*, n_noodle_*): 2-3 octaves
 
-### Step 3: Extract Indices in NoiseRouterExtractor (30 min)
+### Step 3: Extract Indices in ShadowRouterExtractor (30 min)
 
-**File:** `NoiseRouterExtractor.java` (or equivalent shader loader)
+**File:** `ShadowRouterExtractor.java` (or equivalent shader loader)
 
 ```java
 // Extend the extraction loop to populate new fields:

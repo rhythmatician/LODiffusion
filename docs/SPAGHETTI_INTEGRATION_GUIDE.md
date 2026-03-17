@@ -401,7 +401,7 @@ Minecraft stores world seed in `NoiseRouter`. To validate GLSL against Java:
 When wiring the NoiseRouter from Java:
 
 ```java
-// In NoiseRouterExtractor.java or equivalent UBO updater:
+// In ShadowRouterExtractor.java (WorldGenEventHandler) or equivalent UBO updater:
 
 // Map NoiseRouter fields → RouterConfig indices:
 routerConfig.nn_spaghetti_2d_modulator = 

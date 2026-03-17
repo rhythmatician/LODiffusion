@@ -44,7 +44,7 @@ Successfully ported **2 ultra-complex Minecraft cave generation functions** from
 - [x] RouterConfig UBO extension (11 new NormalNoise index fields)
 - [x] Include file structure updates (GLSL concatenation points)
 - [x] computeFinalDensity() cave carving replacement code
-- [x] Java-side wiring instructions (NoiseRouterExtractor)
+- [x] Java-side wiring instructions (ShadowRouterExtractor)
 - [x] Function call signatures with parameter documentation
 - [x] Before/after code diffs
 
@@ -207,7 +207,7 @@ c:\Users\JeffHall\git\MC\LODiffusion\
 
 **Estimated effort:**
 - **Code integration** (terrain_compute.comp edits): 30 minutes
-- **Java wiring** (NoiseRouterExtractor updates): 15 minutes
+- **Java wiring** (ShadowRouterExtractor updates): 15 minutes
 - **Shader compilation test**: 5 minutes
 - **Visual validation** (run in Minecraft): 30 minutes
 - **Performance benchmark**: 15 minutes
@@ -231,7 +231,7 @@ c:\Users\JeffHall\git\MC\LODiffusion\
 3. **Update Java loader** (GlslShaderLoader.java or equivalent)
    - Concatenate `mc_spaghetti_cave_functions.glsl` after `mc_cave_noise_helpers.glsl`
 
-4. **Wire NoiseRouter indices** (NoiseRouterExtractor.java or UBO updater)
+4. **Wire NoiseRouter indices** (ShadowRouterExtractor.java or UBO updater)
    - Extract 11 noise indices from NoiseRouter
    - Write to RouterConfig UBO fields
 

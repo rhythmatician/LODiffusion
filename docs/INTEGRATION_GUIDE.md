@@ -296,7 +296,7 @@ float mc_cave_noodle_val(float x, float y, float z) {
 // After:  5 + 8 = 13 ints
 //         Needs 2 padding ints to reach 15 → 60 bytes → 4 blocks (64 bytes)
 //
-// In Java (NoiseRouterExtractor), update:
+// In Java (ShadowRouterExtractor), update:
 //   - struct UniformBuffer size: 112 → 128 bytes
 //   - Add 8 new int fields to the UBO layout
 // -----------

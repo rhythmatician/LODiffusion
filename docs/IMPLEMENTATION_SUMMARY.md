@@ -54,7 +54,7 @@ PHASE 2: SHADER MODIFICATIONS (45 minutes)
       Update struct size comment
 
 PHASE 3: JAVA-SIDE UPDATES (30 minutes)
-  [ ] Update NoiseRouterExtractor.java:
+  [ ] Update ShadowRouterExtractor.java:
       - Extract 8 new NormalNoise indices from vanilla NoiseRouter
       - Add to UniformBuffer struct
       
@@ -251,7 +251,7 @@ Quick wins:
 // FILES TO UPDATE ON JAVA SIDE
 // ============================================================================
 
-1. NoiseRouterExtractor.java
+1. ShadowRouterExtractor.java
    - Extract 8 new NormalNoise indices from world's NoiseRouter
    - Pass to UniformBuffer
    
