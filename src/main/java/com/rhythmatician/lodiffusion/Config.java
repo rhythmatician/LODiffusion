@@ -139,6 +139,26 @@ public final class Config {
     return getString("inferenceDevice", "auto");
   }
 
+  /**
+   * Terrain noise backend: {@code "vanilla"}, {@code "gpu"}, or {@code "auto"}.
+   *
+   * <ul>
+   *   <li>{@code "vanilla"} — evaluate all 15 NoiseRouter fields on the CPU
+   *       via the Fabric DensityFunction API.  Bit-exact with vanilla MC.</li>
+   *   <li>{@code "gpu"} — use the shadow router GPU compute pipeline.
+   *       Falls back to CPU for fields the shader doesn't yet output.</li>
+   *   <li>{@code "auto"} (default) — currently equivalent to {@code "vanilla"};
+   *       will prefer GPU when the shadow router covers all 15 fields.</li>
+   * </ul>
+   *
+   * <p>Hot-swappable: changing this value takes effect on the next section
+   * request without restarting the world.
+   */
+  public static String terrainBackend() {
+    return getString("terrainBackend", "auto");
+  }
+
+  public static void setTerrainBackend(String backend) { setRuntime("terrainBackend", backend); }
   public static void setUseOnnxTerrain(boolean enabled) { setRuntime("useOnnxTerrain", enabled); }
   public static void setAdapter(String adapterId) { setRuntime("adapter", adapterId); }
   public static void setThreshold(double thr) { setRuntime("threshold", thr); }
@@ -203,4 +223,34 @@ public final class Config {
     JsonObject o = merged();
     return o.has(key) ? o.get(key).getAsDouble() : def;
   }
+
+  // ========== Dataset Export Configuration ==========
+
+  /**
+   * Check if dataset export is enabled.
+   *
+   * @return true if dataset export should be active
+   */
+  public static boolean isDatasetExportEnabled() {
+    return getBoolean("datasetExportEnabled", false);
+  }
+
+  /**
+   * Get the dataset export directory path.
+   *
+   * @return Path to the dataset export directory (relative to instance directory)
+   */
+  public static Path getDatasetExportPath() {
+    return Paths.get(getString("datasetExportPath", "dataset/"));
+  }
+
+  /**
+   * Get the dataset export format.
+   *
+   * @return Export format as a string (BINARY or PARQUET)
+   */
+  public static String getDatasetExportFormat() {
+    return getString("datasetExportFormat", "BINARY");
+  }
 }
+

@@ -145,8 +145,33 @@ public final class OctreeTask implements Comparable<OctreeTask> {
      */
     public volatile long[] parentContextFlat;
 
+    /**
+     * Flat noise input for the sparse-root model.
+     *
+     * <p>The exact shape depends on the model config sidecar:
+     * <ul>
+     *   <li><b>Legacy (v6):</b> {@code float[13 * 4 * 2 * 4 = 416]}.
+     *       Channel-outermost layout matching
+     *       {@code noise_3d [C=13, 4, 2, 4]}.</li>
+     *   <li><b>New (v7+):</b> {@code float[15 * 4 * 4 * 4 = 960]}.
+     *       15 NoiseRouter fields at quart resolution, from
+     *       {@link com.rhythmatician.lodiffusion.world.noise.SectionNoiseData#flat()}.</li>
+     * </ul>
+     *
+     * <p>Set by {@link LodGenerationService} via
+     * {@link com.rhythmatician.lodiffusion.world.noise.NoiseRouterSamplerFactory}
+     * before enqueue.  {@code null} if the noise access is unavailable.
+     */
+    public volatile float[] noiseFlat;
+
     /** Failure reason (set when state = FAILED). */
     public volatile String failureMessage;
+
+    /**
+     * Approximate wall-clock time (ms) when this task was created/enqueued.
+     * Used for oldest-pending-age metrics — approximate is fine.
+     */
+    public final long enqueuedAtMs = System.currentTimeMillis();
 
     // ── Construction ────────────────────────────────────────────────────
 

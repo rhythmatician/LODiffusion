@@ -169,7 +169,12 @@ public final class ConfigLoader {
         if (config == null) {  // Defensive: should not happen, but GSON might fail
             throw new IOException("Failed to parse config: " + jsonPath);
         }
-        config.validate();
+        // Sparse-root uses a different output layout (split/label tensors) and
+        // does not include the usual "block_logits" output expected by the
+        // standard octree pipeline.  Skip strict validation for this contract.
+        if (!"lodiffusion.v6.sparse_octree".equals(config.contract())) {
+            config.validate();
+        }
         LOGGER.info("Loaded model config: " + config.modelName() + " from " + jsonPath);
         return config;
     }

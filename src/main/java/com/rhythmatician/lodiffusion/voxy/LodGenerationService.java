@@ -16,6 +16,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import com.rhythmatician.lodiffusion.onnx.OctreeModelRunner;
+import com.rhythmatician.lodiffusion.onnx.SparseOctreeModelRunner;
+import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler;
+import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSamplerFactory;
+import com.rhythmatician.lodiffusion.world.noise.SectionNoiseData;
 
 import net.minecraft.registry.Registry;
 import net.minecraft.registry.RegistryKeys;
@@ -96,19 +100,34 @@ public final class LodGenerationService {
     private static final int STAGE_0_PARALLELISM = Config.inferenceThreads();
 
     /**
-     * Worker counts per octree level — inverted pyramid.  L4 has few tasks
-     * (one per root) but each takes ~20s of column-context sampling, so a
-     * single worker keeps things simple.  L0 has the most tasks and benefits
-     * most from parallelism.
+     * Worker counts per octree level — inverted pyramid reflecting actual task
+     * volume and visual importance.
      *
-     * <p>Index is the level: {@code WORKERS_PER_LEVEL[0]} = L0 workers, etc.
+     * <p><b>Rationale for this split:</b>
+     * <ul>
+     *   <li><b>L4 (1 worker)</b>: Coarsest scaffold — few tasks, but each is
+     *       expensive (column-context sampling).  One worker keeps things
+     *       simple; the first finished root seeds the entire cascade.</li>
+     *   <li><b>L3 (1 worker)</b>: Still coarse scaffold.  Volume is 8× L4
+     *       at most; one worker keeps up easily.</li>
+     *   <li><b>L2 (2 workers)</b>: Transition level.  64× L4 task volume
+     *       possible; two workers ensure the scaffold builds ahead of finer
+     *       levels.</li>
+     *   <li><b>L1 (3 workers)</b>: Visual fidelity starts here.  Task volume
+     *       can be 512× L4; 3 workers keep throughput ahead of L0 spawning.</li>
+     *   <li><b>L0 (5 workers)</b>: Leaf / block-resolution — dominates total
+     *       task count.  5 workers maximise throughput without starving coarser
+     *       levels; L0 is never allowed to monopolise the thread pool.</li>
+     * </ul>
+     *
+     * <p>Total: 12 octree workers.  Index 0 = L0 workers, …, index 4 = L4 workers.
      */
     private static final int[] WORKERS_PER_LEVEL = {
-        Math.max(Config.inferenceThreads(), 2),  // L0 — most tasks, most workers
-        2,                                        // L1
-        1,                                        // L2
-        1,                                        // L3
-        1                                         // L4 — few tasks, single worker
+        5,  // L0 — leaf/block-resolution, highest task volume
+        3,  // L1 — fine detail, significant queue pressure
+        2,  // L2 — transition level
+        1,  // L3 — coarse scaffold
+        1   // L4 — root scaffold, single worker keeps seeding simple
     };
 
     /**
@@ -142,7 +161,31 @@ public final class LodGenerationService {
      */
     private static final int CANCEL_MARGIN = Config.getInt("cancelMargin", 4);
 
+    /**
+     * Mod-wide singleton reference — set by {@code LodiffusionClient} during
+     * client initialisation.  {@code null} in dedicated-server contexts where
+     * the client-side code is absent.  Commands and other server-side code
+     * must guard against null before calling instance methods.
+     *
+     * <p>Uses {@link java.util.concurrent.atomic.AtomicReference} for safe
+     * publication: {@code setInstance} is called exactly once on the client
+     * init thread, and any subsequent reads from other threads are guaranteed
+     * to see the published value.
+     */
+    private static final java.util.concurrent.atomic.AtomicReference<LodGenerationService>
+            INSTANCE_REF = new java.util.concurrent.atomic.AtomicReference<>(null);
 
+    /** Called by {@code LodiffusionClient} to register the singleton. */
+    public static void setInstance(LodGenerationService svc) {
+        INSTANCE_REF.set(svc);
+    }
+
+    /**
+     * Return the singleton service, or {@code null} if not yet initialised.
+     */
+    public static LodGenerationService getInstance() {
+        return INSTANCE_REF.get();
+    }
 
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean stopRequested = new AtomicBoolean(false);
@@ -154,7 +197,15 @@ public final class LodGenerationService {
      * before the world fully joins (e.g. during "Loading terrain...").
      * {@code null} if pre-loading was not requested.
      */
-    private volatile CompletableFuture<OctreeModelRunner> preloadFuture;
+    private volatile CompletableFuture<SparseOctreeModelRunner> preloadFuture;
+
+    /**
+     * Sparse-root model runner — the primary terrain generation model.
+     * {@code null} if {@code sparse_octree.onnx} is absent or failed to load.
+     * When loaded, drives the flat subchunk pipeline that replaces the old
+     * octree init/refine/leaf hierarchy.
+     */
+    private volatile SparseOctreeModelRunner sparseRootRunner;
 
     /** Updated each tick from the client thread. */
     private volatile int playerSectionX;
@@ -171,6 +222,25 @@ public final class LodGenerationService {
     /** Active pipeline queue (set during pipeline execution). */
     private volatile LodGenerationQueue activeQueue;
 
+    /** Active octree queue — set when the ONNX pipeline is running, null otherwise. */
+    private volatile OctreeQueue activeOctreeQueue;
+
+    /** Wall-clock ms when the current octree pipeline started (for rate calculation). */
+    private volatile long octreePipelineStartMs;
+
+    /** Per-level active worker count (updated atomically by worker threads). */
+    private final java.util.concurrent.atomic.AtomicInteger[] activeWorkersPerLevel =
+            new java.util.concurrent.atomic.AtomicInteger[5];
+
+    {
+        for (int i = 0; i < activeWorkersPerLevel.length; i++) {
+            activeWorkersPerLevel[i] = new java.util.concurrent.atomic.AtomicInteger(0);
+        }
+    }
+
+    /** Whether the octree (ONNX) pipeline is currently active. */
+    private volatile boolean onnxPipelineActive;
+
     /** Stats: how many sections used real vs synthetic conditioning data. Thread-safe. */
     private final AtomicInteger realDataSections = new AtomicInteger();
     private final AtomicInteger syntheticDataSections = new AtomicInteger();
@@ -179,6 +249,15 @@ public final class LodGenerationService {
 
     /** Server-side noise access — null if unavailable (dedicated server). */
     private volatile WorldNoiseAccess noiseAccess;
+
+    /**
+     * Hot-swappable sampler factory for the 15 NoiseRouter fields.
+     * Reads {@code terrainBackend} config on each call to
+     * {@link NoiseRouterSamplerFactory#getSampler()}.
+     * Null until the world's {@link net.minecraft.world.gen.noise.NoiseConfig}
+     * is available.
+     */
+    private volatile NoiseRouterSamplerFactory samplerFactory;
 
     /** Server reference for noise access (integrated server in singleplayer). */
     private volatile MinecraftServer server;
@@ -207,15 +286,19 @@ public final class LodGenerationService {
         }
         if (!Config.useOnnxTerrain()) return;
 
-        HelloTerrainMod.LOGGER.info("[LodGen] Pre-loading ONNX models in background...");
+        HelloTerrainMod.LOGGER.info("[LodGen] Pre-loading sparse-root model in background...");
         preloadFuture = CompletableFuture.supplyAsync(() -> {
             try {
                 java.nio.file.Path modelDir = Config.modelDir();
-                OctreeModelRunner runner = OctreeModelRunner.loadAll(modelDir);
-                HelloTerrainMod.LOGGER.info("[LodGen] ONNX pre-load complete");
+                SparseOctreeModelRunner runner = SparseOctreeModelRunner.tryLoad(modelDir);
+                if (runner != null) {
+                    HelloTerrainMod.LOGGER.info("[LodGen] Sparse-root pre-load complete");
+                } else {
+                    HelloTerrainMod.LOGGER.warn("[LodGen] Sparse-root pre-load: model not found");
+                }
                 return runner;
             } catch (Exception e) {
-                HelloTerrainMod.LOGGER.warn("[LodGen] ONNX pre-load failed (will retry in worker): {}",
+                HelloTerrainMod.LOGGER.warn("[LodGen] Sparse-root pre-load failed (will retry in worker): {}",
                         e.getMessage());
                 return null;
             }
@@ -240,11 +323,19 @@ public final class LodGenerationService {
         generatedSections.clear();
         columnContextCache.clear();
         activeQueue = null;
+        activeOctreeQueue = null;
+        octreePipelineStartMs = 0L;
+        onnxPipelineActive = false;
+        for (var ctr : activeWorkersPerLevel) ctr.set(0);
         realDataSections.set(0);
         syntheticDataSections.set(0);
         noiseAccessSections.set(0);
         skippedAirSections.set(0);
         diagnosticCount.set(0);
+        if (samplerFactory != null) {
+            try { samplerFactory.close(); } catch (Exception ignored) {}
+            samplerFactory = null;
+        }
         noiseAccess = null;
         this.server = server;
 
@@ -279,6 +370,10 @@ public final class LodGenerationService {
         columnContextCache.clear();
         if (q != null) q.clear();
         activeQueue = null;
+        if (samplerFactory != null) {
+            try { samplerFactory.close(); } catch (Exception ignored) {}
+            samplerFactory = null;
+        }
         HelloTerrainMod.LOGGER.info("[LodGen] Service stopped");
     }
 
@@ -297,6 +392,27 @@ public final class LodGenerationService {
 
     public boolean isRunning() {
         return running.get();
+    }
+
+    /**
+     * Collect and return a snapshot of the current octree pipeline metrics.
+     *
+     * <p>Safe to call from any thread.  Returns a snapshot with all-zero
+     * per-level stats if the pipeline has not yet started.
+     */
+    public OctreeRuntimeStats getOctreeRuntimeStats() {
+        int[] workerSnapshot = new int[5];
+        for (int i = 0; i < 5; i++) {
+            workerSnapshot[i] = activeWorkersPerLevel[i].get();
+        }
+        return OctreeRuntimeStats.collect(
+                activeOctreeQueue,
+                workerSnapshot,
+                playerSectionX,
+                playerSectionZ,
+                GENERATION_RADIUS,
+                onnxPipelineActive,
+                octreePipelineStartMs);
     }
 
     // ------------------------------------------------------------------ //
@@ -322,58 +438,72 @@ public final class LodGenerationService {
             if (noiseAccess != null) {
                 HelloTerrainMod.LOGGER.info("[LodGen] Using REAL noise access — " +
                         "no synthetic fallback needed");
+
+                // Create the hot-swappable sampler factory (reads terrainBackend config).
+                samplerFactory = NoiseRouterSamplerFactory.create(noiseAccess.noiseConfig());
+                HelloTerrainMod.LOGGER.info("[LodGen] NoiseRouterSamplerFactory ready — backend={}",
+                        samplerFactory.getSampler().backendName());
             } else {
                 HelloTerrainMod.LOGGER.warn("[LodGen] Noise access unavailable — " +
-                        "will fall back to synthetic heightmap + biome for distant sections");
+                        "will fall back to heightmap-only generation");
             }
 
-            // Load model — use the pre-loaded future if available, otherwise synchronous
-            OctreeModelRunner model = resolveModel();
-            if (model == null) {
-                // ── Heightmap fallback path ──────────────────────────────
-                HelloTerrainMod.LOGGER.info(
-                        "[LodGen] No ONNX models found — using heightmap fallback generator");
+            // ── Primary path: sparse-root model ─────────────────────────
+            // Resolve from pre-loaded future if available, otherwise load synchronously.
+            sparseRootRunner = resolveSparseOctreeModel();
 
-                Object voxyMapper = VoxyCompat.getMapper(worldEngine);
-                Registry<Biome> biomeRegistry =
-                        world.getRegistryManager().getOrThrow(RegistryKeys.BIOME);
-                HeightmapFallbackGenerator.FallbackBlockIds fallbackBlocks =
-                        HeightmapFallbackGenerator.resolveBlockIds(voxyMapper);
-                int[] fallbackBiomeMappings =
-                        HeightmapFallbackGenerator.resolveBiomeMappings(voxyMapper, biomeRegistry);
+            Object voxyMapper = VoxyCompat.getMapper(worldEngine);
+            Registry<Biome> biomeRegistry =
+                    world.getRegistryManager().getOrThrow(RegistryKeys.BIOME);
+
+            if (sparseRootRunner != null && noiseAccess != null) {
+                // Sparse-root pipeline — flat per-subchunk generation
+                VoxyBlockMapper blockMapper = VoxyBlockMapper.build(
+                        sparseRootRunner.vocabulary(), voxyMapper, biomeRegistry);
+                VoxySectionWriter writer = new VoxySectionWriter(worldEngine, blockMapper);
+
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen] Sparse-root model loaded — starting noise-conditioned pipeline " +
+                        "(vocab={}, biomeVoxyId={})",
+                        sparseRootRunner.vocabulary() != null
+                                ? sparseRootRunner.vocabulary().size() : "none",
+                        blockMapper.defaultBiomeVoxyId());
 
                 waitForPlayerPosition();
                 if (stopRequested.get()) return;
 
                 HelloTerrainMod.LOGGER.info(
-                        "[LodGen] Starting FALLBACK generation from player section ({}, {})",
-                        playerSectionX, playerSectionZ);
+                        "[LodGen] Starting SPARSE-ROOT generation from player section ({}, {}, {})",
+                        playerSectionX, playerSectionY, playerSectionZ);
 
-                runFallbackPipeline(world, worldEngine, voxyMapper,
-                        fallbackBlocks, fallbackBiomeMappings);
+                runSparseOctreePipeline(world, worldEngine, writer, blockMapper, voxyMapper);
                 return;
             }
 
-            // ── Normal ONNX pipeline path ────────────────────────────────
-            // Build Voxy block mapper
-            Object voxyMapper = VoxyCompat.getMapper(worldEngine);
-            Registry<Biome> biomeRegistry =
-                    world.getRegistryManager().getOrThrow(RegistryKeys.BIOME);
-            VoxyBlockMapper blockMapper = VoxyBlockMapper.build(model.vocabulary(), voxyMapper, biomeRegistry);
-            VoxySectionWriter writer = new VoxySectionWriter(worldEngine, blockMapper);
+            // ── Heightmap fallback path ──────────────────────────────────
+            if (sparseRootRunner != null && noiseAccess == null) {
+                HelloTerrainMod.LOGGER.warn(
+                        "[LodGen] Sparse-root model loaded but noise access unavailable — " +
+                        "falling back to heightmap generator");
+            } else {
+                HelloTerrainMod.LOGGER.info(
+                        "[LodGen] No sparse-root model found — using heightmap fallback generator");
+            }
 
-            HelloTerrainMod.LOGGER.info("[LodGen] Ready — waiting for player position " +
-                    "(vocab={}, biomeVoxyId={})", model.vocabulary().size(), blockMapper.defaultBiomeVoxyId());
+            HeightmapFallbackGenerator.FallbackBlockIds fallbackBlocks =
+                    HeightmapFallbackGenerator.resolveBlockIds(voxyMapper);
+            int[] fallbackBiomeMappings =
+                    HeightmapFallbackGenerator.resolveBiomeMappings(voxyMapper, biomeRegistry);
 
-            // Wait for the client tick to supply the real player position
             waitForPlayerPosition();
             if (stopRequested.get()) return;
 
-            HelloTerrainMod.LOGGER.info("[LodGen] Starting generation from player section ({}, {}, {})",
-                    playerSectionX, playerSectionY, playerSectionZ);
+            HelloTerrainMod.LOGGER.info(
+                    "[LodGen] Starting FALLBACK generation from player section ({}, {})",
+                    playerSectionX, playerSectionZ);
 
-            // Run the octree pipeline
-            runOctreePipeline(world, model, writer, blockMapper);
+            runFallbackPipeline(world, worldEngine, voxyMapper,
+                    fallbackBlocks, fallbackBiomeMappings);
 
         } catch (Exception e) {
             if (!stopRequested.get()) {
@@ -642,6 +772,177 @@ public final class LodGenerationService {
     }
 
     // ------------------------------------------------------------------ //
+    //  Sparse-root pipeline
+    // ------------------------------------------------------------------ //
+
+    /**
+     * Flat, per-subchunk generation pipeline driven by the sparse-root model.
+     *
+     * <p>Iterates all 16³ subchunks in a spiral around the player, samples
+     * real Minecraft noise via {@link WorldNoiseAccess}, and writes the result
+     * directly to Voxy.  No octree hierarchy — the sparse-root model produces
+     * block predictions for each subchunk independently.
+     *
+     * <p>This replaces the old octree init/refine/leaf pipeline.
+     */
+    private void runSparseOctreePipeline(World world, Object worldEngine,
+                                        VoxySectionWriter writer,
+                                        VoxyBlockMapper blockMapper,
+                                        Object voxyMapper) {
+        int totalSections = 0;
+        int skippedAir = 0;
+        int skippedExisting = 0;
+        int columnsProcessed = 0;
+        int inferenceFails = 0;
+        long startTime = System.currentTimeMillis();
+
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen] Sparse-root pipeline starting — continuous mode, radius={}",
+                GENERATION_RADIUS);
+
+        // ── Continuous loop: re-spiral from player position each pass ───
+        while (!stopRequested.get()) {
+            int centerX = playerSectionX;
+            int centerZ = playerSectionZ;
+
+            List<int[]> columns = buildSpiralSections(centerX, centerZ,
+                    GENERATION_RADIUS, false);
+
+            boolean anyNew = false;
+
+            for (int[] col : columns) {
+                if (stopRequested.get()) break;
+
+                int sx = col[0], sz = col[1];
+
+                // If player moved far, restart spiral from new position
+                int drift = Math.abs(playerSectionX - centerX)
+                          + Math.abs(playerSectionZ - centerZ);
+                if (drift > 2) break;
+
+                // Get or build column context (cached across Y sections)
+                ColumnContext ctx = getOrBuildColumnContext(world, sx, sz);
+
+                // Compute Y range from surface heightmap
+                float minH = Float.MAX_VALUE, maxH = -Float.MAX_VALUE;
+                for (int lx = 0; lx < 16; lx++) {
+                    for (int lz = 0; lz < 16; lz++) {
+                        float h = ctx.rawHm()[lx][lz];
+                        if (h < minH) minH = h;
+                        if (h > maxH) maxH = h;
+                    }
+                }
+
+                float effectiveMax = Math.max(maxH, HeightmapFallbackGenerator.SEA_LEVEL);
+
+                int minSectionY = Math.max(
+                        Math.floorDiv((int) Math.floor(minH), 16) - SURFACE_MARGIN,
+                        Y_BASE_SECTION);
+                int maxSectionY = Math.min(
+                        Math.floorDiv((int) Math.ceil(effectiveMax), 16) + SURFACE_MARGIN,
+                        Y_BASE_SECTION + Y_SECTIONS - 1);
+
+                // Process all Y sections in this column
+                for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+                    if (stopRequested.get()) break;
+
+                    long key = sectionKey(sx, sy, sz);
+                    if (generatedSections.contains(key)) continue;
+
+                    // Skip if Voxy already has real data for this section
+                    if (VoxyCompat.sectionExists(worldEngine, sx, sy, sz)) {
+                        skippedExisting++;
+                        generatedSections.add(key);
+                        continue;
+                    }
+
+                    // Sample noise via the hot-swappable sampler (vanilla CPU or GPU)
+                    // and run sparse-root inference for this 16³ subchunk.
+                    NoiseRouterSampler sampler = samplerFactory.getSampler();
+                    SectionNoiseData snd = sampler.sampleSection(sx, sy, sz);
+                    float[] noise = snd.flat();
+                    int[][][] blocks = sparseRootRunner.runInference(noise);
+
+                    if (blocks != null) {
+                        // Build a VoxelizedSection (16³ L0) and insert via Voxy's
+                        // normal ingestion path — same approach as the heightmap
+                        // fallback.  insertUpdate handles placing the 16³ data
+                        // into the correct octant of a 32³ WorldSection and
+                        // propagating mip / existence bits upward.
+                        Object section = VoxyCompat.createEmptySection();
+                        VoxyCompat.setSectionPosition(section, sx, sy, sz);
+                        long[] data = VoxyCompat.getSectionData(section);
+
+                        int nonAir = 0;
+                        for (int iy = 0; iy < 16; iy++) {
+                            for (int iz = 0; iz < 16; iz++) {
+                                for (int ix = 0; ix < 16; ix++) {
+                                    int blockIdx = blocks[iy][iz][ix];
+                                    int biome = blockMapper.getVoxyBiomeId(
+                                            ctx.biomeIdx()[ix][iz]);
+                                    long voxel;
+                                    if (blockIdx == 0) {
+                                        voxel = VoxyCompat.composeVoxel(0, biome, 15);
+                                    } else {
+                                        int voxyBlockId = blockMapper.getVoxyBlockId(blockIdx);
+                                        voxel = VoxyCompat.composeVoxel(voxyBlockId, biome, 15);
+                                        if (voxyBlockId != 0) nonAir++;
+                                    }
+                                    data[VoxyCompat.l0Index(ix, iy, iz)] = voxel;
+                                }
+                            }
+                        }
+
+                        if (nonAir > 0) {
+                            VoxyCompat.setNonAirCount(section, nonAir);
+                            VoxyCompat.mipSection(section, voxyMapper);
+                            VoxyCompat.insertUpdate(worldEngine, section);
+                            totalSections++;
+                            anyNew = true;
+                        } else {
+                            skippedAir++;
+                        }
+                    } else {
+                        inferenceFails++;
+                    }
+
+                    generatedSections.add(key);
+                }
+
+                columnsProcessed++;
+
+                // Progress logging
+                if (columnsProcessed % 100 == 0) {
+                    long elapsed = System.currentTimeMillis() - startTime;
+                    double sectionsPerSec = totalSections > 0
+                            ? totalSections / (elapsed / 1000.0) : 0;
+                    HelloTerrainMod.LOGGER.info(
+                            "[LodGen] Sparse-root progress: {} columns, {} sections written, "
+                            + "{} air-skipped, {} existing-skipped, {} inference-fails ({} sec, {} sections/s)",
+                            columnsProcessed, totalSections,
+                            skippedAir, skippedExisting, inferenceFails,
+                            elapsed / 1000, (int) sectionsPerSec);
+                }
+            }
+
+            // Pause if nothing new generated this pass
+            if (!anyNew && !stopRequested.get()) {
+                try {
+                    Thread.sleep(500);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen] Sparse-root pipeline finished — {} columns, {} sections, {} air-skipped, "
+                + "{} existing-skipped, {} inference-fails",
+                columnsProcessed, totalSections, skippedAir, skippedExisting, inferenceFails);
+    }
+
+    // ------------------------------------------------------------------ //
     //  Heightmap fallback pipeline
     // ------------------------------------------------------------------ //
 
@@ -813,16 +1114,21 @@ public final class LodGenerationService {
      *
      * @return the loaded runner, or {@code null} if models are absent / failed
      */
-    private OctreeModelRunner resolveModel() {
-        CompletableFuture<OctreeModelRunner> future = preloadFuture;
+    /**
+     * Resolve the sparse-root model, consuming the pre-load future if available.
+     *
+     * @return loaded runner, or {@code null} if the model is absent / failed
+     */
+    private SparseOctreeModelRunner resolveSparseOctreeModel() {
+        CompletableFuture<SparseOctreeModelRunner> future = preloadFuture;
         preloadFuture = null;  // consume so we don't reuse a stale instance
 
         if (future != null) {
             try {
-                HelloTerrainMod.LOGGER.info("[LodGen] Waiting for pre-loaded ONNX model...");
-                OctreeModelRunner preloaded = future.get(60, TimeUnit.SECONDS);
+                HelloTerrainMod.LOGGER.info("[LodGen] Waiting for pre-loaded sparse-root model...");
+                SparseOctreeModelRunner preloaded = future.get(60, TimeUnit.SECONDS);
                 if (preloaded != null) {
-                    HelloTerrainMod.LOGGER.info("[LodGen] Using pre-loaded ONNX model");
+                    HelloTerrainMod.LOGGER.info("[LodGen] Using pre-loaded sparse-root model");
                     return preloaded;
                 }
             } catch (Exception e) {
@@ -832,21 +1138,14 @@ public final class LodGenerationService {
             }
         }
 
-        return loadModel();
-    }
-
-    /**
-     * Load all three octree ONNX models from the configured model directory.
-     *
-     * @return the loaded runner, or {@code null} if models are absent / failed to load
-     */
-    private OctreeModelRunner loadModel() {
+        // Synchronous fallback
         try {
             java.nio.file.Path modelDir = Config.modelDir();
-            HelloTerrainMod.LOGGER.info("[LodGen] Loading octree models from {}...", modelDir);
-            return OctreeModelRunner.loadAll(modelDir);
+            HelloTerrainMod.LOGGER.info("[LodGen] Loading sparse-root model from {}...", modelDir);
+            return SparseOctreeModelRunner.tryLoad(modelDir);
         } catch (Exception e) {
-            HelloTerrainMod.LOGGER.error("[LodGen] Model load failed: {}", e.getMessage(), e);
+            HelloTerrainMod.LOGGER.error("[LodGen] Sparse-root model load failed: {}",
+                    e.getMessage(), e);
             return null;
         }
     }
@@ -978,9 +1277,14 @@ public final class LodGenerationService {
                                     VoxySectionWriter writer, VoxyBlockMapper blockMapper) {
         OctreeQueue queue = new OctreeQueue();
         this.activeQueue = null; // octree queue is separate type; kept for fallback compat
+        this.activeOctreeQueue = queue;
+        this.octreePipelineStartMs = System.currentTimeMillis();
+        this.onnxPipelineActive = true;
 
-        // Inverted pyramid: more workers at finer levels where there are
-        // more tasks.  WORKERS_PER_LEVEL[lvl] gives the count per level.
+        // Pyramid: more workers at finer levels where there are more tasks.
+        // L4/L3 are cheap scaffold; L2 is transition; L1/L0 dominate queue volume.
+        // L0 is given the most workers but is never allowed to monopolise the pool.
+        // See WORKERS_PER_LEVEL Javadoc for the full rationale.
         int numWorkers = 0;
         for (int wpl : WORKERS_PER_LEVEL) numWorkers += wpl;
 
@@ -991,6 +1295,7 @@ public final class LodGenerationService {
         for (int lvl = 0; lvl < 5; lvl++) {
             activeCounters[lvl] =
                     new java.util.concurrent.atomic.AtomicInteger(WORKERS_PER_LEVEL[lvl]);
+            activeWorkersPerLevel[lvl].set(WORKERS_PER_LEVEL[lvl]);
         }
 
         int wIdx = 0;
@@ -1002,6 +1307,7 @@ public final class LodGenerationService {
                     try {
                         runOctreeLevelWorker(level, queue, model, writer, blockMapper);
                     } finally {
+                        activeWorkersPerLevel[level].decrementAndGet();
                         if (activeCounters[level].decrementAndGet() == 0) {
                             queue.signalLevelComplete(level);
                         }
@@ -1135,9 +1441,39 @@ public final class LodGenerationService {
             }
         }
 
+        this.onnxPipelineActive = false;
+        this.activeOctreeQueue = null;
+
         HelloTerrainMod.LOGGER.info(
                 "[LodGen] Octree pipeline complete — {} done, {} failed",
                 queue.completedCount(), queue.failedCount());
+    }
+
+    /**
+     * Returns the LOD levels that a worker at {@code level} is allowed to
+     * steal work from when its own queue is empty.
+     *
+     * <p>Stealing rules (adjacent levels only):
+     * <ul>
+     *   <li>L4 may steal L3 (already idle once roots are done)</li>
+     *   <li>L3 may steal L2 or L4</li>
+     *   <li>L2 may steal L1 or L3</li>
+     *   <li>L1 may steal L0 or L2</li>
+     *   <li>L0 may steal L1 only — L0 must not starve coarser levels</li>
+     * </ul>
+     *
+     * @param level the worker's primary level (0-4)
+     * @return levels to try in preference order, or empty array if none
+     */
+    static int[] stealableLevels(int level) {
+        return switch (level) {
+            case 4 -> new int[]{3};
+            case 3 -> new int[]{2, 4};
+            case 2 -> new int[]{1, 3};
+            case 1 -> new int[]{0, 2};
+            case 0 -> new int[]{1};
+            default -> new int[]{};
+        };
     }
 
     /**
@@ -1148,6 +1484,14 @@ public final class LodGenerationService {
      * <p>Batch inference amortizes per-call ONNX overhead and enables better
      * CPU vectorization, giving 2-4× throughput improvement over single-sample
      * calls.
+     *
+     * <p>When the primary level queue is empty, the worker first checks exit
+     * conditions (via {@link OctreeQueue#tryFinalDrain}). Only if the level is
+     * not yet done does it attempt <em>adjacent-level work stealing</em>: a
+     * single non-blocking poll from each allowed adjacent level (see
+     * {@link #stealableLevels}).  This keeps all workers busy during
+     * uneven queue-filling phases without risking coarse-level starvation —
+     * L4/L3 tasks are cheap scaffold and will not be monopolised by L0 workers.
      */
     private void runOctreeLevelWorker(int level, OctreeQueue queue,
                                        OctreeModelRunner model,
@@ -1164,6 +1508,9 @@ public final class LodGenerationService {
 
         while (!stopRequested.get()) {
             List<OctreeTask> batch;
+            // effectiveLevel tracks which level the batch actually came from.
+            // Normally equals `level`; differs when a worker steals an adjacent task.
+            int effectiveLevel = level;
             try {
                 int batchSize = (level == 4) ? L4_BATCH_SIZE : MAX_BATCH_SIZE;
                 batch = queue.drainLevel(level, batchSize, 200, TimeUnit.MILLISECONDS);
@@ -1179,7 +1526,22 @@ public final class LodGenerationService {
                     if (finalBatch.isEmpty()) break;
                     batch = finalBatch;
                 } else {
-                    continue;
+                    // Level not yet done — try stealing from an adjacent level
+                    // so this worker stays productive while its queue refills.
+                    OctreeTask stolen = null;
+                    for (int steal : stealableLevels(level)) {
+                        stolen = queue.pollLevel(steal);
+                        if (stolen != null) {
+                            effectiveLevel = steal;
+                            break;
+                        }
+                    }
+                    if (stolen != null) {
+                        batch = new ArrayList<>(1);
+                        batch.add(stolen);
+                    } else {
+                        continue;
+                    }
                 }
             }
 
@@ -1193,7 +1555,7 @@ public final class LodGenerationService {
             claimed.removeIf(t -> {
                 if (isOutOfWorldY(t.level, t.wsY)) {
                     t.markReady();
-                    queue.markCompleted();
+                    queue.markCompleted(t.level);
                     queue.propagateAdjacency(t);
                     return true;
                 }
@@ -1212,7 +1574,7 @@ public final class LodGenerationService {
                 claimed.removeIf(t -> {
                     if (we != null && VoxyCompat.allOctantsPopulated(we, t.level, t.wsX, t.wsY, t.wsZ)) {
                         t.markReady();
-                        queue.markCompleted();
+                        queue.markCompleted(t.level);
                         queue.propagateAdjacency(t);
                         return true;
                     }
@@ -1239,7 +1601,7 @@ public final class LodGenerationService {
                 }
             }
 
-            // ── Ensure column context is set for every task ──────────
+            // ── Ensure column context + noise input is set for every task ──────────
             for (OctreeTask task : claimed) {
                 if (task.columnContext == null) {
                     long xzKey = ((long) task.wsX << 32) | (task.wsZ & 0xFFFFFFFFL);
@@ -1251,6 +1613,21 @@ public final class LodGenerationService {
                                 task.level, task.wsX, task.wsY, task.wsZ);
                         task.columnContext = ctx;
                         ctxCache.put(xzKey, ctx);
+                    }
+                }
+                // Populate noise input for the sparse-root model if not already set.
+                // Only meaningful for L0 tasks where (wsX, wsZ) equal chunk coordinates
+                // and wsY equals the section-Y (range [-4, 19]).
+                if (task.noiseFlat == null && task.level == 0 && samplerFactory != null) {
+                    try {
+                        NoiseRouterSampler sampler = samplerFactory.getSampler();
+                        SectionNoiseData snd = sampler.sampleSection(
+                                task.wsX, task.wsY, task.wsZ);
+                        task.noiseFlat = snd.flat();
+                    } catch (Exception ex) {
+                        HelloTerrainMod.LOGGER.debug(
+                                "[LodGen] sampleSection failed for ({},{},{}) L{}: {}",
+                                task.wsX, task.wsY, task.wsZ, task.level, ex.getMessage());
                     }
                 }
             }
@@ -1268,8 +1645,8 @@ public final class LodGenerationService {
                     OctreeTask task = it.next();
                     float[][] taskRawHm = task.columnContext.rawHm();
                     if (taskRawHm == null) continue;
-                    int taskMinBlockY = WorldSectionCoord.worldSectionToBlockMin(task.wsY, level);
-                    int taskMaxBlockY = WorldSectionCoord.worldSectionToBlockMax(task.wsY, level) + 1;
+                    int taskMinBlockY = WorldSectionCoord.worldSectionToBlockMin(task.wsY, task.level);
+                    int taskMaxBlockY = WorldSectionCoord.worldSectionToBlockMax(task.wsY, task.level) + 1;
                     float surfMin = Float.MAX_VALUE;
                     float surfMax = -Float.MAX_VALUE;
                     for (float[] row : taskRawHm) {
@@ -1280,7 +1657,7 @@ public final class LodGenerationService {
                     }
                     if (taskMaxBlockY < surfMin || taskMinBlockY >= surfMax) {
                         task.markReady();
-                        queue.markCompleted();
+                        queue.markCompleted(task.level);
                         queue.propagateAdjacency(task);
                         it.remove();
                     }
@@ -1289,12 +1666,16 @@ public final class LodGenerationService {
             }
 
             // ── Batched inference ────────────────────────────────────
-            try {
+            // Use effectiveLevel (which may differ from level if we stole a task)
+            // to select the correct model call.
+            try (@SuppressWarnings("unused") var timing = com.rhythmatician.lodiffusion.util.PerformanceMonitor
+                    .startLevelTiming(effectiveLevel,
+                            com.rhythmatician.lodiffusion.util.PerformanceMonitor.MODEL_INFERENCE_TIME)) {
                 List<OctreeModelRunner.OctreeOutput> outputs;
-                if (level == 4) {
+                if (effectiveLevel == 4) {
                     outputs = model.runInitBatch(claimed);
-                } else if (level > 0) {
-                    outputs = model.runRefineBatch(level, claimed);
+                } else if (effectiveLevel > 0) {
+                    outputs = model.runRefineBatch(effectiveLevel, claimed);
                 } else {
                     outputs = model.runLeafBatch(claimed);
                 }
@@ -1307,27 +1688,65 @@ public final class LodGenerationService {
                     // Write to Voxy for progressive visibility at every level.
                     //
                     // L0: write 32³ directly as a single WorldSection at level 0.
+                    //   If the sparse-root model is loaded, run it on each of the
+                    //   8 × 16³ sub-sections and assemble into the 32³ grid; otherwise
+                    //   fall back to the octree leaf model output as before.
                     // L1-L4: write 32³ at the model's native resolution for this
                     //     level.  Every level needs renderable voxel data — without
                     //     it Voxy's GPU traversal sees EMPTY_MESH on intermediate
                     //     parent nodes and stops descending, making far-distance
                     //     LOD invisible.  Coarse levels (L4/L3) are progressively
                     //     replaced by finer data as the octree expands.
-                    if (level == 0) {
+                    if (task.level == 0) {
+                        int[][][] blockGrid = null;
+                        SparseOctreeModelRunner srr = sparseRootRunner;
+                        if (srr != null && samplerFactory != null) {
+                            blockGrid = new int[32][32][32];
+                            NoiseRouterSampler sampler = samplerFactory.getSampler();
+                            for (int dy = 0; dy < 2; dy++) {
+                                for (int dz = 0; dz < 2; dz++) {
+                                    for (int dx = 0; dx < 2; dx++) {
+                                        SectionNoiseData subSnd = sampler.sampleSection(
+                                                task.wsX * 2 + dx,
+                                                task.wsY * 2 + dy,
+                                                task.wsZ * 2 + dz);
+                                        int[][][] sub16 = srr.runInference(subSnd.flat());
+                                        if (sub16 != null) {
+                                            int by0 = dy * 16, bz0 = dz * 16, bx0 = dx * 16;
+                                            for (int by = 0; by < 16; by++)
+                                                for (int bz = 0; bz < 16; bz++)
+                                                    for (int bx = 0; bx < 16; bx++)
+                                                        blockGrid[by0 + by][bz0 + bz][bx0 + bx]
+                                                                = sub16[by][bz][bx];
+                                        } else {
+                                            // Sparse-root inference failed for this sub-section;
+                                            // fall back entirely to the octree model for this task.
+                                            blockGrid = null;
+                                            break;
+                                        }
+                                    }
+                                    if (blockGrid == null) break;
+                                }
+                                if (blockGrid == null) break;
+                            }
+                        }
+                        int[][][] finalGrid = (blockGrid != null)
+                                ? blockGrid
+                                : output.blockArgmax();
                         writer.writeOctreeBlockData(
-                                output.blockArgmax(),
+                                finalGrid,
                                 task.columnContext.biomeIdx(),
                                 task.wsX, task.wsY, task.wsZ);
                     } else {
                         writer.writeOctreeToLevel(
                                 output.blockArgmax(),
                                 task.columnContext.biomeIdx(),
-                                level,
+                                task.level,
                                 task.wsX, task.wsY, task.wsZ);
                     }
 
                     // Spawn children for non-leaf levels
-                    if (level > 0) {
+                    if (task.level > 0) {
                         int spawned = queue.spawnChildren(task, output.occMask(),
                                 output.blockArgmax(),
                                 playerSectionX, playerSectionZ);
@@ -1343,7 +1762,7 @@ public final class LodGenerationService {
                     }
 
                     task.markReady();
-                    queue.markCompleted();
+                    queue.markCompleted(task.level);
                     queue.propagateAdjacency(task);
                     processed++;
                 }
@@ -1354,7 +1773,7 @@ public final class LodGenerationService {
                 for (OctreeTask task : claimed) {
                     if (task.state() == OctreeTask.State.PROCESSING) {
                         task.markFailed(e.getMessage());
-                        queue.markFailed();
+                        queue.markFailed(task.level);
                     }
                 }
                 if (!stopRequested.get()) {
