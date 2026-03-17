@@ -16,14 +16,24 @@ import java.util.Map;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 
+import ai.djl.Model;
 import ai.djl.inference.Predictor;
 import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.NDManager;
 import ai.djl.ndarray.types.Shape;
 import ai.djl.repository.zoo.ZooModel;
+import ai.djl.translate.NoopTranslator;
+import ai.djl.translate.Translator;
 
 class SparseOctreeModelRunnerInputContractTest {
+
+    static {
+        // Mockito uses Byte Buddy under the hood for inline mocking. On Java 21+,
+        // Byte Buddy requires this experimental flag to allow retransforming classes.
+        // (See: "Java 21 (65) is not supported by the current version of Byte Buddy" error.)
+        System.setProperty("net.bytebuddy.experimental", "true");
+    }
 
     @Test
     void resolveInputOrder_prefersNamedOrderFromConfig() {
@@ -41,12 +51,11 @@ class SparseOctreeModelRunnerInputContractTest {
     }
 
     @Test
-    @SuppressWarnings({"unchecked", "rawtypes"})
+    @SuppressWarnings({"unchecked"})
     void runInferenceWithBiome_executesTwoInputModel() throws Exception {
         try (NDManager manager = NDManager.newBaseManager()) {
-            ZooModel<NDList, NDList> model = mock(ZooModel.class);
             Predictor<NDList, NDList> predictor = mock(Predictor.class);
-            when(model.newPredictor()).thenReturn(predictor);
+            ZooModel<NDList, NDList> model = makeZooModel(predictor);
             when(predictor.predict(any())).thenReturn(new NDList(
                     manager.create(new float[] {0f, 1f}, new Shape(1, 1, 2))));
 
@@ -71,12 +80,11 @@ class SparseOctreeModelRunnerInputContractTest {
     }
 
     @Test
-    @SuppressWarnings({"unchecked", "rawtypes"})
+    @SuppressWarnings({"unchecked"})
     void runInferenceWithBiome_executesThreeInputModelAndFallsBackForInvalidBiome() throws Exception {
         try (NDManager manager = NDManager.newBaseManager()) {
-            ZooModel<NDList, NDList> model = mock(ZooModel.class);
             Predictor<NDList, NDList> predictor = mock(Predictor.class);
-            when(model.newPredictor()).thenReturn(predictor);
+            ZooModel<NDList, NDList> model = makeZooModel(predictor);
             when(predictor.predict(any())).thenReturn(new NDList(
                     manager.create(new float[] {0f, 1f}, new Shape(1, 1, 2))));
 
@@ -102,6 +110,22 @@ class SparseOctreeModelRunnerInputContractTest {
             assertArrayEquals(new long[] {1, 4, 2, 4}, biomeTensor.getShape().getShape());
             assertArrayEquals(new int[4 * 2 * 4], biomeTensor.toIntArray());
         }
+    }
+
+    private static ZooModel<NDList, NDList> makeZooModel(Predictor<NDList, NDList> predictor) {
+        Model base = Model.newInstance("test");
+        Translator<NDList, NDList> translator = new NoopTranslator();
+        return new ZooModel<>(base, translator) {
+            @Override
+            public Predictor<NDList, NDList> newPredictor() {
+                return predictor;
+            }
+
+            @Override
+            public void close() {
+                // no-op
+            }
+        };
     }
 
     private static SparseOctreeModelRunner newRunner(

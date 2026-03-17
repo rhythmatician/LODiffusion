@@ -1,6 +1,7 @@
 package com.rhythmatician.lodiffusion.onnx;
 
 import static org.junit.jupiter.api.Assertions.*;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 import java.nio.file.Path;
 
@@ -22,7 +23,7 @@ class SparseOctreeModelRunnerSmokeTest {
         com.rhythmatician.lodiffusion.Config.setInferenceDevice("cpu");
         try {
             Path modelDir = Path.of("config", "lodiffusion");
-            assertTrue(modelDir.toFile().exists(), "Expected model directory to exist: " + modelDir);
+            assumeTrue(modelDir.toFile().exists(), "Skipping smoke test (model directory missing): " + modelDir);
 
             SparseOctreeModelRunner runner = SparseOctreeModelRunner.tryLoad(modelDir);
             assertNotNull(runner, "Expected SparseOctreeModelRunner to load successfully");
