@@ -401,8 +401,8 @@ public final class WorldNoiseAccess {
      * on {@code ServerChunkLoadingManager} and created during world loading for
      * every {@code ChunkGenerator} type (with a fallback for non-noise generators).
      *
-     * <p>This is the authoritative implementation — used by both
-     * {@code WorldNoiseAccess} and {@code NoiseDumperCommand}.
+     * <p>This is the authoritative implementation — used by
+     * {@code WorldNoiseAccess} (and by the data-harvester mod's {@code NoiseDumperCommand}).
      */
     private static NoiseConfig tryGetNoiseConfig(ServerWorld world) {
         try {
