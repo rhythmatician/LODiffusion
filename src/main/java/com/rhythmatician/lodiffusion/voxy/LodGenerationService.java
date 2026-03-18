@@ -17,6 +17,7 @@ import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import com.rhythmatician.lodiffusion.onnx.OctreeModelRunner;
 import com.rhythmatician.lodiffusion.onnx.SparseOctreeModelRunner;
+import com.rhythmatician.lodiffusion.world.noise.BiomeProvider;
 import com.rhythmatician.lodiffusion.world.noise.HeightmapData;
 import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler;
 import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSamplerFactory;
@@ -590,7 +591,8 @@ public final class LodGenerationService {
 
                     // Column biomes (2D, 16×16) for Voxy block writes.
                     // We sample at surface-Y at quart centres, expanding to block res.
-                    // TODO: Use BiomeProvider for section-level 3D biomes (ONNX input)
+                    // Note: 3D section-level biomes for ONNX are obtained separately
+                    // in runSparseOctreePipeline() via BiomeProvider.classifyBiomes().
                     String[][] biomeNames = noiseAccess.sampleBiomeNames(
                             sectionX, sectionZ, rawHm);
                     biomeIdx = new int[16][16];
@@ -898,7 +900,30 @@ public final class LodGenerationService {
                     NoiseRouterSampler sampler = samplerFactory.getSampler();
                     SectionNoiseData snd = sampler.sampleSection(sx, sy, sz);
                     float[] noise = snd.flat();
-                    int[][][] blocks = sparseRootRunner.runInference(noise);
+
+                    // Classify biomes at quart resolution for the ONNX model.
+                    // BiomeProvider returns int[4][4][4] (qx/qy/qz) with
+                    // canonical palette indices.  The model runner silently
+                    // ignores biome IDs if the model config doesn't declare a
+                    // biome_ids input.
+                    int[][][] biomeIds = null;
+                    if (sparseRootRunner.acceptsBiomeIds()) {
+                        try {
+                            BiomeProvider bp = samplerFactory.getUpstreamContext()
+                                    .biomeProvider();
+                            biomeIds = bp.classifyBiomes(sx, sy, sz, snd);
+                        } catch (Exception e) {
+                            // Upstream context unavailable or biome lookup failed;
+                            // fall back to zero-fill (model runner handles null).
+                            if (diagnosticCount.get() < 3) {
+                                HelloTerrainMod.LOGGER.warn(
+                                        "[LodGen] BiomeProvider unavailable for ({},{},{}) — " +
+                                        "falling back to zero-fill biome IDs: {}",
+                                        sx, sy, sz, e.getMessage());
+                            }
+                        }
+                    }
+                    int[][][] blocks = sparseRootRunner.runInferenceWithBiome(noise, biomeIds);
 
                     if (blocks != null) {
                         // Build a VoxelizedSection (16³ L0) and insert via Voxy's

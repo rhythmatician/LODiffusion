@@ -410,47 +410,52 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     }
 
     private NDArray buildBiomeTensor(NDManager sub, int[][][] biomeIds) {
-        final int by = 4;
-        final int bz = 2;
-        final int bx = 4;
+        // Read spatial dimensions from the model config sidecar.
+        // v7+ models declare [1, 4, 4, 4]; legacy v6 declared [1, 4, 2, 4].
+        final int d0, d1, d2;
+        if (biomeIdsShape != null && biomeIdsShape.length == 4) {
+            d0 = (int) biomeIdsShape[1];
+            d1 = (int) biomeIdsShape[2];
+            d2 = (int) biomeIdsShape[3];
+        } else {
+            // Default to v7 quart-resolution 4×4×4
+            d0 = 4;
+            d1 = 4;
+            d2 = 4;
+        }
 
-        int[] flattened = new int[by * bz * bx];
+        int[] flattened = new int[d0 * d1 * d2];
         if (biomeIds == null) {
             LOGGER.debug("[SparseOctree] biome_ids expected but null was provided; using zeros fallback");
-            return sub.create(flattened, new Shape(1, by, bz, bx));
+            return sub.create(flattened, new Shape(1, d0, d1, d2));
         }
-        if (biomeIds.length != by) {
-            LOGGER.warn("[SparseOctree] biome_ids y-size {} != {}; using zeros fallback", biomeIds.length, by);
-            return sub.create(flattened, new Shape(1, by, bz, bx));
+        if (biomeIds.length != d0) {
+            LOGGER.warn("[SparseOctree] biome_ids dim0 size {} != {}; using zeros fallback", biomeIds.length, d0);
+            return sub.create(flattened, new Shape(1, d0, d1, d2));
         }
 
         int idx = 0;
-        for (int y = 0; y < by; y++) {
-            if (biomeIds[y] == null || biomeIds[y].length != bz) {
-                LOGGER.warn("[SparseOctree] biome_ids z-size mismatch at y={}; using zeros fallback", y);
-                return sub.create(new int[by * bz * bx], new Shape(1, by, bz, bx));
+        for (int i = 0; i < d0; i++) {
+            if (biomeIds[i] == null || biomeIds[i].length != d1) {
+                LOGGER.warn("[SparseOctree] biome_ids dim1 mismatch at [{}]; using zeros fallback", i);
+                return sub.create(new int[d0 * d1 * d2], new Shape(1, d0, d1, d2));
             }
-            for (int z = 0; z < bz; z++) {
-                if (biomeIds[y][z] == null || biomeIds[y][z].length != bx) {
-                    LOGGER.warn("[SparseOctree] biome_ids x-size mismatch at y={}, z={}; using zeros fallback", y, z);
-                    return sub.create(new int[by * bz * bx], new Shape(1, by, bz, bx));
+            for (int j = 0; j < d1; j++) {
+                if (biomeIds[i][j] == null || biomeIds[i][j].length != d2) {
+                    LOGGER.warn("[SparseOctree] biome_ids dim2 mismatch at [{},{}]; using zeros fallback", i, j);
+                    return sub.create(new int[d0 * d1 * d2], new Shape(1, d0, d1, d2));
                 }
-                for (int x = 0; x < bx; x++) {
-                    int biome = biomeIds[y][z][x];
+                for (int k = 0; k < d2; k++) {
+                    int biome = biomeIds[i][j][k];
                     if (biome < 0) {
                         LOGGER.warn("[SparseOctree] biome_ids contains negative value {}; using zeros fallback", biome);
-                        return sub.create(new int[by * bz * bx], new Shape(1, by, bz, bx));
+                        return sub.create(new int[d0 * d1 * d2], new Shape(1, d0, d1, d2));
                     }
                     flattened[idx++] = biome;
                 }
             }
         }
-        if (biomeIdsShape != null && biomeIdsShape.length == 4
-                && (biomeIdsShape[1] != by || biomeIdsShape[2] != bz || biomeIdsShape[3] != bx)) {
-            LOGGER.warn("[SparseOctree] biome_ids config shape {} differs from runtime [1,4,2,4]; using runtime shape",
-                    java.util.Arrays.toString(biomeIdsShape));
-        }
-        return sub.create(flattened, new Shape(1, by, bz, bx));
+        return sub.create(flattened, new Shape(1, d0, d1, d2));
     }
 
     // ------------------------------------------------------------------
@@ -853,6 +858,16 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     /** Block vocabulary used by this model. */
     public BlockVocabulary vocabulary() {
         return vocabulary;
+    }
+
+    /**
+     * Whether the loaded model config declares a {@code biome_ids} input.
+     * When {@code true}, callers should supply biome IDs via
+     * {@link #runInferenceWithBiome} for best accuracy; when {@code false}
+     * the model ignores biome conditioning entirely.
+     */
+    public boolean acceptsBiomeIds() {
+        return hasBiomeIds;
     }
 
     /** Number of block classes the model was trained with. */
