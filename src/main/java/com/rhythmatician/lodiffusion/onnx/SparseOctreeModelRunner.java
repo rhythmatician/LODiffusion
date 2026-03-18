@@ -105,6 +105,18 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     /** Shape of the biome_ids input tensor, if present. */
     private final long[] biomeIdsShape;
 
+    /** Whether the model expects a heightmap_surface input. */
+    private final boolean hasHeightmapSurface;
+
+    /** Shape of the heightmap_surface input tensor, if present. */
+    private final long[] heightmapSurfaceShape;
+
+    /** Whether the model expects a heightmap_ocean_floor input. */
+    private final boolean hasHeightmapOceanFloor;
+
+    /** Shape of the heightmap_ocean_floor input tensor, if present. */
+    private final long[] heightmapOceanFloorShape;
+
     /**
      * Shape of the noise_3d input tensor as declared in the model config sidecar.
      * Legacy (v6): {@code [1, 13, 4, 2, 4]}.  New (v7+): {@code [1, 15, 4, 4, 4]}.
@@ -138,19 +150,27 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                                   long[] noise2dShape,
                                   boolean hasBiomeIds,
                                   long[] biomeIdsShape,
+                                  boolean hasHeightmapSurface,
+                                  long[] heightmapSurfaceShape,
+                                  boolean hasHeightmapOceanFloor,
+                                  long[] heightmapOceanFloorShape,
                                   long[] noise3dShape,
                                   List<String> inputOrder) {
-        this.manager        = manager;
-        this.model          = model;
-        this.vocabulary     = vocabulary;
-        this.numClasses     = numClasses;
-        this.splitThreshold = splitThreshold;
-        this.hasNoise2d     = hasNoise2d;
-        this.noise2dShape   = noise2dShape;
-        this.hasBiomeIds    = hasBiomeIds;
-        this.biomeIdsShape  = biomeIdsShape;
-        this.noise3dShape   = noise3dShape;
-        this.inputOrder     = List.copyOf(inputOrder);
+        this.manager                  = manager;
+        this.model                    = model;
+        this.vocabulary               = vocabulary;
+        this.numClasses               = numClasses;
+        this.splitThreshold           = splitThreshold;
+        this.hasNoise2d               = hasNoise2d;
+        this.noise2dShape             = noise2dShape;
+        this.hasBiomeIds              = hasBiomeIds;
+        this.biomeIdsShape            = biomeIdsShape;
+        this.hasHeightmapSurface      = hasHeightmapSurface;
+        this.heightmapSurfaceShape    = heightmapSurfaceShape;
+        this.hasHeightmapOceanFloor   = hasHeightmapOceanFloor;
+        this.heightmapOceanFloorShape = heightmapOceanFloorShape;
+        this.noise3dShape             = noise3dShape;
+        this.inputOrder               = List.copyOf(inputOrder);
     }
 
     // ------------------------------------------------------------------
@@ -189,6 +209,10 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 long[] noise2dShape = null;
                 boolean hasBiomeIds = false;
                 long[] biomeIdsShape = null;
+                boolean hasHeightmapSurface = false;
+                long[] heightmapSurfaceShape = null;
+                boolean hasHeightmapOceanFloor = false;
+                long[] heightmapOceanFloorShape = null;
                 long[] noise3dShape = new long[]{1, 13, 4, 2, 4}; // legacy default
                 List<String> inputOrder = List.of("noise_3d");
                 Path configPath = modelDir.resolve(CONFIG);
@@ -221,6 +245,20 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                         int[] shape = cfg.getInputShape("biome_ids");
                         biomeIdsShape = new long[shape.length];
                         for (int i = 0; i < shape.length; i++) biomeIdsShape[i] = shape[i];
+                    }
+
+                    hasHeightmapSurface = cfg.hasInput("heightmap_surface");
+                    if (hasHeightmapSurface) {
+                        int[] shape = cfg.getInputShape("heightmap_surface");
+                        heightmapSurfaceShape = new long[shape.length];
+                        for (int i = 0; i < shape.length; i++) heightmapSurfaceShape[i] = shape[i];
+                    }
+
+                    hasHeightmapOceanFloor = cfg.hasInput("heightmap_ocean_floor");
+                    if (hasHeightmapOceanFloor) {
+                        int[] shape = cfg.getInputShape("heightmap_ocean_floor");
+                        heightmapOceanFloorShape = new long[shape.length];
+                        for (int i = 0; i < shape.length; i++) heightmapOceanFloorShape[i] = shape[i];
                     }
 
                     // Discover noise_3d shape from config sidecar.
@@ -265,7 +303,10 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                         java.util.Arrays.toString(noise3dShape));
                 return new SparseOctreeModelRunner(manager, zm, vocab, numClassesFromConfig,
                         splitThreshold, hasNoise2d, noise2dShape,
-                        hasBiomeIds, biomeIdsShape, noise3dShape, inputOrder);
+                        hasBiomeIds, biomeIdsShape,
+                        hasHeightmapSurface, heightmapSurfaceShape,
+                        hasHeightmapOceanFloor, heightmapOceanFloorShape,
+                        noise3dShape, inputOrder);
 
             } catch (Exception e) {
                 manager.close();
@@ -329,17 +370,19 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
 
     static List<String> resolveInputOrder(ModelConfig cfg) {
         List<String> order = new ArrayList<>();
+        java.util.Set<String> knownInputs = java.util.Set.of(
+                "noise_2d", "noise_3d", "biome_ids",
+                "heightmap_surface", "heightmap_ocean_floor");
         if (cfg.inputs() != null) {
             for (String name : cfg.inputs().keySet()) {
-                if (name.equals("noise_2d") || name.equals("noise_3d") || name.equals("biome_ids")) {
+                if (knownInputs.contains(name)) {
                     order.add(name);
                 }
             }
         }
         if (cfg.optionalInputs() != null) {
             for (String name : cfg.optionalInputs().keySet()) {
-                if (!order.contains(name)
-                        && (name.equals("noise_2d") || name.equals("noise_3d") || name.equals("biome_ids"))) {
+                if (!order.contains(name) && knownInputs.contains(name)) {
                     order.add(name);
                 }
             }
@@ -364,18 +407,22 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      *         inference failed
      */
     public int[][][] runInference(float[] noiseFlat, int... unused) {
-        return runInferenceWithBiome(noiseFlat, null);
+        return runInferenceWithBiome(noiseFlat, null, null, null);
     }
 
     /**
-     * Run inference with explicit biome IDs.
+     * Run inference with explicit biome IDs and heightmaps.
      *
-     * @param noiseFlat flat noise input (length must match the product of
-     *        {@link #noise3dShape()} dimensions)
-     * @param biomeIds  biome IDs array, or {@code null} for zero-fill
+     * @param noiseFlat        flat noise input (length must match the product of
+     *                         {@link #noise3dShape()} dimensions)
+     * @param biomeIds         biome IDs array, or {@code null} for zero-fill
+     * @param heightmapSurface 16×16 surface heightmap (block Y), or {@code null}
+     * @param heightmapOceanFloor 16×16 ocean floor heightmap (block Y), or {@code null}
      * @return {@code int[16][16][16]} block IDs, or {@code null} if inference failed
      */
-    public int[][][] runInferenceWithBiome(float[] noiseFlat, int[][][] biomeIds) {
+    public int[][][] runInferenceWithBiome(float[] noiseFlat, int[][][] biomeIds,
+                                           float[][] heightmapSurface,
+                                           float[][] heightmapOceanFloor) {
         ClassLoader prevCl = Thread.currentThread().getContextClassLoader();
         Thread.currentThread().setContextClassLoader(getClass().getClassLoader());
         try (NDManager sub = manager.newSubManager()) {
@@ -386,6 +433,12 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                     ? sub.zeros(new Shape(noise2dShape))
                     : null;
             NDArray biome = hasBiomeIds ? buildBiomeTensor(sub, biomeIds) : null;
+            NDArray hmSurface = hasHeightmapSurface
+                    ? buildHeightmapTensor(sub, heightmapSurface, heightmapSurfaceShape)
+                    : null;
+            NDArray hmOcean = hasHeightmapOceanFloor
+                    ? buildHeightmapTensor(sub, heightmapOceanFloor, heightmapOceanFloorShape)
+                    : null;
 
             NDList inputs = new NDList();
             for (String name : inputOrder) {
@@ -397,6 +450,12 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                     case "biome_ids" -> {
                         if (biome != null) inputs.add(biome);
                     }
+                    case "heightmap_surface" -> {
+                        if (hmSurface != null) inputs.add(hmSurface);
+                    }
+                    case "heightmap_ocean_floor" -> {
+                        if (hmOcean != null) inputs.add(hmOcean);
+                    }
                     default -> {
                         // ignored
                     }
@@ -406,6 +465,8 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 inputs.add(noise3d);
                 if (noise2d != null) inputs.add(0, noise2d);
                 if (biome != null) inputs.add(biome);
+                if (hmSurface != null) inputs.add(hmSurface);
+                if (hmOcean != null) inputs.add(hmOcean);
             }
 
             long t0 = System.currentTimeMillis();
@@ -473,6 +534,33 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
             }
         }
         return sub.create(flattened, new Shape(1, d0, d1, d2));
+    }
+
+    /**
+     * Build a heightmap tensor from a {@code float[16][16]} array.
+     *
+     * @param sub      NDManager for tensor allocation
+     * @param heightmap 16×16 block-Y heightmap, or {@code null} for zero-fill
+     * @param shape    declared shape from model config (e.g. [1, 16, 16])
+     * @return NDArray with the expected shape
+     */
+    private NDArray buildHeightmapTensor(NDManager sub, float[][] heightmap, long[] shape) {
+        long[] effectiveShape = (shape != null && shape.length >= 2) ? shape : new long[]{1, 16, 16};
+        int rows = (int) effectiveShape[effectiveShape.length - 2];
+        int cols = (int) effectiveShape[effectiveShape.length - 1];
+        float[] flat = new float[rows * cols];
+        if (heightmap != null) {
+            int idx = 0;
+            for (int r = 0; r < Math.min(rows, heightmap.length); r++) {
+                if (heightmap[r] != null) {
+                    for (int c = 0; c < Math.min(cols, heightmap[r].length); c++) {
+                        flat[idx + c] = heightmap[r][c];
+                    }
+                }
+                idx += cols;
+            }
+        }
+        return sub.create(flat, new Shape(effectiveShape));
     }
 
     // ------------------------------------------------------------------
@@ -710,6 +798,10 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      */
     private volatile boolean batchSupported = true;
 
+    public int[][][][] runBatchInference(float[][] noiseBatch, int[][][][] biomeBatch) {
+        return runBatchInference(noiseBatch, biomeBatch, null, null);
+    }
+
     /**
      * Run inference for multiple sections in a single ONNX call.
      *
@@ -727,11 +819,15 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      *                   {@link #noise3dFlatLength()}).  Length ∈ [1, MAX_BATCH_SIZE].
      * @param biomeBatch optional parallel array of biome IDs (same length as
      *                   {@code noiseBatch}), or {@code null} to zero-fill all
+     * @param hmSurfaceBatch optional parallel array of surface heightmaps
+     * @param hmOceanBatch   optional parallel array of ocean floor heightmaps
      * @return array of {@code int[16][16][16]} block grids, same length as
      *         {@code noiseBatch}.  Individual entries may be {@code null} on
      *         per-section decode failure.
      */
-    public int[][][][] runBatchInference(float[][] noiseBatch, int[][][][] biomeBatch) {
+    public int[][][][] runBatchInference(float[][] noiseBatch, int[][][][] biomeBatch,
+                                         float[][][] hmSurfaceBatch,
+                                         float[][][] hmOceanBatch) {
         if (noiseBatch == null || noiseBatch.length == 0) {
             return new int[0][][][];
         }
@@ -739,13 +835,16 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
         if (n == 1) {
             // Single-sample fast path (no batch overhead)
             int[][][] result = runInferenceWithBiome(noiseBatch[0],
-                    biomeBatch != null ? biomeBatch[0] : null);
+                    biomeBatch != null ? biomeBatch[0] : null,
+                    hmSurfaceBatch != null ? hmSurfaceBatch[0] : null,
+                    hmOceanBatch != null ? hmOceanBatch[0] : null);
             return new int[][][][] { result };
         }
 
         // Try true batched inference if still supported
         if (batchSupported) {
-            int[][][][] batched = tryBatchedInference(noiseBatch, biomeBatch);
+            int[][][][] batched = tryBatchedInference(noiseBatch, biomeBatch,
+                    hmSurfaceBatch, hmOceanBatch);
             if (batched != null) return batched;
             // First failure disables batching for all future calls
             batchSupported = false;
@@ -754,14 +853,16 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
         }
 
         // Sequential fallback
-        return runSequentialFallback(noiseBatch, biomeBatch);
+        return runSequentialFallback(noiseBatch, biomeBatch, hmSurfaceBatch, hmOceanBatch);
     }
 
     /**
      * Attempt true batched ONNX inference.
      * @return decoded grids, or {@code null} if the model rejects the batched input
      */
-    private int[][][][] tryBatchedInference(float[][] noiseBatch, int[][][][] biomeBatch) {
+    private int[][][][] tryBatchedInference(float[][] noiseBatch, int[][][][] biomeBatch,
+                                            float[][][] hmSurfaceBatch,
+                                            float[][][] hmOceanBatch) {
         int n = noiseBatch.length;
         int flatLen = noise3dFlatLength();
 
@@ -783,6 +884,12 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
             NDArray biome = hasBiomeIds
                     ? buildBatchedBiomeTensor(sub, biomeBatch, n)
                     : null;
+            NDArray hmSurface = hasHeightmapSurface
+                    ? buildBatchedHeightmapTensor(sub, hmSurfaceBatch, n, heightmapSurfaceShape)
+                    : null;
+            NDArray hmOcean = hasHeightmapOceanFloor
+                    ? buildBatchedHeightmapTensor(sub, hmOceanBatch, n, heightmapOceanFloorShape)
+                    : null;
 
             NDList inputs = new NDList();
             for (String name : inputOrder) {
@@ -790,6 +897,8 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                     case "noise_2d" -> { if (noise2d != null) inputs.add(noise2d); }
                     case "noise_3d" -> inputs.add(noise3d);
                     case "biome_ids" -> { if (biome != null) inputs.add(biome); }
+                    case "heightmap_surface" -> { if (hmSurface != null) inputs.add(hmSurface); }
+                    case "heightmap_ocean_floor" -> { if (hmOcean != null) inputs.add(hmOcean); }
                     default -> { /* ignored */ }
                 }
             }
@@ -797,6 +906,8 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 inputs.add(noise3d);
                 if (noise2d != null) inputs.add(0, noise2d);
                 if (biome != null) inputs.add(biome);
+                if (hmSurface != null) inputs.add(hmSurface);
+                if (hmOcean != null) inputs.add(hmOcean);
             }
 
             long t0 = System.currentTimeMillis();
@@ -821,6 +932,19 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
         long[] out = shape.clone();
         out[0] = n;
         return out;
+    }
+
+    /**
+     * Build a batched heightmap tensor by stacking individual heightmaps.
+     */
+    private NDArray buildBatchedHeightmapTensor(NDManager sub, float[][][] hmBatch,
+                                                int n, long[] shape) {
+        NDList tensors = new NDList(n);
+        for (int i = 0; i < n; i++) {
+            tensors.add(buildHeightmapTensor(sub,
+                    hmBatch != null && i < hmBatch.length ? hmBatch[i] : null, shape));
+        }
+        return NDArrays.concat(tensors, 0);
     }
 
     /**
@@ -858,12 +982,16 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     /**
      * Sequential fallback: process one section at a time.
      */
-    private int[][][][] runSequentialFallback(float[][] noiseBatch, int[][][][] biomeBatch) {
+    private int[][][][] runSequentialFallback(float[][] noiseBatch, int[][][][] biomeBatch,
+                                              float[][][] hmSurfaceBatch,
+                                              float[][][] hmOceanBatch) {
         int n = noiseBatch.length;
         int[][][][] results = new int[n][][][];
         for (int i = 0; i < n; i++) {
             results[i] = runInferenceWithBiome(noiseBatch[i],
-                    biomeBatch != null && i < biomeBatch.length ? biomeBatch[i] : null);
+                    biomeBatch != null && i < biomeBatch.length ? biomeBatch[i] : null,
+                    hmSurfaceBatch != null && i < hmSurfaceBatch.length ? hmSurfaceBatch[i] : null,
+                    hmOceanBatch != null && i < hmOceanBatch.length ? hmOceanBatch[i] : null);
         }
         return results;
     }
@@ -885,6 +1013,14 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      */
     public boolean acceptsBiomeIds() {
         return hasBiomeIds;
+    }
+
+    /**
+     * Whether the loaded model config declares heightmap inputs
+     * ({@code heightmap_surface} and/or {@code heightmap_ocean_floor}).
+     */
+    public boolean acceptsHeightmaps() {
+        return hasHeightmapSurface || hasHeightmapOceanFloor;
     }
 
     /** Number of block classes the model was trained with. */
