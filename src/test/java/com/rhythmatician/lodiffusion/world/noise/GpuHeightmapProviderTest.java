@@ -80,7 +80,7 @@ class GpuHeightmapProviderTest {
 
     @Test
     void backendNameIsGpuZeroCrossing() {
-        assertEquals("gpu_zero_crossing", "gpu_zero_crossing");
+        assertEquals("gpu_zero_crossing", new GpuHeightmapProvider().backendName());
     }
 
     // ── upsample1D ───────────────────────────────────────────────────
@@ -236,9 +236,9 @@ class GpuHeightmapProviderTest {
 
             HeightmapData result = new GpuHeightmapProvider().computeHeightmaps(column);
 
-            // Surface Y for quart column (qx=0, qz=0) should be: 19*16 + 3*4 + 2 = 316
+            // Surface Y for quart column (qx=0, qz=0) should be: 19*16 + 3*4 + 2 = 318
             // After bilinear upsample, block (2,2) is the quart (0,0) centre
-            assertEquals(316.0f, result.worldSurface()[2][2], 0.001f);
+            assertEquals(318.0f, result.worldSurface()[2][2], 0.001f);
         }
 
         @Test
