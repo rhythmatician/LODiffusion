@@ -1,4 +1,4 @@
-package com.rhythmatician.lodiffusion.world.noise;
+package com.rhythmatician.lodiffusion.world.noise.tools;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -11,14 +11,16 @@ import java.util.EnumSet;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;
 
-import com.rhythmatician.lodiffusion.world.noise.NoiseTap.PerformanceTier;
-import com.rhythmatician.lodiffusion.world.noise.NoiseTap.RouterField;
+import com.rhythmatician.lodiffusion.world.noise.tools.NoiseTap.PerformanceTier;
+import com.rhythmatician.lodiffusion.world.noise.tools.NoiseTap.RouterField;
 
 import net.minecraft.world.Heightmap;
 
 /**
  * Unit tests for the NoiseTap interface and implementation.
  * Tests the efficient vanilla noise signal capture at native API granularities.
+ *
+ * <p>NoiseTap is a data-harvesting tool, not part of the production inference pipeline.
  */
 public class NoiseTapTest {
 

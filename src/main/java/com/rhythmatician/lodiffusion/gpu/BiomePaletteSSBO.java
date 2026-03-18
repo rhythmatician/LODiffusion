@@ -124,7 +124,7 @@ public final class BiomePaletteSSBO implements AutoCloseable {
     /**
      * Extracts a single 4×4×4 section of biome output starting at Y-quart {@code startQy}.
      *
-     * <p>Convenience wrapper for {@link NoiseTap} integration: the NoiseTap biome cache is
+     * <p>Convenience wrapper for {@link com.rhythmatician.lodiffusion.world.noise.tools.NoiseTap NoiseTap} integration: the NoiseTap biome cache is
      * 4×4×4 ints for a 16-block Y section, with {@code qy} in [0, 3] relative to the section
      * bottom. Pass {@code startQy = (sectionAnchorY - Y_MIN) / 4} to select the right window.
      *

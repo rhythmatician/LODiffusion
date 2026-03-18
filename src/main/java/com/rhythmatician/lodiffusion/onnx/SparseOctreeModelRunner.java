@@ -13,6 +13,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import ai.djl.ndarray.NDArray;
+import ai.djl.ndarray.NDArrays;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.NDManager;
 import ai.djl.ndarray.types.Shape;
@@ -62,7 +63,7 @@ import ai.djl.translate.TranslateException;
  * expanded to its 8 children if {@code sigmoid(split_logit) > splitThreshold}.
  * Otherwise the argmax of its label logits fills the entire sub-region.
  *
- * @see com.rhythmatician.lodiffusion.voxy.WorldNoiseAccess#sampleNoise3DForSection
+ * @see com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler
  */
 public final class SparseOctreeModelRunner implements AutoCloseable {
 
@@ -336,9 +337,8 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      * Run inference for a single 16³ subchunk.
      *
      * @param noiseFlat flat noise input in channel-outermost order.
-     *        Legacy (v6): {@code float[13 * 4 * 2 * 4 = 416]} from
-     *        {@code WorldNoiseAccess.sampleNoise3DForSection}.
-     *        New (v7+): {@code float[15 * 4 * 4 * 4 = 960]} from
+     *        Shape must match {@link #noise3dShape()}.  Standard v7+ input:
+     *        {@code float[15 * 4 * 4 * 4 = 960]} from
      *        {@link com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler}.
      * @param biomeIds optional biome IDs at cell resolution matching noiseFlat.
      *        If {@code null} or empty, the model runs without biome conditioning.
@@ -672,6 +672,178 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
 
     static float logitForThreshold(float threshold) {
         return (float) Math.log(threshold / (1.0f - threshold));
+    }
+
+    // ------------------------------------------------------------------
+    // Batch inference
+    // ------------------------------------------------------------------
+
+    /** Maximum batch size for a single ONNX call. */
+    public static final int MAX_BATCH_SIZE = 8;
+
+    /**
+     * Tracks whether the model supports dynamic batch dimension.
+     * Starts as {@code true} (optimistic); flips to {@code false} on first
+     * failure, after which all batch calls degrade to sequential.
+     */
+    private volatile boolean batchSupported = true;
+
+    /**
+     * Run inference for multiple sections in a single ONNX call.
+     *
+     * <p>If the model supports dynamic batch dimension, the noise arrays are
+     * stacked into a single {@code [N, C, Dy, Dz, Dx]} tensor and dispatched
+     * once.  Output tensors are then sliced per sample and decoded
+     * independently.
+     *
+     * <p>If batched inference fails (model compiled with static batch=1),
+     * this method transparently falls back to sequential
+     * {@link #runInferenceWithBiome} calls and marks batch mode as
+     * unsupported for future calls.
+     *
+     * @param noiseBatch array of flat noise inputs (each of length
+     *                   {@link #noise3dFlatLength()}).  Length ∈ [1, MAX_BATCH_SIZE].
+     * @param biomeBatch optional parallel array of biome IDs (same length as
+     *                   {@code noiseBatch}), or {@code null} to zero-fill all
+     * @return array of {@code int[16][16][16]} block grids, same length as
+     *         {@code noiseBatch}.  Individual entries may be {@code null} on
+     *         per-section decode failure.
+     */
+    public int[][][][] runBatchInference(float[][] noiseBatch, int[][][][] biomeBatch) {
+        if (noiseBatch == null || noiseBatch.length == 0) {
+            return new int[0][][][];
+        }
+        int n = noiseBatch.length;
+        if (n == 1) {
+            // Single-sample fast path (no batch overhead)
+            int[][][] result = runInferenceWithBiome(noiseBatch[0],
+                    biomeBatch != null ? biomeBatch[0] : null);
+            return new int[][][][] { result };
+        }
+
+        // Try true batched inference if still supported
+        if (batchSupported) {
+            int[][][][] batched = tryBatchedInference(noiseBatch, biomeBatch);
+            if (batched != null) return batched;
+            // First failure disables batching for all future calls
+            batchSupported = false;
+            LOGGER.warn("[SparseOctree] Batched inference failed; "
+                    + "falling back to sequential (model has static batch=1?)");
+        }
+
+        // Sequential fallback
+        return runSequentialFallback(noiseBatch, biomeBatch);
+    }
+
+    /**
+     * Attempt true batched ONNX inference.
+     * @return decoded grids, or {@code null} if the model rejects the batched input
+     */
+    private int[][][][] tryBatchedInference(float[][] noiseBatch, int[][][][] biomeBatch) {
+        int n = noiseBatch.length;
+        int flatLen = noise3dFlatLength();
+
+        ClassLoader prevCl = Thread.currentThread().getContextClassLoader();
+        Thread.currentThread().setContextClassLoader(getClass().getClassLoader());
+        try (NDManager sub = manager.newSubManager()) {
+            // Stack noise: [N, C, Dy, Dz, Dx]
+            float[] stacked = new float[n * flatLen];
+            for (int i = 0; i < n; i++) {
+                System.arraycopy(noiseBatch[i], 0, stacked, i * flatLen, flatLen);
+            }
+            long[] batchShape = noise3dShape.clone();
+            batchShape[0] = n;  // replace batch dim
+            NDArray noise3d = sub.create(stacked, new Shape(batchShape));
+
+            NDArray noise2d = (hasNoise2d && noise2dShape != null)
+                    ? sub.zeros(new Shape(prependBatch(noise2dShape, n)))
+                    : null;
+            NDArray biome = hasBiomeIds
+                    ? buildBatchedBiomeTensor(sub, biomeBatch, n)
+                    : null;
+
+            NDList inputs = new NDList();
+            for (String name : inputOrder) {
+                switch (name) {
+                    case "noise_2d" -> { if (noise2d != null) inputs.add(noise2d); }
+                    case "noise_3d" -> inputs.add(noise3d);
+                    case "biome_ids" -> { if (biome != null) inputs.add(biome); }
+                    default -> { /* ignored */ }
+                }
+            }
+            if (inputs.isEmpty()) {
+                inputs.add(noise3d);
+                if (noise2d != null) inputs.add(0, noise2d);
+                if (biome != null) inputs.add(biome);
+            }
+
+            long t0 = System.currentTimeMillis();
+            try (var predictor = model.newPredictor()) {
+                NDList outputs = predictor.predict(inputs);
+                long elapsed = System.currentTimeMillis() - t0;
+                LOGGER.debug("[SparseOctree] Batch inference ({} sections) in {}ms", n, elapsed);
+                return decodeBatchOutputs(outputs, sub, n);
+            }
+        } catch (TranslateException e) {
+            LOGGER.debug("[SparseOctree] Batch inference rejected: {}", e.getMessage());
+            return null;
+        } finally {
+            Thread.currentThread().setContextClassLoader(prevCl);
+        }
+    }
+
+    /**
+     * Replace the batch dimension (index 0) of a shape array.
+     */
+    private static long[] prependBatch(long[] shape, int n) {
+        long[] out = shape.clone();
+        out[0] = n;
+        return out;
+    }
+
+    /**
+     * Build a batched biome tensor by stacking individual biome IDs.
+     */
+    private NDArray buildBatchedBiomeTensor(NDManager sub, int[][][][] biomeBatch, int n) {
+        NDList biomes = new NDList(n);
+        for (int i = 0; i < n; i++) {
+            biomes.add(buildBiomeTensor(sub,
+                    biomeBatch != null && i < biomeBatch.length ? biomeBatch[i] : null));
+        }
+        return NDArrays.concat(biomes, 0);
+    }
+
+    /**
+     * Decode batched outputs: each tensor has shape {@code [N, ...]} instead
+     * of {@code [1, ...]}.  We slice per sample and delegate to
+     * {@link #decodeOutputs}.
+     */
+    private int[][][][] decodeBatchOutputs(NDList outputs, NDManager sub, int batchSize) {
+        int[][][][] results = new int[batchSize][][][];
+        for (int i = 0; i < batchSize; i++) {
+            // Slice each output tensor along dim 0 for this sample
+            NDList sampleOutputs = new NDList(outputs.size());
+            for (NDArray t : outputs) {
+                // t.get(i) selects index i along the first dimension
+                NDArray sliced = t.get(i).expandDims(0);  // restore [1, ...] shape
+                sampleOutputs.add(sliced);
+            }
+            results[i] = decodeOutputs(sampleOutputs, sub);
+        }
+        return results;
+    }
+
+    /**
+     * Sequential fallback: process one section at a time.
+     */
+    private int[][][][] runSequentialFallback(float[][] noiseBatch, int[][][][] biomeBatch) {
+        int n = noiseBatch.length;
+        int[][][][] results = new int[n][][][];
+        for (int i = 0; i < n; i++) {
+            results[i] = runInferenceWithBiome(noiseBatch[i],
+                    biomeBatch != null && i < biomeBatch.length ? biomeBatch[i] : null);
+        }
+        return results;
     }
 
     // ------------------------------------------------------------------

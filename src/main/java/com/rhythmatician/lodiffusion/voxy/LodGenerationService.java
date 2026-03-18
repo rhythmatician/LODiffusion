@@ -17,6 +17,7 @@ import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import com.rhythmatician.lodiffusion.onnx.OctreeModelRunner;
 import com.rhythmatician.lodiffusion.onnx.SparseOctreeModelRunner;
+import com.rhythmatician.lodiffusion.world.noise.HeightmapData;
 import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler;
 import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSamplerFactory;
 import com.rhythmatician.lodiffusion.world.noise.SectionNoiseData;
@@ -440,7 +441,12 @@ public final class LodGenerationService {
                         "no synthetic fallback needed");
 
                 // Create the hot-swappable sampler factory (reads terrainBackend config).
-                samplerFactory = NoiseRouterSamplerFactory.create(noiseAccess.noiseConfig());
+                // Full world context enables UpstreamNoiseContext (heightmap + biome providers).
+                samplerFactory = NoiseRouterSamplerFactory.create(
+                        noiseAccess.serverWorld(),
+                        noiseAccess.generator(),
+                        noiseAccess.biomeSource(),
+                        noiseAccess.noiseConfig());
                 HelloTerrainMod.LOGGER.info("[LodGen] NoiseRouterSamplerFactory ready — backend={}",
                         samplerFactory.getSampler().backendName());
             } else {
@@ -572,14 +578,45 @@ public final class LodGenerationService {
 
         if (noiseAccess != null) {
             // *** PRIMARY PATH: Real noise data at any coordinate ***
-            // sampleFromNoise() returns rawHm inside AnchorInputs — no second
-            // sampleHeightmap() call needed (eliminates 256 duplicate getHeight() calls).
-            AnchorSampler.AnchorInputs anchor =
-                    AnchorSampler.sampleFromNoise(noiseAccess, sectionX, sectionZ);
-            rawHm        = anchor.rawHm();
-            biomeIdx     = anchor.biomeIdx();
-            hp5          = anchor.heightPlanes5();
-            oceanFloorHm = anchor.oceanFloorHm();
+            // Use HeightmapProvider from the upstream context when available;
+            // fall back to AnchorSampler + WorldNoiseAccess for backward compat.
+            if (samplerFactory != null) {
+                try {
+                    var ctx = samplerFactory.getUpstreamContext();
+                    HeightmapData hmData = ctx.heightmapProvider()
+                            .sampleHeightmaps(sectionX, sectionZ);
+                    rawHm        = hmData.worldSurface();
+                    oceanFloorHm = hmData.oceanFloor();
+
+                    // Column biomes (2D, 16×16) for Voxy block writes.
+                    // We sample at surface-Y at quart centres, expanding to block res.
+                    // TODO: Use BiomeProvider for section-level 3D biomes (ONNX input)
+                    String[][] biomeNames = noiseAccess.sampleBiomeNames(
+                            sectionX, sectionZ, rawHm);
+                    biomeIdx = new int[16][16];
+                    for (int x = 0; x < 16; x++)
+                        for (int z = 0; z < 16; z++)
+                            biomeIdx[x][z] = BiomeMapping.toCanonicalId(biomeNames[x][z]);
+
+                    hp5 = AnchorSampler.computeHeightPlanes(rawHm, oceanFloorHm);
+                } catch (Exception e) {
+                    // UpstreamNoiseContext unavailable (e.g. legacy 1-arg factory);
+                    // fall back to original AnchorSampler path.
+                    AnchorSampler.AnchorInputs anchor =
+                            AnchorSampler.sampleFromNoise(noiseAccess, sectionX, sectionZ);
+                    rawHm        = anchor.rawHm();
+                    biomeIdx     = anchor.biomeIdx();
+                    hp5          = anchor.heightPlanes5();
+                    oceanFloorHm = anchor.oceanFloorHm();
+                }
+            } else {
+                AnchorSampler.AnchorInputs anchor =
+                        AnchorSampler.sampleFromNoise(noiseAccess, sectionX, sectionZ);
+                rawHm        = anchor.rawHm();
+                biomeIdx     = anchor.biomeIdx();
+                hp5          = anchor.heightPlanes5();
+                oceanFloorHm = anchor.oceanFloorHm();
+            }
             noiseAccessSections.incrementAndGet();
             if (diagnosticCount.get() < 3) {
                 HelloTerrainMod.LOGGER.info(

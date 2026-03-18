@@ -1,4 +1,4 @@
-package com.rhythmatician.lodiffusion.world.noise;
+package com.rhythmatician.lodiffusion.world.noise.tools;
 
 import java.util.EnumMap;
 import java.util.EnumSet;
@@ -18,12 +18,18 @@ import net.minecraft.world.gen.noise.NoiseRouter;
 /**
  * NoiseTapImpl — Minimal implementation using exact Yarn 1.21.4+ API calls.
  *
- * This implementation fetches vanilla noise signals at their native API granularities:
- * - NoiseRouter fields via DensityFunction.sample() at block resolution
- * - Biomes via BiomeAccess.getBiomeForNoiseGen() at 4×4×4 lattice points
- * - Heightmaps via Chunk.getHeightmap() at 16×16 resolution
+ * <p><b>Data-harvesting tool only.</b> This captures vanilla noise signals at their
+ * native API granularities for training data collection:
+ * <ul>
+ *   <li>NoiseRouter fields via DensityFunction.sample() at block resolution</li>
+ *   <li>Biomes via BiomeAccess.getBiomeForNoiseGen() at 4×4×4 lattice points</li>
+ *   <li>Heightmaps via Chunk.getHeightmap() at 16×16 resolution</li>
+ * </ul>
  *
- * No upsampling is performed - we respect the API's native resolutions.
+ * <p>No upsampling is performed — we respect the API's native resolutions.
+ *
+ * @see NoiseTap
+ * @see com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler NoiseRouterSampler (production pipeline)
  */
 final class NoiseTapImpl implements NoiseTap {
     private final Chunk chunk;

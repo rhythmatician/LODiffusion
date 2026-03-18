@@ -1,4 +1,4 @@
-package com.rhythmatician.lodiffusion.world.noise;
+package com.rhythmatician.lodiffusion.world.noise.tools;
 
 import java.util.EnumSet;
 import java.util.Map;
@@ -11,14 +11,28 @@ import net.minecraft.world.gen.noise.NoiseConfig;
 /**
  * NoiseTap — Efficient vanilla noise signal capture at native API granularities.
  *
- * All methods cache at the API's native resolution:
- * - Biomes: 4×4×4 lattice per chunk section
- * - Router fields (DensityFunction): full 16×16×16 block grid for the chunk
- * - Heightmaps: 16×16 per-heightmap type
+ * <p><b>This is a data-harvesting tool</b> used for collecting training data from
+ * real Minecraft chunks. It is <em>not</em> part of the production inference pipeline.
+ * For production noise sampling, use
+ * {@link com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler NoiseRouterSampler}
+ * and its companion interfaces
+ * {@link com.rhythmatician.lodiffusion.world.noise.HeightmapProvider HeightmapProvider}
+ * and {@link com.rhythmatician.lodiffusion.world.noise.BiomeProvider BiomeProvider}.
  *
- * No upsampling is done here; LOD models can downsample on ingest if desired.
+ * <p>All methods cache at the API's native resolution:
+ * <ul>
+ *   <li>Biomes: 4×4×4 lattice per chunk section</li>
+ *   <li>Router fields (DensityFunction): full 16×16×16 block grid for the chunk</li>
+ *   <li>Heightmaps: 16×16 per-heightmap type</li>
+ * </ul>
+ *
+ * <p>No upsampling is done here; LOD models can downsample on ingest if desired.
  * This ensures we fetch exactly the vanilla world-gen signals with zero naive
  * upsampling on our side.
+ *
+ * <p>Note: This class defines its own {@link RouterField} enum for the data harvesting
+ * contract. The production pipeline uses
+ * {@link com.rhythmatician.lodiffusion.world.noise.RouterField} instead.
  */
 public interface NoiseTap {
 
@@ -50,6 +64,10 @@ public interface NoiseTap {
     /**
      * Router fields we can sample (exactly those exposed by NoiseRouter).
      * These correspond to the 15 DensityFunction fields in Yarn 1.21.4+ NoiseRouter.
+     *
+     * <p>This enum is specific to the data-harvesting contract and differs from
+     * the production {@link com.rhythmatician.lodiffusion.world.noise.RouterField}
+     * enum in naming conventions.
      */
     enum RouterField {
         // Tier A - Surface & Climate Features (fast, essential)
