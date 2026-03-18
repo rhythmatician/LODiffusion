@@ -49,19 +49,31 @@ public final class GpuNoiseDispatchQueue {
 
     private final QuartNoiseCompute compute;
     private final ConcurrentLinkedQueue<NoiseRequest> queue = new ConcurrentLinkedQueue<>();
+    private final ConcurrentLinkedQueue<ColumnRequest> columnQueue = new ConcurrentLinkedQueue<>();
 
     // Metrics (thread-safe counters)
     private final AtomicLong totalEnqueued = new AtomicLong();
     private final AtomicLong totalDispatched = new AtomicLong();
     private final AtomicLong totalFailed = new AtomicLong();
 
-    // ── Inner record ────────────────────────────────────────────────────
+    // ── Inner records ───────────────────────────────────────────────────
 
     /**
      * A pending GPU noise request with its completion handle.
      */
     record NoiseRequest(int sectionX, int sectionY, int sectionZ,
                         CompletableFuture<SectionNoiseData> future) {
+    }
+
+    /**
+     * A pending GPU column request — all Y-sections for one chunk column.
+     * Dispatched as a single batch; resolved to {@code SectionNoiseData[]} ordered
+     * by ascending sectionY ({@code minSectionY} first).
+     */
+    record ColumnRequest(int sectionX, int sectionZ,
+                         int minSectionY, int maxSectionY,
+                         CompletableFuture<SectionNoiseData[]> future) {
+        int sectionCount() { return maxSectionY - minSectionY + 1; }
     }
 
     // ── Constructor (private — use init()) ──────────────────────────────
@@ -140,6 +152,31 @@ public final class GpuNoiseDispatchQueue {
         return future;
     }
 
+    /**
+     * Enqueue all Y-sections for a single chunk column as one atomic batch.
+     *
+     * <p>All sections from {@code minSectionY} to {@code maxSectionY} (inclusive)
+     * are dispatched in a single {@link QuartNoiseCompute#compute} call on the
+     * render thread.  The returned future resolves to a {@code SectionNoiseData[]}
+     * in ascending sectionY order (index 0 = {@code minSectionY}).
+     *
+     * <p>The column counts against the {@link #MAX_DRAIN_PER_TICK} budget — a
+     * 24-section overworld column consumes 24 of the 32 slots per tick.
+     *
+     * @param sectionX   chunk-X coordinate
+     * @param sectionZ   chunk-Z coordinate
+     * @param minSectionY lowest section-Y to sample (inclusive)
+     * @param maxSectionY highest section-Y to sample (inclusive)
+     * @return future that resolves to {@code SectionNoiseData[(maxSectionY - minSectionY + 1)]}
+     */
+    public CompletableFuture<SectionNoiseData[]> enqueueColumn(
+            int sectionX, int sectionZ, int minSectionY, int maxSectionY) {
+        CompletableFuture<SectionNoiseData[]> future = new CompletableFuture<>();
+        columnQueue.add(new ColumnRequest(sectionX, sectionZ, minSectionY, maxSectionY, future));
+        totalEnqueued.addAndGet(maxSectionY - minSectionY + 1);
+        return future;
+    }
+
     // ── Public API (render thread) ──────────────────────────────────────
 
     /**
@@ -156,47 +193,82 @@ public final class GpuNoiseDispatchQueue {
     /**
      * Drain up to {@code maxBatch} requests and dispatch them.
      *
-     * @param maxBatch maximum number of requests to drain this tick
+     * <p>Column requests are drained first (each column consumes its section-count
+     * of the budget), followed by individual section requests for any remaining
+     * capacity.  All gathered work is dispatched as a <b>single</b> GPU call, so
+     * a column and several individual sections can share one compute round-trip.
+     *
+     * @param maxBatch maximum number of <em>sections</em> to include in this batch
      */
     public void drainAndDispatch(int maxBatch) {
-        if (queue.isEmpty()) return;
+        if (queue.isEmpty() && columnQueue.isEmpty()) return;
 
-        // Collect up to maxBatch requests
-        NoiseRequest[] batch = new NoiseRequest[maxBatch];
-        int count = 0;
-        for (int i = 0; i < maxBatch; i++) {
+        // Collect column requests first (each column expands into N section origins)
+        java.util.List<ColumnRequest> colBatch = new java.util.ArrayList<>();
+        java.util.List<int[]> origins = new java.util.ArrayList<>(maxBatch);
+        int remaining = maxBatch;
+
+        while (remaining > 0) {
+            ColumnRequest col = columnQueue.peek();
+            if (col == null) break;
+            int needed = col.sectionCount();
+            if (needed > remaining) break;   // won't fit this tick; leave for next
+            columnQueue.poll();
+            colBatch.add(col);
+            for (int sy = col.minSectionY(); sy <= col.maxSectionY(); sy++) {
+                origins.add(new int[]{col.sectionX() * 16, sy * 16, col.sectionZ() * 16});
+            }
+            remaining -= needed;
+        }
+
+        // Fill remaining budget with individual section requests
+        NoiseRequest[] indivBatch = new NoiseRequest[remaining];
+        int indivCount = 0;
+        for (int i = 0; i < remaining; i++) {
             NoiseRequest req = queue.poll();
             if (req == null) break;
-            batch[count++] = req;
+            indivBatch[indivCount++] = req;
+            origins.add(new int[]{req.sectionX() * 16, req.sectionY() * 16, req.sectionZ() * 16});
         }
-        if (count == 0) return;
+
+        int totalCount = origins.size();
+        if (totalCount == 0) return;
 
         try {
-            // Build section origins in block coordinates (QuartNoiseCompute expects blockX/Y/Z)
-            int[][] origins = new int[count][3];
-            for (int i = 0; i < count; i++) {
-                origins[i][0] = batch[i].sectionX() * 16;
-                origins[i][1] = batch[i].sectionY() * 16;
-                origins[i][2] = batch[i].sectionZ() * 16;
-            }
+            // Build origins array for QuartNoiseCompute
+            int[][] originsArr = origins.toArray(new int[0][]);
 
             // GPU dispatch + readback (all on render thread)
-            SectionNoiseData[] results = compute.compute(origins, count);
+            SectionNoiseData[] results = compute.compute(originsArr, totalCount);
 
-            // Complete futures with results
-            for (int i = 0; i < count; i++) {
-                batch[i].future().complete(results[i]);
+            // Distribute results back to column futures
+            int resultIdx = 0;
+            for (ColumnRequest col : colBatch) {
+                int n = col.sectionCount();
+                SectionNoiseData[] colResults = new SectionNoiseData[n];
+                System.arraycopy(results, resultIdx, colResults, 0, n);
+                col.future().complete(colResults);
+                resultIdx += n;
             }
-            totalDispatched.addAndGet(count);
+
+            // Distribute results back to individual section futures
+            for (int i = 0; i < indivCount; i++) {
+                indivBatch[i].future().complete(results[resultIdx++]);
+            }
+
+            totalDispatched.addAndGet(totalCount);
 
         } catch (Exception e) {
             // Complete all futures exceptionally so gen thread doesn't hang
             LOGGER.error("[GpuNoiseDispatchQueue] GPU dispatch failed for batch of {} — " +
-                    "completing futures exceptionally", count, e);
-            for (int i = 0; i < count; i++) {
-                batch[i].future().completeExceptionally(e);
+                    "completing futures exceptionally", totalCount, e);
+            for (ColumnRequest col : colBatch) {
+                col.future().completeExceptionally(e);
             }
-            totalFailed.addAndGet(count);
+            for (int i = 0; i < indivCount; i++) {
+                indivBatch[i].future().completeExceptionally(e);
+            }
+            totalFailed.addAndGet(totalCount);
         }
     }
 
@@ -226,8 +298,14 @@ public final class GpuNoiseDispatchQueue {
                     new IllegalStateException("GPU dispatch queue cancelled: " + reason));
             cancelled++;
         }
+        ColumnRequest col;
+        while ((col = columnQueue.poll()) != null) {
+            col.future().completeExceptionally(
+                    new IllegalStateException("GPU dispatch queue cancelled: " + reason));
+            cancelled += col.sectionCount();
+        }
         if (cancelled > 0) {
-            LOGGER.debug("[GpuNoiseDispatchQueue] Cancelled {} pending requests: {}", cancelled, reason);
+            LOGGER.debug("[GpuNoiseDispatchQueue] Cancelled {} pending sections: {}", cancelled, reason);
         }
     }
 

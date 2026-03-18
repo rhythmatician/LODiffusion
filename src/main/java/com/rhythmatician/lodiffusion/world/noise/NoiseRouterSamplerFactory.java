@@ -163,12 +163,13 @@ public final class NoiseRouterSamplerFactory implements AutoCloseable {
                         "UpstreamNoiseContext requires world context — use the 4-arg create()");
             }
 
-            HeightmapProvider hmp = new VanillaHeightmapProvider(
-                    serverWorld, generator, noiseConfig);
-
-            // Use GPU biome provider when the backend involves GPU sampling
+            // Use GPU providers when the backend involves GPU sampling
             boolean useGpu = activeSampler instanceof GpuNoiseRouterSampler
                     || (activeSampler instanceof ShadowValidatingSampler);
+
+            HeightmapProvider hmp = useGpu
+                    ? new GpuHeightmapProvider()
+                    : new VanillaHeightmapProvider(serverWorld, generator, noiseConfig);
             BiomeProvider bp = useGpu
                     ? new GpuBiomeProvider(biomeSource, noiseConfig)
                     : new VanillaBiomeProvider(biomeSource, noiseConfig);
