@@ -63,6 +63,9 @@ public class ShaderSSBOManager {
     // Per-chunk compute dispatcher (owns the RouterConfig UBO at binding 8)
     private TerrainComputeDispatcher dispatcher = new TerrainComputeDispatcher();
 
+    // Quart-resolution compute dispatcher (bindings 14–15, evaluates all 15 RouterFields)
+    private QuartNoiseCompute quartCompute = new QuartNoiseCompute();
+
     /** RouterConfig in effect after uploadNoiseData(); kept for late biome-palette wiring. */
     private TerrainComputeDispatcher.RouterConfig currentConfig;
 
@@ -166,11 +169,30 @@ public class ShaderSSBOManager {
                             data.shiftNoiseIndex,  // nn_shift_a: SHIFT noise at (bx*0.25, 0, bz*0.25)
                             data.shiftNoiseIndex   // nn_shift_b: same noise, coords swapped in GLSL
                     )
-                    .withBiomePalette(data.nnTemperature, data.nnVegetation, 0);
+                    .withBiomePalette(data.nnTemperature, data.nnVegetation, 0)
+                    .withAquiferOreIndices(
+                            data.nnBarrier,
+                            data.nnFloodedness,
+                            data.nnSpread,
+                            data.nnLava,
+                            data.nnVeinToggle,
+                            data.nnVeinRidged,
+                            data.nnVeinGap
+                    );
             currentConfig = config;
 
             // Initialise the per-chunk dispatcher (uploads RouterConfig UBO)
             dispatcher.init(shaderManager, config);
+
+            // Initialise the quart-resolution compute pipeline (bindings 14+15)
+            // This shares the noise SSBOs (0–6), RouterConfig UBO (8), and MLP weights (9+10)
+            // already uploaded above.
+            try {
+                quartCompute.init();
+                LOGGER.info("ShaderSSBOManager: QuartNoiseCompute pipeline initialised");
+            } catch (Exception e) {
+                LOGGER.warn("ShaderSSBOManager: QuartNoiseCompute init failed — GPU quart path disabled", e);
+            }
 
             lastUploadTime = System.currentTimeMillis();
             LOGGER.info("ShaderSSBOManager: GPU upload, shader compilation, and dispatcher init complete");
@@ -502,7 +524,8 @@ public class ShaderSSBOManager {
         }
 
         try {
-            // Cleanup dispatcher UBO first, then shader program
+            // Cleanup quart compute first, then dispatcher UBO, then shader program
+            quartCompute.cleanup();
             dispatcher.cleanup();
             shaderManager.cleanup();
 
@@ -525,6 +548,17 @@ public class ShaderSSBOManager {
      */
     public boolean isValid() {
         return initialized && System.currentTimeMillis() - lastUploadTime < 300000; // 5 min timeout
+    }
+
+    /**
+     * Returns the quart-resolution compute dispatcher.
+     * Callers can use this to dispatch batched section evaluations and read back
+     * {@link com.rhythmatician.lodiffusion.world.noise.SectionNoiseData} results.
+     *
+     * @return the QuartNoiseCompute instance (may not be ready if init failed)
+     */
+    public QuartNoiseCompute getQuartCompute() {
+        return quartCompute;
     }
 
     /**

@@ -608,9 +608,83 @@ public class ShadowRouterExtractor {
         // mc_normal_noise() cannot evaluate it; tracked as WS-1.2-BlendedNoise.
         // data.nnDepthNoise remains -1 until a mc_blended_noise() GLSL function is added.
 
+        // Aquifer noise fields (4 fields; each is a simple DensityFunctions.Noise wrapper)
+        data.nnBarrier      = indexForDirectNoise(noiseRouter, "barrierNoise");
+        data.nnFloodedness  = indexForDirectNoise(noiseRouter, "fluidLevelFloodednessNoise");
+        data.nnSpread       = indexForDirectNoise(noiseRouter, "fluidLevelSpreadNoise");
+        data.nnLava         = indexForDirectNoise(noiseRouter, "lavaNoise");
+
+        // Ore vein noise fields (3 fields; each is a simple DensityFunctions.Noise wrapper)
+        data.nnVeinToggle   = indexForDirectNoise(noiseRouter, "veinToggle");
+        data.nnVeinRidged   = indexForDirectNoise(noiseRouter, "veinRidged");
+        data.nnVeinGap      = indexForDirectNoise(noiseRouter, "veinGap");
+
         LOGGER.info("Named noise indices: continents={}, erosion={}, ridges={}, temp={}, veg={}, shift={}, jagged={}",
                 data.nnContinents, data.nnErosion, data.nnRidges,
                 data.nnTemperature, data.nnVegetation, data.shiftNoiseIndex, data.nnJagged);
+        LOGGER.info("Aquifer/ore noise indices: barrier={}, floodedness={}, spread={}, lava={}, veinToggle={}, veinRidged={}, veinGap={}",
+                data.nnBarrier, data.nnFloodedness, data.nnSpread, data.nnLava,
+                data.nnVeinToggle, data.nnVeinRidged, data.nnVeinGap);
+    }
+
+    /**
+     * Returns the NormalNoise SSBO index for a router field backed by a
+     * {@code DensityFunctions.Noise} wrapper (non-shifted).  This covers the
+     * aquifer fields (barrier, floodedness, spread, lava) and ore vein fields
+     * (veinToggle, veinRidged, veinGap) where the DensityFunction graph is:
+     *   noiseRouter.{fieldName}() → DensityFunctions.Noise → .noiseData (NoiseHolder) → NormalNoise
+     *
+     * <p>Falls back to unwrapping intermediate cache/marker wrappers if needed.
+     */
+    private int indexForDirectNoise(Object noiseRouter, String fieldName) {
+        try {
+            Object densityFunction = invokeAccessor(noiseRouter, fieldName);
+            if (densityFunction == null) return -1;
+
+            // Walk through potential wrappers (cache, marker) to reach the Noise node
+            return resolveNoiseIndex(densityFunction, fieldName);
+        } catch (Exception e) {
+            LOGGER.warn("Failed to extract direct noise index for '{}'", fieldName, e);
+            return -1;
+        }
+    }
+
+    /**
+     * Recursively resolves a NormalNoise SSBO index from a DensityFunction, handling
+     * common wrappers: DensityFunctions.Noise, cache layers, markers.
+     */
+    private int resolveNoiseIndex(Object densityFunction, String debugName) {
+        if (densityFunction == null) return -1;
+
+        // Direct: DensityFunctions.Noise → noiseData (NoiseHolder) → NormalNoise
+        if (densityFunctionsNoiseClass != null && densityFunctionsNoiseClass.isInstance(densityFunction)) {
+            Object noiseHolder = getFieldValue(densityFunction, "noiseData");
+            if (noiseHolder == null) noiseHolder = getNoiseHolder(densityFunction);
+            if (noiseHolder != null) {
+                try {
+                    Object normalNoise = noiseHolderNoiseMethod != null
+                            ? noiseHolderNoiseMethod.invoke(noiseHolder) : null;
+                    if (normalNoise != null) {
+                        Integer idx = noiseIndexMap.get(normalNoise);
+                        if (idx != null) return idx;
+                    }
+                } catch (Exception e) {
+                    LOGGER.debug("NoiseHolder invoke failed for '{}'", debugName);
+                }
+            }
+        }
+
+        // Unwrap: cache/marker layers ("wrapped", "argument")
+        Object inner = getFieldValue(densityFunction, "wrapped");
+        if (inner == null) inner = getFieldValue(densityFunction, "argument");
+        if (inner == null) inner = tryUnwrapByName(densityFunction, "delegate");
+        if (inner != null && inner != densityFunction) {
+            return resolveNoiseIndex(inner, debugName);
+        }
+
+        LOGGER.debug("Could not resolve NormalNoise from '{}' (type: {})",
+                debugName, densityFunction.getClass().getSimpleName());
+        return -1;
     }
 
     /**
@@ -743,6 +817,17 @@ public class ShadowRouterExtractor {
          *  {@link ShadowRouterExtractor#indexForJaggedNoise()}. */
         public int nnJagged        = -1;
         public int shiftNoiseIndex = -1;  // Noises.SHIFT — same index for both ShiftA and ShiftB
+
+        // Aquifer noise indices (RouterField ordinals 8–11)
+        public int nnBarrier       = -1;  // NoiseRouter.barrierNoise()
+        public int nnFloodedness   = -1;  // NoiseRouter.fluidLevelFloodednessNoise()
+        public int nnSpread        = -1;  // NoiseRouter.fluidLevelSpreadNoise()
+        public int nnLava          = -1;  // NoiseRouter.lavaNoise()
+
+        // Ore vein noise indices (RouterField ordinals 12–14)
+        public int nnVeinToggle    = -1;  // NoiseRouter.veinToggle()
+        public int nnVeinRidged    = -1;  // NoiseRouter.veinRidged()
+        public int nnVeinGap       = -1;  // NoiseRouter.veinGap()
 
         public void uploadToGPU() {
             LOGGER.info("SSBO upload requested (not yet implemented)");
