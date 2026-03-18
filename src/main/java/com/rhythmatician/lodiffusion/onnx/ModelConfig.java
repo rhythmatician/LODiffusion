@@ -34,7 +34,10 @@ public record ModelConfig(
     Integer biomeVocabSize,
     Integer blockVocabSize,
     Map<String, Integer> blockMapping,    // "minecraft:stone" -> 42
-    Map<String, String> blockIdToName     // "42" -> "minecraft:stone"  (keys are string-ified ints)
+    Map<String, String> blockIdToName,    // "42" -> "minecraft:stone"  (keys are string-ified ints)
+
+    /* ---- sparse-octree sidecar fields (nullable) ---- */
+    Double splitThreshold                  // sigmoid decision boundary for octree expansion
 ) {
 
     // ------------------------------------------------------------------

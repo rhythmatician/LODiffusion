@@ -241,9 +241,26 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 } else {
                     LOGGER.warn("[SparseOctree] {} not found — using raw block indices (no vocab)", configPath);
                 }
-                float splitThreshold = (float) com.rhythmatician.lodiffusion.Config
-                        .getDouble(SPLIT_THRESHOLD_CONFIG_KEY, DEFAULT_SPLIT_THRESHOLD);
-                LOGGER.debug("[SparseOctree] splitThreshold={}", splitThreshold);
+                // Split threshold priority: runtime config > sidecar > default.
+                float splitThreshold;
+                if (com.rhythmatician.lodiffusion.Config.hasKey(SPLIT_THRESHOLD_CONFIG_KEY)) {
+                    // Explicit runtime override takes precedence.
+                    splitThreshold = (float) com.rhythmatician.lodiffusion.Config
+                            .getDouble(SPLIT_THRESHOLD_CONFIG_KEY, DEFAULT_SPLIT_THRESHOLD);
+                    LOGGER.info("[SparseOctree] splitThreshold={} (runtime config override)", splitThreshold);
+                } else if (Files.exists(configPath)) {
+                    ModelConfig sidecar = ConfigLoader.load(configPath);
+                    if (sidecar.splitThreshold() != null) {
+                        splitThreshold = sidecar.splitThreshold().floatValue();
+                        LOGGER.info("[SparseOctree] splitThreshold={} (from model sidecar)", splitThreshold);
+                    } else {
+                        splitThreshold = DEFAULT_SPLIT_THRESHOLD;
+                        LOGGER.info("[SparseOctree] splitThreshold={} (default fallback)", splitThreshold);
+                    }
+                } else {
+                    splitThreshold = DEFAULT_SPLIT_THRESHOLD;
+                    LOGGER.info("[SparseOctree] splitThreshold={} (default fallback)", splitThreshold);
+                }
                 LOGGER.info("[SparseOctree] noise_3d shape: {}",
                         java.util.Arrays.toString(noise3dShape));
                 return new SparseOctreeModelRunner(manager, zm, vocab, numClassesFromConfig,

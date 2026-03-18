@@ -116,7 +116,8 @@ public final class ConfigLoader {
             /* biomeVocabSize */  biomeVocab,
             /* blockVocabSize */  blockVocab,
             /* blockMapping */    blockMapping,
-            /* blockIdToName */   blockIdToName
+            /* blockIdToName */   blockIdToName,
+            /* splitThreshold */  null    // v1 does not carry split threshold
         );
         config.validate();
         LOGGER.info("Loaded v1 model config from " + jsonPath

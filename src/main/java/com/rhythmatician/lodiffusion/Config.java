@@ -229,6 +229,11 @@ public final class Config {
     return o.has(key) ? o.get(key).getAsDouble() : def;
   }
 
+  /** Returns {@code true} if the runtime config explicitly declares the given key. */
+  public static boolean hasKey(String key) {
+    return merged().has(key);
+  }
+
   // ========== Parity / Shadow Validation Configuration ==========
 
   private static JsonObject getParityObject() {

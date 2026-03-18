@@ -40,7 +40,7 @@ class SparseOctreeModelRunnerInputContractTest {
         inputs.put("noise_3d", new int[] {1, 13, 4, 2, 4});
         ModelConfig cfg = new ModelConfig(
                 "sparse_octree", "1", inputs, null, Map.of("block_logits", new int[] {1, 16, 16, 16, 16}),
-                null, null, null, null, null, 256, null, null);
+                null, null, null, null, null, 256, null, null, null);
 
         List<String> order = SparseOctreeModelRunner.resolveInputOrder(cfg);
 
