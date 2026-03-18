@@ -32,9 +32,9 @@ These items are **not in this plan** but were prerequisites completed in prior s
 - [x] **RouterConfig UBO expansion**: Extended from 112→144 bytes (std140) with `copyBase()` refactor. 7 new `int` fields for aquifer/ore noise indices. `terrain_compute.comp` UBO struct updated backward-compatibly.
 - [x] **Async GPU dispatch queue**: `GpuNoiseDispatchQueue.java` — `ConcurrentLinkedQueue<NoiseRequest>` + `CompletableFuture<SectionNoiseData>` bridge between gen thread and render thread. 32 requests/tick drain via `ClientTickEvents.END_CLIENT_TICK`. Static singleton lifecycle managed by `WorldGenEventHandler`.
 - [x] **`GpuNoiseRouterSampler` real implementation**: Enqueues on `GpuNoiseDispatchQueue`, blocks on `future.get(500ms)`, transparent CPU fallback with rate-limited warning. AtomicLong metrics for GPU hits / CPU fallbacks.
-- [ ] **Double-buffered output SSBOs**: ping/pong SSBO pair to eliminate read-after-write stalls. Currently `ShaderSSBOManager` allocates single density (binding 7, 384KB) and block (binding 11, 384KB) output buffers.
-- [ ] **`GpuHeightmapProvider`**: derive heightmaps from density zero-crossings via dedicated GPU pass. Plan calls for a separate shader, not embedded in the main terrain shader.
-- [ ] **`GpuBiomeProvider`**: `BiomePaletteSSBO` already computes biome IDs on GPU (binding 13, quart resolution at 4×4×96 per chunk).  Needs to be wrapped into the `BiomeProvider` interface and adapted from chunk-column to per-section output.
+- [ ] **Async PBO readback** (replaces double-buffered SSBOs): `glFenceSync` + `glCopyBufferSubData` to PBO ring buffer + `glMapBufferRange` next tick. Eliminates `glGetBufferSubData` synchronous DMA stall in `QuartNoiseCompute.readBack()`. ~120KB/tick throughput.
+- [ ] **`GpuHeightmapProvider`**: batch-dispatch all 24 Y-sections per chunk-column via `QuartNoiseCompute`, CPU zero-crossing scan on `FINAL_DENSITY`, bilinear upsample 4×4→16×16 block resolution. Extends `GpuNoiseDispatchQueue` with `enqueueColumn()`.
+- [x] **`GpuBiomeProvider`**: CPU biome classification paired with GPU noise sampler. Uses same `BiomeSource.getBiome()` + `BiomeMapping.toCanonicalId()` as `VanillaBiomeProvider`. Wired conditionally in `NoiseRouterSamplerFactory.getUpstreamContext()` when backend is GPU or shadow. `backendName()` returns `"gpu_climate"`. 13 unit tests.
 
 ---
 
@@ -134,6 +134,6 @@ Items 1–4 are **complete** — the GPU-first noise pipeline is now wired end-t
 `GpuNoiseRouterSampler.sampleSection()` enqueues on dispatch queue, `future.get(500ms)`, transparent CPU fallback with rate-limited warning. AtomicLong metrics for GPU hits / CPU fallbacks.
 
 ### 5. Remaining GPU Work
-- **Double-buffered output SSBOs**: ping/pong SSBO pair to eliminate read-after-write stalls
-- **`GpuHeightmapProvider`**: dedicated GPU pass for density zero-crossing (top-down surface scan)
-- **`GpuBiomeProvider`**: wrap existing `BiomePaletteSSBO` (binding 13) into `BiomeProvider` interface
+- **Async PBO readback**: `glFenceSync` + PBO ring buffer to eliminate `glGetBufferSubData` stall
+- **`GpuHeightmapProvider`**: batch 24 Y-sections, CPU zero-crossing scan, bilinear upsample
+- ~~**`GpuBiomeProvider`**~~: CPU biome classification paired with GPU sampler ✅

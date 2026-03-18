@@ -8,8 +8,9 @@ package com.rhythmatician.lodiffusion.world.noise;
  *   <li>{@link VanillaBiomeProvider} — performs the vanilla
  *       {@code MultiNoiseBiomeSource} 6-parameter lookup on the CPU,
  *       using climate values from {@link SectionNoiseData}.</li>
- *   <li>{@code GpuBiomeProvider} (future) — reads the biome lattice
- *       computed by the shadow router's {@code BiomePaletteSSBO}.</li>
+ *   <li>{@link GpuBiomeProvider} — GPU-paired biome classification using
+ *       the same vanilla lookup, semantically paired with the GPU noise
+ *       sampler for logging/metrics and future GPU readback.</li>
  * </ul>
  *
  * <p>The biome IDs returned are <b>canonical palette indices</b> matching the

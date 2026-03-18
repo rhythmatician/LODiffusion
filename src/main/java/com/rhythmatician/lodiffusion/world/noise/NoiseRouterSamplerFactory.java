@@ -165,7 +165,13 @@ public final class NoiseRouterSamplerFactory implements AutoCloseable {
 
             HeightmapProvider hmp = new VanillaHeightmapProvider(
                     serverWorld, generator, noiseConfig);
-            BiomeProvider bp = new VanillaBiomeProvider(biomeSource, noiseConfig);
+
+            // Use GPU biome provider when the backend involves GPU sampling
+            boolean useGpu = activeSampler instanceof GpuNoiseRouterSampler
+                    || (activeSampler instanceof ShadowValidatingSampler);
+            BiomeProvider bp = useGpu
+                    ? new GpuBiomeProvider(biomeSource, noiseConfig)
+                    : new VanillaBiomeProvider(biomeSource, noiseConfig);
 
             activeContext = new UpstreamNoiseContext(activeSampler, hmp, bp);
             HelloTerrainMod.LOGGER.info(
