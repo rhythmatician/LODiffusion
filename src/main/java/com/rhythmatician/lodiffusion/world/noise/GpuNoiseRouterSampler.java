@@ -4,40 +4,51 @@ import com.rhythmatician.lodiffusion.HelloTerrainMod;
 
 import net.minecraft.world.gen.noise.NoiseConfig;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicLong;
+
 /**
- * GPU-backed {@link NoiseRouterSampler} that reads terrain data computed by the
- * shadow router compute pipeline.
+ * GPU-backed {@link NoiseRouterSampler} that dispatches section noise requests
+ * to the render-thread via {@link GpuNoiseDispatchQueue} and waits for GPU
+ * results.
  *
- * <h2>Current status (partial / hybrid)</h2>
- * The shadow router GPU shader currently evaluates {@code finalDensity} and the
- * 5 climate fields internally (for biome classification), but does <b>not</b>
- * expose all 15 {@link RouterField}s as individual SSBO outputs.  Until the
- * shader is extended (WS-future), this sampler operates in <b>hybrid mode</b>:
+ * <h2>Threading</h2>
+ * {@link #sampleSection} is called from the {@code LODiffusion-Gen} daemon
+ * thread, which has no GL context.  The method enqueues a request on the
+ * dispatch queue and blocks on a {@link CompletableFuture} with a configurable
+ * timeout.  The render thread drains the queue each client tick, dispatches the
+ * GPU compute shader, and completes the futures.
  *
- * <ul>
- *   <li>Fields the GPU computes: read from SSBO readback (TBD — currently
- *       falls through to CPU).</li>
- *   <li>Fields the GPU does not yet compute: delegated to a
- *       {@link VanillaNoiseRouterSampler} for CPU evaluation.</li>
- * </ul>
+ * <h2>CPU fallback</h2>
+ * If the GPU queue is not initialised (e.g. before world load completes), or
+ * the future times out / fails, the request falls back transparently to a
+ * {@link VanillaNoiseRouterSampler} CPU path.  A rate-limited warning is
+ * logged so the fallback is visible but not spammy.
  *
- * <p>Once the shader emits all 15 fields at quart resolution, the CPU fallback
- * is removed and this becomes a pure GPU readback path.
- *
- * <p>Marked {@code @Experimental} — the GPU path is not yet validated for
- * bit-parity with vanilla.
- *
+ * @see GpuNoiseDispatchQueue
  * @see NoiseRouterSampler
  * @see VanillaNoiseRouterSampler
  */
 public final class GpuNoiseRouterSampler implements NoiseRouterSampler {
 
+    /** Maximum time (ms) to wait for the GPU future before falling back to CPU. */
+    private static final long GPU_TIMEOUT_MS = 500;
+
     /**
-     * CPU fallback for fields the GPU doesn't currently output.
-     * In the future, when the shader outputs all 15 fields, this will be
-     * removed and all sampling will come from GPU readback.
+     * Minimum interval (ms) between CPU-fallback warning log messages.
+     * Prevents log spam when the GPU path is consistently slow or down.
      */
+    private static final long WARN_LOG_INTERVAL_MS = 5_000;
+
+    /** CPU fallback sampler (always available). */
     private final VanillaNoiseRouterSampler cpuFallback;
+
+    // ── Metrics ─────────────────────────────────────────────────────────
+    private final AtomicLong gpuHits = new AtomicLong();
+    private final AtomicLong cpuFallbackHits = new AtomicLong();
+    private volatile long lastWarnLogMs = 0;
 
     /**
      * @param noiseConfig the server's NoiseConfig (used for CPU fallback)
@@ -48,22 +59,43 @@ public final class GpuNoiseRouterSampler implements NoiseRouterSampler {
 
     @Override
     public SectionNoiseData sampleSection(int sectionX, int sectionY, int sectionZ) {
-        // ── Phase 1 (current): full CPU fallback ──────────────────────
-        // TODO: When terrain_compute.comp is extended to emit all 15
-        //       RouterField values at quart resolution per section,
-        //       replace this with GPU SSBO readback:
-        //
-        //       1. Enqueue (sectionX, sectionZ) on the ShadowRouterJobQueue
-        //       2. Wait for the dispatch to complete (glMemoryBarrier)
-        //       3. glGetBufferSubData for the relevant Y-slice
-        //       4. Unpack the 15-channel quart-resolution buffer into
-        //          float[960] and construct SectionNoiseData
-        //
-        //       Fields that the GPU already computes internally but does not
-        //       yet expose as outputs:
-        //         - FINAL_DENSITY (binding 7, block-res — needs quart-res variant)
-        //         - TEMPERATURE, VEGETATION, CONTINENTS, EROSION, DEPTH, RIDGES
-        //           (evaluated in the biome classifier, not written to SSBO)
+        GpuNoiseDispatchQueue queue = GpuNoiseDispatchQueue.instance();
+
+        // If the dispatch queue isn't up yet, go straight to CPU
+        if (queue == null) {
+            return cpuFallbackSample(sectionX, sectionY, sectionZ, "queue not initialised");
+        }
+
+        // Enqueue and wait for the render-thread to dispatch on GPU
+        CompletableFuture<SectionNoiseData> future = queue.enqueue(sectionX, sectionY, sectionZ);
+        try {
+            SectionNoiseData result = future.get(GPU_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+            gpuHits.incrementAndGet();
+            return result;
+        } catch (TimeoutException e) {
+            future.cancel(false);
+            return cpuFallbackSample(sectionX, sectionY, sectionZ, "GPU timeout (" + GPU_TIMEOUT_MS + "ms)");
+        } catch (Exception e) {
+            return cpuFallbackSample(sectionX, sectionY, sectionZ, "GPU error: " + e.getMessage());
+        }
+    }
+
+    /**
+     * Transparent CPU fallback with rate-limited warning.
+     */
+    private SectionNoiseData cpuFallbackSample(int sectionX, int sectionY, int sectionZ, String reason) {
+        cpuFallbackHits.incrementAndGet();
+
+        // Rate-limited warning log
+        long now = System.currentTimeMillis();
+        if (now - lastWarnLogMs > WARN_LOG_INTERVAL_MS) {
+            lastWarnLogMs = now;
+            HelloTerrainMod.LOGGER.warn(
+                    "[GpuNoiseRouterSampler] CPU fallback for section ({},{},{}) — {} " +
+                    "(gpuHits={}, cpuFallbacks={})",
+                    sectionX, sectionY, sectionZ, reason,
+                    gpuHits.get(), cpuFallbackHits.get());
+        }
 
         return cpuFallback.sampleSection(sectionX, sectionY, sectionZ);
     }
@@ -77,6 +109,12 @@ public final class GpuNoiseRouterSampler implements NoiseRouterSampler {
     public void close() {
         cpuFallback.close();
         HelloTerrainMod.LOGGER.info(
-                "[GpuNoiseRouterSampler] Closed (hybrid mode — CPU fallback released)");
+                "[GpuNoiseRouterSampler] Closed — gpuHits={}, cpuFallbacks={}",
+                gpuHits.get(), cpuFallbackHits.get());
     }
+
+    // ── Metrics accessors (for status commands / debugging) ─────────────
+
+    public long getGpuHits()          { return gpuHits.get(); }
+    public long getCpuFallbackHits()  { return cpuFallbackHits.get(); }
 }

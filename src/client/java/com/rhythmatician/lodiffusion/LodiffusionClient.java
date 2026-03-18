@@ -4,6 +4,7 @@ import com.rhythmatician.lodiffusion.voxy.LodGenerationService;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 import com.rhythmatician.lodiffusion.voxy.VoxyDatasetExportService;
 import com.rhythmatician.lodiffusion.voxy.VoxyDebugState;
+import com.rhythmatician.lodiffusion.world.noise.GpuNoiseDispatchQueue;
 
 
 import net.fabricmc.api.ClientModInitializer;
@@ -82,11 +83,14 @@ public class LodiffusionClient implements ClientModInitializer {
             stopDatasetExportService();
         });
 
-        // --- Client tick: update player position ---
+        // --- Client tick: update player position + drain GPU noise queue ---
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             if (LOD_SERVICE.isRunning() && client.player != null) {
                 LOD_SERVICE.updatePlayerPosition(client.player.getBlockPos());
             }
+            // Drain pending GPU noise requests on the render thread (GL context).
+            // No-ops if the dispatch queue hasn't been initialised yet.
+            GpuNoiseDispatchQueue.tickDrain();
         });
 
         // register debug toggle command in our own namespace

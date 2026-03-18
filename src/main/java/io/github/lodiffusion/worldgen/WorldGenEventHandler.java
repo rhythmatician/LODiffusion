@@ -13,6 +13,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
+import com.rhythmatician.lodiffusion.world.noise.GpuNoiseDispatchQueue;
 
 /**
  * World-load event handler that bootstraps the <em>shadow router</em> pipeline.
@@ -227,6 +228,15 @@ public class WorldGenEventHandler {
 
             activeLevels.put(level, manager);
 
+            // Initialise the async GPU noise dispatch queue so GpuNoiseRouterSampler
+            // can enqueue section requests from the gen thread.
+            QuartNoiseCompute quartCompute = manager.getQuartCompute();
+            if (quartCompute != null && quartCompute.isReady()) {
+                GpuNoiseDispatchQueue.init(quartCompute);
+            } else {
+                LOGGER.warn("QuartNoiseCompute not ready — GpuNoiseDispatchQueue will not be initialised");
+            }
+
             // Production path: dispatch and hand off GPU buffer handles for staging.
             LOGGER.info("Dispatching GPU compute for startup chunk (0,0) without CPU readback...");
             ShaderSSBOManager.ChunkGpuOutputs outputs = manager.dispatchForStaging(0, 0);
@@ -404,6 +414,10 @@ public class WorldGenEventHandler {
         LOGGER.info("Level: {}", dimensionInfo);
 
         try {
+            // Shut down the GPU noise dispatch queue first (cancels pending futures
+            // so the gen thread doesn't hang waiting for GPU results).
+            GpuNoiseDispatchQueue.shutdown();
+
             ShaderSSBOManager manager = activeLevels.remove(level);
             if (manager != null) {
                 LOGGER.info("Cleaning up ShaderSSBOManager for level {}", dimensionInfo);
