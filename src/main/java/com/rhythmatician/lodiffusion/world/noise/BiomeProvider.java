@@ -22,18 +22,20 @@ package com.rhythmatician.lodiffusion.world.noise;
 public interface BiomeProvider {
 
     /**
-     * Classify biomes for a single 16³-block section at quart resolution.
+     * Classify biomes for a single 16³-block section at 4×2×4 noise-cell resolution.
      *
-     * <p>Returns {@code int[4][4][4]} in {@code [qx][qy][qz]} order, where
+     * <p>Returns {@code int[4][2][4]} in {@code [qx][qy][qz]} order, where
      * each value is a canonical biome palette index.  The spatial layout
-     * matches {@link SectionNoiseData}: each cell covers a 4×4×4 block region.
+     * matches {@link SectionNoiseData}: vanilla uses {@code cellHeight=8}, so there
+     * are only 2 Y cells per section, sampled at block offsets {@code qy*8+4} (i.e.
+     * y=4 and y=12 relative to the section bottom).
      *
      * @param sectionX chunk-X coordinate
      * @param sectionY section-Y (overworld: −4 to 19)
      * @param sectionZ chunk-Z coordinate
      * @param noiseData noise data for this section (provides climate fields for
      *                  vanilla biome lookup; GPU implementations may ignore this)
-     * @return {@code int[4][4][4]} biome palette indices, never {@code null}
+     * @return {@code int[4][2][4]} biome palette indices, never {@code null}
      */
     int[][][] classifyBiomes(int sectionX, int sectionY, int sectionZ,
                              SectionNoiseData noiseData);

@@ -126,8 +126,8 @@ class SparseOctreeModelRunnerInputContractTest {
     @Test
     void resolveInputOrder_includesHeightmapInputs() {
         Map<String, int[]> inputs = new LinkedHashMap<>();
-        inputs.put("noise_3d", new int[] {1, 15, 4, 4, 4});
-        inputs.put("biome_ids", new int[] {1, 4, 4, 4});
+        inputs.put("noise_3d", new int[] {1, 15, 4, 2, 4});
+        inputs.put("biome_ids", new int[] {1, 4, 2, 4});
         inputs.put("heightmap_surface", new int[] {1, 16, 16});
         inputs.put("heightmap_ocean_floor", new int[] {1, 16, 16});
         ModelConfig cfg = new ModelConfig(
@@ -158,10 +158,10 @@ class SparseOctreeModelRunnerInputContractTest {
 
             SparseOctreeModelRunner runner = newRunner(manager, model,
                     true, new long[] {1, 6, 4, 4},
-                    true, new long[] {1, 4, 4, 4},
+                    true, new long[] {1, 4, 2, 4},
                     true, new long[] {1, 16, 16},
                     true, new long[] {1, 16, 16},
-                    new long[] {1, 15, 4, 4, 4},
+                    new long[] {1, 15, 4, 2, 4},
                     List.of("noise_2d", "noise_3d", "biome_ids",
                             "heightmap_surface", "heightmap_ocean_floor"));
 
@@ -169,16 +169,16 @@ class SparseOctreeModelRunnerInputContractTest {
             hmSurface[0][0] = 64.0f;
             float[][] hmOcean = new float[16][16];
             hmOcean[0][0] = 32.0f;
-            int[][][] biome = new int[4][4][4];
+            int[][][] biome = new int[4][2][4];
             try {
                 int[][][] blocks = runner.runInferenceWithBiome(
-                        new float[15 * 4 * 4 * 4], biome, hmSurface, hmOcean);
+                        new float[15 * 4 * 2 * 4], biome, hmSurface, hmOcean);
                 assertNotNull(blocks);
 
                 // Verify all 5 inputs were passed in expected order and shape
                 assertArrayEquals(new long[] {1, 6, 4, 4}, capturedShapes[0], "noise_2d shape");
-                assertArrayEquals(new long[] {1, 15, 4, 4, 4}, capturedShapes[1], "noise_3d shape");
-                assertArrayEquals(new long[] {1, 4, 4, 4}, capturedShapes[2], "biome_ids shape");
+                assertArrayEquals(new long[] {1, 15, 4, 2, 4}, capturedShapes[1], "noise_3d shape");
+                assertArrayEquals(new long[] {1, 4, 2, 4}, capturedShapes[2], "biome_ids shape");
                 assertArrayEquals(new long[] {1, 16, 16}, capturedShapes[3], "heightmap_surface shape");
                 assertArrayEquals(new long[] {1, 16, 16}, capturedShapes[4], "heightmap_ocean_floor shape");
             } finally {

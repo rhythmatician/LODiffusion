@@ -902,10 +902,10 @@ public final class LodGenerationService {
                     float[] noise = snd.flat();
 
                     // Classify biomes at quart resolution for the ONNX model.
-                    // BiomeProvider returns int[4][4][4] (qx/qy/qz) with
-                    // canonical palette indices.  The model runner silently
-                    // ignores biome IDs if the model config doesn't declare a
-                    // biome_ids input.
+                    // BiomeProvider returns int[4][2][4] (qx/qy/qz) with
+                    // canonical palette indices (cellHeight=8 → 2 Y cells).
+                    // The model runner silently ignores biome IDs if the model
+                    // config doesn't declare a biome_ids input.
                     int[][][] biomeIds = null;
                     if (sparseRootRunner.acceptsBiomeIds()) {
                         try {

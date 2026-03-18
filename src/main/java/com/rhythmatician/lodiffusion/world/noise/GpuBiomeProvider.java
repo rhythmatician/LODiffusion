@@ -64,17 +64,18 @@ public final class GpuBiomeProvider implements BiomeProvider {
     @Override
     public int[][][] classifyBiomes(int sectionX, int sectionY, int sectionZ,
                                     SectionNoiseData noiseData) {
-        int[][][] biomes = new int[4][4][4];
+        int[][][] biomes = new int[4][2][4];
         int baseBlockX = sectionX * 16;
         int baseBlockY = sectionY * 16;
         int baseBlockZ = sectionZ * 16;
 
         for (int qx = 0; qx < 4; qx++) {
-            for (int qy = 0; qy < 4; qy++) {
+            for (int qy = 0; qy < 2; qy++) {
                 for (int qz = 0; qz < 4; qz++) {
-                    // Quart-centre block coords → quart coords for BiomeSource
+                    // Noise-cell-centre block coords → quart coords for BiomeSource.
+                    // cellHeight=8 → 2 Y cells per section, centres at qy*8+4.
                     int blockX = baseBlockX + qx * 4 + 2;
-                    int blockY = baseBlockY + qy * 4 + 2;
+                    int blockY = baseBlockY + qy * 8 + 4;
                     int blockZ = baseBlockZ + qz * 4 + 2;
 
                     RegistryEntry<Biome> entry = biomeSource.getBiome(

@@ -119,7 +119,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
 
     /**
      * Shape of the noise_3d input tensor as declared in the model config sidecar.
-     * Legacy (v6): {@code [1, 13, 4, 2, 4]}.  New (v7+): {@code [1, 15, 4, 4, 4]}.
+     * Legacy (v6): {@code [1, 13, 4, 2, 4]}.  New (v7+): {@code [1, 15, 4, 2, 4]}.
      * Used by {@link #runInferenceWithBiome} to reshape the flat noise array.
      * Falls back to {@code [1, 13, 4, 2, 4]} if the config doesn't declare a shape.
      */
@@ -263,7 +263,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
 
                     // Discover noise_3d shape from config sidecar.
                     // Legacy (v6) models declare [1, 13, 4, 2, 4].
-                    // New (v7+) models declare [1, 15, 4, 4, 4] (15 NoiseRouter fields, quart res).
+                    // New (v7+) models declare [1, 15, 4, 2, 4] (15 NoiseRouter fields, quart res).
                     if (cfg.hasInput("noise_3d")) {
                         int[] shape = cfg.getInputShape("noise_3d");
                         if (shape != null && shape.length > 0) {
@@ -398,7 +398,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      *
      * @param noiseFlat flat noise input in channel-outermost order.
      *        Shape must match {@link #noise3dShape()}.  Standard v7+ input:
-     *        {@code float[15 * 4 * 4 * 4 = 960]} from
+     *        {@code float[15 * 4 * 2 * 4 = 480]} from
      *        {@link com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler}.
      * @param biomeIds optional biome IDs at cell resolution matching noiseFlat.
      *        If {@code null} or empty, the model runs without biome conditioning.
@@ -489,16 +489,16 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
 
     private NDArray buildBiomeTensor(NDManager sub, int[][][] biomeIds) {
         // Read spatial dimensions from the model config sidecar.
-        // v7+ models declare [1, 4, 4, 4]; legacy v6 declared [1, 4, 2, 4].
+        // v7+ models declare [1, 4, 2, 4]; legacy v6 declared [1, 4, 2, 4].
         final int d0, d1, d2;
         if (biomeIdsShape != null && biomeIdsShape.length == 4) {
             d0 = (int) biomeIdsShape[1];
             d1 = (int) biomeIdsShape[2];
             d2 = (int) biomeIdsShape[3];
         } else {
-            // Default to v7 quart-resolution 4×4×4
+            // Default to v7 quart-resolution 4×2×4 (vanilla cellHeight=8)
             d0 = 4;
-            d1 = 4;
+            d1 = 2;
             d2 = 4;
         }
 
@@ -1033,7 +1033,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      * the model config sidecar.
      *
      * <p>Legacy (v6) models: {@code [1, 13, 4, 2, 4]} (416 floats).<br>
-     * New (v7+) models: {@code [1, 15, 4, 4, 4]} (960 floats).
+     * New (v7+) models: {@code [1, 15, 4, 2, 4]} (480 floats).
      *
      * @return defensive copy of the shape array
      */

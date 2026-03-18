@@ -19,7 +19,7 @@ import java.util.concurrent.TimeoutException;
  *       in the column.</li>
  *   <li>CPU zero-crossing scan: for each of the 4×4 quart-XZ columns, scan
  *       sections top-down ({@code sectionY = 19..−4}) and within each section
- *       scan quart-Y top-down ({@code qy = 3..0}).  The first cell with
+ *       scan quart-Y top-down ({@code qy = 1..0}).  The first cell with
  *       {@code FINAL_DENSITY > 0} is the surface; its Y centre is recorded as
  *       {@code worldSurface[qx][qz]}.</li>
  *   <li>Ocean-floor heuristic: if {@code worldSurface[qx][qz] < SEA_LEVEL}
@@ -126,16 +126,16 @@ public final class GpuHeightmapProvider implements HeightmapProvider {
             for (int qz = 0; qz < 4; qz++) {
                 float surfaceY = DEFAULT_SURFACE_Y;
 
-                // Scan top-down: sectionY from MAX down to MIN, within each section qy from 3 to 0
+                // Scan top-down: sectionY from MAX down to MIN, within each section qy from 1 to 0
                 outer:
                 for (int si = COLUMN_SECTIONS - 1; si >= 0; si--) {
                     int sectionY = MIN_SECTION_Y + si;   // si=0 → MIN_SECTION_Y, si=23 → MAX_SECTION_Y
                     SectionNoiseData data = column[si];
-                    for (int qy = 3; qy >= 0; qy--) {
+                    for (int qy = 1; qy >= 0; qy--) {
                         float density = data.get(RouterField.FINAL_DENSITY, qx, qy, qz);
                         if (density > 0.0f) {
-                            // Quart-centre block Y
-                            surfaceY = sectionY * 16 + qy * 4 + 2;
+                            // Cell-centre block Y (cellHeight=8)
+                            surfaceY = sectionY * 16 + qy * 8 + 4;
                             break outer;
                         }
                     }

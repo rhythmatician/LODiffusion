@@ -22,8 +22,8 @@ class GpuHeightmapProviderTest {
 
     // ── Helpers ──────────────────────────────────────────────────────
 
-    private static final int FLAT_LEN = SectionNoiseData.FLAT_LENGTH; // 960
-    private static final int FD_BASE  = RouterField.FINAL_DENSITY.ordinal() * SectionNoiseData.CELLS_PER_FIELD; // 7*64=448
+    private static final int FLAT_LEN = SectionNoiseData.FLAT_LENGTH; // 480
+    private static final int FD_BASE  = RouterField.FINAL_DENSITY.ordinal() * SectionNoiseData.CELLS_PER_FIELD; // 7*32=224
 
     /**
      * Build a full column of SectionNoiseData arrays for the overworld (-4..19).
@@ -37,7 +37,7 @@ class GpuHeightmapProviderTest {
             float[] flat = new float[FLAT_LEN];
             Arrays.fill(flat, 0.0f);
             // Set all FINAL_DENSITY to -1 (air)
-            for (int c = 0; c < 64; c++) flat[FD_BASE + c] = -1.0f;
+            for (int c = 0; c < SectionNoiseData.CELLS_PER_FIELD; c++) flat[FD_BASE + c] = -1.0f;
             col[i] = new SectionNoiseData(flat, sectionX, sectionY, sectionZ);
         }
         return col;
@@ -45,13 +45,13 @@ class GpuHeightmapProviderTest {
 
     /**
      * Set FINAL_DENSITY at a specific (sectionY, qx, qy, qz) position to {@code value}.
-     * qy=0..3, qx=0..3, qz=0..3.
+     * qy=0..1, qx=0..3, qz=0..3.
      */
     private static void setDensity(SectionNoiseData[] column, int sectionY,
                                    int qx, int qy, int qz, float value) {
         int si = sectionY - GpuHeightmapProvider.MIN_SECTION_Y;
         float[] flat = column[si].flat().clone();
-        flat[FD_BASE + qx * 16 + qy * 4 + qz] = value;
+        flat[FD_BASE + qx * 8 + qy * 4 + qz] = value;
         column[si] = new SectionNoiseData(flat, column[si].sectionX(),
                 column[si].sectionY(), column[si].sectionZ());
     }
@@ -230,41 +230,41 @@ class GpuHeightmapProviderTest {
 
         @Test
         void solidAtTopSectionTopQy_returnsSurfaceNearTop() {
-            // Place a single solid voxel at sectionY=19, qx=0, qy=3, qz=0
+            // Place a single solid voxel at sectionY=19, qx=0, qy=1, qz=0
             SectionNoiseData[] column = emptyColumn(0, 0);
-            setDensity(column, 19, 0, 3, 0, 1.0f);
+            setDensity(column, 19, 0, 1, 0, 1.0f);
 
             HeightmapData result = new GpuHeightmapProvider().computeHeightmaps(column);
 
-            // Surface Y for quart column (qx=0, qz=0) should be: 19*16 + 3*4 + 2 = 318
+            // Surface Y for quart column (qx=0, qz=0) should be: 19*16 + 1*8 + 4 = 316
             // After bilinear upsample, block (2,2) is the quart (0,0) centre
-            assertEquals(318.0f, result.worldSurface()[2][2], 0.001f);
+            assertEquals(316.0f, result.worldSurface()[2][2], 0.001f);
         }
 
         @Test
         void solidAtSpecificSectionAndQy() {
-            // sectionY=5, qx=1, qy=2, qz=1 → surfaceY = 5*16 + 2*4 + 2 = 90
+            // sectionY=5, qx=1, qy=1, qz=1 → surfaceY = 5*16 + 1*8 + 4 = 92
             SectionNoiseData[] column = emptyColumn(0, 0);
-            setDensity(column, 5, 1, 2, 1, 0.5f);
+            setDensity(column, 5, 1, 1, 1, 0.5f);
 
             HeightmapData result = new GpuHeightmapProvider().computeHeightmaps(column);
 
             // Quart centre (qx=1, qz=1) → block (6, 6)
-            assertEquals(90.0f, result.worldSurface()[6][6], 0.001f);
+            assertEquals(92.0f, result.worldSurface()[6][6], 0.001f);
         }
 
         @Test
         void topSolidWinsOverLower() {
-            // Place solid at sectionY=10 qy=2 AND sectionY=15 qy=1 for same (qx=2, qz=2)
+            // Place solid at sectionY=10 qy=0 AND sectionY=15 qy=1 for same (qx=2, qz=2)
             // The top one (sectionY=15) should win
             SectionNoiseData[] column = emptyColumn(0, 0);
-            setDensity(column, 10, 2, 2, 2, 1.0f);   // lower
+            setDensity(column, 10, 2, 0, 2, 1.0f);   // lower
             setDensity(column, 15, 2, 1, 2, 1.0f);   // higher → should win
 
             HeightmapData result = new GpuHeightmapProvider().computeHeightmaps(column);
 
-            // sectionY=15, qy=1: blockY = 15*16 + 1*4 + 2 = 246
-            float expected = 15 * 16 + 1 * 4 + 2;
+            // sectionY=15, qy=1: blockY = 15*16 + 1*8 + 4 = 252
+            float expected = 15 * 16 + 1 * 8 + 4;
             // Quart centre (qx=2, qz=2) → block (10, 10)
             assertEquals(expected, result.worldSurface()[10][10], 0.001f);
         }
@@ -289,9 +289,9 @@ class GpuHeightmapProviderTest {
 
         @Test
         void oceanFloorEqualsSurfaceForSubmergedColumn() {
-            // Surface Y=50 (below SEA_LEVEL=63) → oceanFloor should equal worldSurface
+            // Surface Y=52 (below SEA_LEVEL=63) → oceanFloor should equal worldSurface
             SectionNoiseData[] column = emptyColumn(0, 0);
-            // sectionY=3, qy=0: blockY = 3*16 + 0*4 + 2 = 50
+            // sectionY=3, qy=0: blockY = 3*16 + 0*8 + 4 = 52
             setDensity(column, 3, 0, 0, 0, 1.0f);
 
             HeightmapData result = new GpuHeightmapProvider().computeHeightmaps(column);
@@ -308,7 +308,7 @@ class GpuHeightmapProviderTest {
         void differentColumnsAreIndependent() {
             // Solid at qx=0, qz=0 only; other columns stay at default
             SectionNoiseData[] column = emptyColumn(0, 0);
-            setDensity(column, 10, 0, 3, 0, 1.0f);   // only (qx=0, qz=0)
+            setDensity(column, 10, 0, 1, 0, 1.0f);   // only (qx=0, qz=0)
 
             HeightmapData result = new GpuHeightmapProvider().computeHeightmaps(column);
 
@@ -327,7 +327,7 @@ class GpuHeightmapProviderTest {
 
     @Test
     void flatIndexForFinalDensityAt0_0_0() {
-        // base = 7 * 64 = 448
-        assertEquals(448, RouterField.FINAL_DENSITY.ordinal() * SectionNoiseData.CELLS_PER_FIELD);
+        // base = 7 * 32 = 224
+        assertEquals(224, RouterField.FINAL_DENSITY.ordinal() * SectionNoiseData.CELLS_PER_FIELD);
     }
 }

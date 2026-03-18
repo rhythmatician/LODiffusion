@@ -91,7 +91,7 @@ class ShadowModeIntegrationTest {
         return new BiomeProvider() {
             @Override
             public int[][][] classifyBiomes(int x, int y, int z, SectionNoiseData data) {
-                return new int[4][4][4];
+                return new int[4][2][4];
             }
             @Override
             public String backendName() { return name; }
@@ -102,7 +102,7 @@ class ShadowModeIntegrationTest {
         return new BiomeProvider() {
             @Override
             public int[][][] classifyBiomes(int x, int y, int z, SectionNoiseData data) {
-                return new int[4][4][4];
+                return new int[4][2][4];
             }
             @Override
             public String backendName() { return "bio_tracking"; }

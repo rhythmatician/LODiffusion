@@ -35,66 +35,73 @@ class GpuBiomeProviderTest {
     // ── Coordinate logic ────────────────────────────────────────────
     //
     // GpuBiomeProvider (and VanillaBiomeProvider) compute quart coords as:
-    //   blockCoord = sectionCoord*16 + q*4 + 2
+    //   XZ: blockCoord = sectionCoord*16 + q*4 + 2  (cellWidth=4, q=0..3)
+    //   Y:  blockCoord = sectionCoord*16 + q*8 + 4  (cellHeight=8, q=0..1)
     //   quartCoord = blockCoord >> 2
     // We verify this mapping is correct for various section origins.
 
     @Nested
     class CoordinateMapping {
 
-        /** Compute a quart coordinate the same way as GpuBiomeProvider. */
-        private int toQuartCoord(int sectionCoord, int q) {
+        /** Compute an XZ quart coordinate the same way as GpuBiomeProvider (cellWidth=4). */
+        private int toQuartCoordXZ(int sectionCoord, int q) {
             int block = sectionCoord * 16 + q * 4 + 2;
+            return block >> 2;
+        }
+
+        /** Compute a Y quart coordinate the same way as GpuBiomeProvider (cellHeight=8). */
+        private int toQuartCoordY(int sectionCoord, int qy) {
+            int block = sectionCoord * 16 + qy * 8 + 4;
             return block >> 2;
         }
 
         @Test
         void section0_0_0_qx0() {
-            assertEquals(0, toQuartCoord(0, 0));
+            assertEquals(0, toQuartCoordXZ(0, 0));
         }
 
         @Test
         void section0_0_0_qx3() {
-            assertEquals(3, toQuartCoord(0, 3));
+            assertEquals(3, toQuartCoordXZ(0, 3));
         }
 
         @Test
         void positiveSection() {
             // sectionX=2, qx=0: block = 32 + 0 + 2 = 34 → quart = 8
-            assertEquals(8, toQuartCoord(2, 0));
+            assertEquals(8, toQuartCoordXZ(2, 0));
             // sectionX=2, qx=3: block = 32 + 12 + 2 = 46 → quart = 11
-            assertEquals(11, toQuartCoord(2, 3));
+            assertEquals(11, toQuartCoordXZ(2, 3));
         }
 
         @Test
-        void negativeSection() {
-            // sectionY=-1, qy=0: block = -16 + 0 + 2 = -14 → -14 >> 2 = -4
-            assertEquals(-4, toQuartCoord(-1, 0));
-            // sectionY=-4, qy=3: block = -64 + 12 + 2 = -50 → -50 >> 2 = -13
-            assertEquals(-13, toQuartCoord(-4, 3));
+        void negativeSectionY() {
+            // sectionY=-1, qy=0: block = -16 + 0 + 4 = -12 → -12 >> 2 = -3
+            assertEquals(-3, toQuartCoordY(-1, 0));
+            // sectionY=-1, qy=1: block = -16 + 8 + 4 = -4 → -4 >> 2 = -1
+            assertEquals(-1, toQuartCoordY(-1, 1));
+            // sectionY=-4, qy=0: block = -64 + 0 + 4 = -60 → -60 >> 2 = -15
+            assertEquals(-15, toQuartCoordY(-4, 0));
         }
 
         @Test
-        void allQuartsMonotonicallyIncrease() {
+        void yAxisHas2CellsPerSection() {
+            // cellHeight=8: each section has 2 Y cells (qy=0,1)
             for (int sec = -4; sec <= 19; sec++) {
-                int prev = Integer.MIN_VALUE;
-                for (int q = 0; q < 4; q++) {
-                    int quart = toQuartCoord(sec, q);
-                    assertTrue(quart > prev,
-                            "quart coords must increase: sec=" + sec + " q=" + q);
-                    prev = quart;
-                }
+                int q0 = toQuartCoordY(sec, 0);
+                int q1 = toQuartCoordY(sec, 1);
+                assertEquals(2, q1 - q0,
+                        "Expected 2-quart Y span for section " + sec);
             }
         }
 
         @Test
-        void quartSpacingIsFour() {
-            // Each section spans 4 quarts (q=0..3 → 4 distinct quart coords)
+        void xzAxisHas4CellsPerSection() {
+            // cellWidth=4: each section has 4 XZ cells (q=0..3)
             for (int sec = -4; sec <= 19; sec++) {
-                int q0 = toQuartCoord(sec, 0);
-                int q3 = toQuartCoord(sec, 3);
+                int q0 = toQuartCoordXZ(sec, 0);
+                int q3 = toQuartCoordXZ(sec, 3);
                 assertEquals(3, q3 - q0,
-                        "Expected 3-quart span for section " + sec);
+                        "Expected 3-quart XZ span for section " + sec);
             }
         }
     }
@@ -105,18 +112,18 @@ class GpuBiomeProviderTest {
     class OutputShape {
 
         @Test
-        void resultArrayIs4x4x4With64Cells() {
-            int[][][] biomes = new int[4][4][4];
+        void resultArrayIs4x2x4With32Cells() {
+            int[][][] biomes = new int[4][2][4];
             assertEquals(4, biomes.length);
-            assertEquals(4, biomes[0].length);
+            assertEquals(2, biomes[0].length);
             assertEquals(4, biomes[0][0].length);
 
             AtomicInteger count = new AtomicInteger();
             for (int qx = 0; qx < 4; qx++)
-                for (int qy = 0; qy < 4; qy++)
+                for (int qy = 0; qy < 2; qy++)
                     for (int qz = 0; qz < 4; qz++)
                         count.incrementAndGet();
-            assertEquals(64, count.get());
+            assertEquals(32, count.get());
         }
     }
 
@@ -164,8 +171,8 @@ class GpuBiomeProviderTest {
     // ── SectionNoiseData compatibility ──────────────────────────────
 
     @Test
-    void sectionNoiseDataHas960Floats() {
+    void sectionNoiseDataHas480Floats() {
         SectionNoiseData data = makeData(0.0f, 0, 0, 0);
-        assertEquals(960, data.flat().length);
+        assertEquals(480, data.flat().length);
     }
 }
