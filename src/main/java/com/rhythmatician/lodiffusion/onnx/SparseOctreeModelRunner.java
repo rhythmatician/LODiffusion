@@ -502,7 +502,8 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
             d2 = 4;
         }
 
-        int[] flattened = new int[d0 * d1 * d2];
+        // ONNX model expects biome_ids as int64 (torch.long), so use long[].
+        long[] flattened = new long[d0 * d1 * d2];
         if (biomeIds == null) {
             LOGGER.debug("[SparseOctree] biome_ids expected but null was provided; using zeros fallback");
             return sub.create(flattened, new Shape(1, d0, d1, d2));
@@ -516,18 +517,18 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
         for (int i = 0; i < d0; i++) {
             if (biomeIds[i] == null || biomeIds[i].length != d1) {
                 LOGGER.warn("[SparseOctree] biome_ids dim1 mismatch at [{}]; using zeros fallback", i);
-                return sub.create(new int[d0 * d1 * d2], new Shape(1, d0, d1, d2));
+                return sub.create(new long[d0 * d1 * d2], new Shape(1, d0, d1, d2));
             }
             for (int j = 0; j < d1; j++) {
                 if (biomeIds[i][j] == null || biomeIds[i][j].length != d2) {
                     LOGGER.warn("[SparseOctree] biome_ids dim2 mismatch at [{},{}]; using zeros fallback", i, j);
-                    return sub.create(new int[d0 * d1 * d2], new Shape(1, d0, d1, d2));
+                    return sub.create(new long[d0 * d1 * d2], new Shape(1, d0, d1, d2));
                 }
                 for (int k = 0; k < d2; k++) {
                     int biome = biomeIds[i][j][k];
                     if (biome < 0) {
                         LOGGER.warn("[SparseOctree] biome_ids contains negative value {}; using zeros fallback", biome);
-                        return sub.create(new int[d0 * d1 * d2], new Shape(1, d0, d1, d2));
+                        return sub.create(new long[d0 * d1 * d2], new Shape(1, d0, d1, d2));
                     }
                     flattened[idx++] = biome;
                 }

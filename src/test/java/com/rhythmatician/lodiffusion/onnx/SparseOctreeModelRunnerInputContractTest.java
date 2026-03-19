@@ -89,14 +89,15 @@ class SparseOctreeModelRunnerInputContractTest {
 
             // Capture input shapes before the NDManager closes the arrays.
             final long[][] capturedShapes = new long[3][];
-            final int[][] capturedBiome = new int[1][];
+            final long[][] capturedBiome = new long[1][];
             when(predictor.predict(any())).thenAnswer(invocation -> {
                 NDList in = invocation.getArgument(0);
                 capturedShapes[0] = in.get(0).getShape().getShape().clone();
                 capturedShapes[1] = in.get(1).getShape().getShape().clone();
                 capturedShapes[2] = in.get(2).getShape().getShape().clone();
-                // Capture biome tensor as a primitive int array copy before it is released
-                capturedBiome[0] = in.get(1).toIntArray();
+                // Capture biome tensor as a primitive long array copy before it is released
+                // (ONNX model expects biome_ids as int64 / torch.long)
+                capturedBiome[0] = in.get(1).toLongArray();
                 return new NDList(manager.create(new float[] {0f, 1f}, new Shape(1, 1, 2)));
             });
 
@@ -116,7 +117,7 @@ class SparseOctreeModelRunnerInputContractTest {
                 assertArrayEquals(new long[] {1, 6, 4, 4}, capturedShapes[0]);
                 assertArrayEquals(new long[] {1, 4, 2, 4}, capturedShapes[1]);
                 assertArrayEquals(new long[] {1, 13, 4, 2, 4}, capturedShapes[2]);
-                assertArrayEquals(new int[4 * 2 * 4], capturedBiome[0]);
+                assertArrayEquals(new long[4 * 2 * 4], capturedBiome[0]);
             } finally {
                 runner.close();
             }
