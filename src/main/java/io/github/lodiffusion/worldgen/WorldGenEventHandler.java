@@ -4,7 +4,9 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
 import java.lang.reflect.Field;
+import java.lang.reflect.InvocationHandler;
 import java.lang.reflect.Method;
+import java.lang.reflect.Proxy;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.nio.file.Files;
@@ -104,7 +106,7 @@ public class WorldGenEventHandler {
             // Register UNLOAD event
             registerUnloadEvent();
 
-            LOGGER.info("WorldGenEventHandler initialized — listening for ServerLevelEvents.LOAD/UNLOAD");
+            LOGGER.info("WorldGenEventHandler initialized — listening for ServerWorldEvents.LOAD/UNLOAD");
         } catch (Exception e) {
             LOGGER.error("Failed to initialize WorldGenEventHandler event listeners", e);
         }
@@ -115,28 +117,31 @@ public class WorldGenEventHandler {
      */
     private static void registerLoadEvent() {
         try {
-            // net.fabricmc.fabric.api.event.lifecycle.v1.ServerLevelEvents
-            Class<?> serverLevelEventsClass = Class.forName("net.fabricmc.fabric.api.event.lifecycle.v1.ServerLevelEvents");
-            
-            // Get the LOAD field (which is an Event)
-            Field loadField = serverLevelEventsClass.getField("LOAD");
+            Class<?> serverWorldEventsClass = Class.forName("net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents");
+
+            // Get the LOAD field (which is an Event<ServerWorldEvents.Load>)
+            Field loadField = serverWorldEventsClass.getField("LOAD");
             Object loadEvent = loadField.get(null);
 
-            // Get the register method on the Event
-            Method registerMethod = loadEvent.getClass().getMethod("register", Object.class);
-
-            // Create a callback - use a simple approach with a wrapper object
-            Object callback = new Object() {
-                public void onLoadLevel(Object server, Object level) {
-                    if (instance != null) {
-                        instance.onWorldLoad(server, level);
-                    }
+            // Build a Proxy that implements the ServerWorldEvents$Load functional interface.
+            // This satisfies Fabric's internal cast when the event fires.
+            Class<?> loadInterfaceClass = Class.forName("net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents$Load");
+            InvocationHandler handler = (proxy, method, args) -> {
+                if ("onWorldLoad".equals(method.getName()) && instance != null) {
+                    instance.onWorldLoad(args[0], args[1]);
                 }
+                return null;
             };
+            Object callback = Proxy.newProxyInstance(
+                loadInterfaceClass.getClassLoader(),
+                new Class<?>[]{ loadInterfaceClass },
+                handler
+            );
 
-            // Register the callback
+            // Event<T>.register(T) erases to register(Object) at runtime.
+            Method registerMethod = loadEvent.getClass().getMethod("register", Object.class);
             registerMethod.invoke(loadEvent, callback);
-            LOGGER.info("Registered ServerLevelEvents.LOAD listener");
+            LOGGER.info("Registered ServerWorldEvents.LOAD listener");
 
         } catch (Exception e) {
             LOGGER.error("Failed to register LOAD event", e);
@@ -148,22 +153,27 @@ public class WorldGenEventHandler {
      */
     private static void registerUnloadEvent() {
         try {
-            Class<?> serverLevelEventsClass = Class.forName("net.fabricmc.fabric.api.event.lifecycle.v1.ServerLevelEvents");
-            Field unloadField = serverLevelEventsClass.getField("UNLOAD");
+            Class<?> serverWorldEventsClass = Class.forName("net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents");
+            Field unloadField = serverWorldEventsClass.getField("UNLOAD");
             Object unloadEvent = unloadField.get(null);
 
-            Method registerMethod = unloadEvent.getClass().getMethod("register", Object.class);
-            
-            Object callback = new Object() {
-                public void onUnloadLevel(Object server, Object level) {
-                    if (instance != null) {
-                        instance.onWorldUnload(server, level);
-                    }
+            // Build a Proxy that implements the ServerWorldEvents$Unload functional interface.
+            Class<?> unloadInterfaceClass = Class.forName("net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents$Unload");
+            InvocationHandler handler = (proxy, method, args) -> {
+                if ("onWorldUnload".equals(method.getName()) && instance != null) {
+                    instance.onWorldUnload(args[0], args[1]);
                 }
+                return null;
             };
+            Object callback = Proxy.newProxyInstance(
+                unloadInterfaceClass.getClassLoader(),
+                new Class<?>[]{ unloadInterfaceClass },
+                handler
+            );
 
+            Method registerMethod = unloadEvent.getClass().getMethod("register", Object.class);
             registerMethod.invoke(unloadEvent, callback);
-            LOGGER.info("Registered ServerLevelEvents.UNLOAD listener");
+            LOGGER.info("Registered ServerWorldEvents.UNLOAD listener");
 
         } catch (Exception e) {
             LOGGER.error("Failed to register UNLOAD event", e);
