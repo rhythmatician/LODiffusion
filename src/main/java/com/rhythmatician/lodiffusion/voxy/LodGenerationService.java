@@ -164,6 +164,12 @@ public final class LodGenerationService {
     private static final int CANCEL_MARGIN = Config.getInt("cancelMargin", 4);
 
     /**
+     * Minimum columns to process before declaring the sparse-root model
+     * all-air and falling back to the heightmap generator.
+     */
+    private static final int FALLBACK_MIN_COLUMNS = Config.getInt("fallbackMinColumns", 50);
+
+    /**
      * Mod-wide singleton reference — set by {@code LodiffusionClient} during
      * client initialisation.  {@code null} in dedicated-server contexts where
      * the client-side code is absent.  Commands and other server-side code
@@ -483,8 +489,14 @@ public final class LodGenerationService {
                         "[LodGen] Starting SPARSE-ROOT generation from player section ({}, {}, {})",
                         playerSectionX, playerSectionY, playerSectionZ);
 
-                runSparseOctreePipeline(world, worldEngine, writer, blockMapper, voxyMapper);
-                return;
+                boolean produced = runSparseOctreePipeline(world, worldEngine, writer, blockMapper, voxyMapper);
+                if (produced) return; // model is producing real terrain
+
+                // Model produced 0 sections — fall through to heightmap fallback
+                HelloTerrainMod.LOGGER.warn(
+                        "[LodGen] Sparse-root model produced no terrain — " +
+                        "falling back to heightmap generator");
+                generatedSections.clear();
             }
 
             // ── Heightmap fallback path ──────────────────────────────────
@@ -492,7 +504,7 @@ public final class LodGenerationService {
                 HelloTerrainMod.LOGGER.warn(
                         "[LodGen] Sparse-root model loaded but noise access unavailable — " +
                         "falling back to heightmap generator");
-            } else {
+            } else if (sparseRootRunner == null) {
                 HelloTerrainMod.LOGGER.info(
                         "[LodGen] No sparse-root model found — using heightmap fallback generator");
             }
@@ -824,10 +836,15 @@ public final class LodGenerationService {
      *
      * <p>This replaces the old octree init/refine/leaf pipeline.
      */
-    private void runSparseOctreePipeline(World world, Object worldEngine,
-                                        VoxySectionWriter writer,
-                                        VoxyBlockMapper blockMapper,
-                                        Object voxyMapper) {
+    /**
+     * Runs the sparse-octree ONNX model pipeline. Returns {@code true} if
+     * the model produced at least one non-air section, {@code false} if
+     * the caller should fall back to the heightmap generator.
+     */
+    private boolean runSparseOctreePipeline(World world, Object worldEngine,
+                                            VoxySectionWriter writer,
+                                            VoxyBlockMapper blockMapper,
+                                            Object voxyMapper) {
         int totalSections = 0;
         int skippedAir = 0;
         int skippedExisting = 0;
@@ -988,6 +1005,17 @@ public final class LodGenerationService {
                 }
             }
 
+            // Early bail: if after enough columns we still have 0 sections,
+            // the model is predicting all-air and the heightmap fallback should
+            // take over.
+            if (columnsProcessed >= FALLBACK_MIN_COLUMNS && totalSections == 0) {
+                HelloTerrainMod.LOGGER.warn(
+                        "[LodGen] Sparse-root model produced 0 sections after {} columns "
+                        + "({} air-skipped) — model appears to predict all-air",
+                        columnsProcessed, skippedAir);
+                return false;
+            }
+
             // Pause if nothing new generated this pass
             if (!anyNew && !stopRequested.get()) {
                 try {
@@ -1003,6 +1031,7 @@ public final class LodGenerationService {
                 "[LodGen] Sparse-root pipeline finished — {} columns, {} sections, {} air-skipped, "
                 + "{} existing-skipped, {} inference-fails",
                 columnsProcessed, totalSections, skippedAir, skippedExisting, inferenceFails);
+        return totalSections > 0;
     }
 
     // ------------------------------------------------------------------ //

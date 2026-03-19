@@ -131,20 +131,47 @@ public class ShadowRouterExtractor {
     // ----------------------------------------------------------------------------------------------------------------
 
     public ShadowRouterExtractor() {
-        this.densityFunctionClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunction");
-        this.densityFunctionVisitorClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunction$Visitor");
-        this.densityFunctionsNoiseClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunctions$Noise");
-        this.densityFunctionsSplineClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunctions$Spline");
-        this.densityFunctionsMarkerClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunctions$Marker");
-        this.densityFunctionNoiseHolderClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunction$NoiseHolder");
+        // Yarn-mapped names (MC 1.21.11 Fabric).  Mojang-mapped fallbacks are
+        // tried second so the extractor also works in a Mojmap dev environment.
+        this.densityFunctionClass = loadClassWithFallback(
+                "net.minecraft.world.gen.densityfunction.DensityFunction",
+                "net.minecraft.world.level.levelgen.DensityFunction");
+        this.densityFunctionVisitorClass = loadClassWithFallback(
+                "net.minecraft.world.gen.densityfunction.DensityFunction$DensityFunctionVisitor",
+                "net.minecraft.world.level.levelgen.DensityFunction$Visitor");
+        this.densityFunctionsNoiseClass = loadClassWithFallback(
+                "net.minecraft.world.gen.densityfunction.DensityFunctionTypes$Noise",
+                "net.minecraft.world.level.levelgen.DensityFunctions$Noise");
+        this.densityFunctionsSplineClass = loadClassWithFallback(
+                "net.minecraft.world.gen.densityfunction.DensityFunctionTypes$Spline",
+                "net.minecraft.world.level.levelgen.DensityFunctions$Spline");
+        this.densityFunctionsMarkerClass = loadClassWithFallback(
+                "net.minecraft.world.gen.densityfunction.DensityFunctionTypes$Wrapping",
+                "net.minecraft.world.level.levelgen.DensityFunctions$Marker");
+        this.densityFunctionNoiseHolderClass = loadClassWithFallback(
+                "net.minecraft.world.gen.densityfunction.DensityFunction$Noise",
+                "net.minecraft.world.level.levelgen.DensityFunction$NoiseHolder");
 
-        this.normalNoiseClass = loadClassOrNull("net.minecraft.world.level.levelgen.synth.NormalNoise");
-        this.perlinNoiseClass = loadClassOrNull("net.minecraft.world.level.levelgen.synth.PerlinNoise");
-        this.improvedNoiseClass = loadClassOrNull("net.minecraft.world.level.levelgen.synth.ImprovedNoise");
-        this.cubicSplineClass = loadClassOrNull("net.minecraft.util.CubicSpline");
+        this.normalNoiseClass = loadClassWithFallback(
+                "net.minecraft.util.math.noise.DoublePerlinNoiseSampler",
+                "net.minecraft.world.level.levelgen.synth.NormalNoise");
+        this.perlinNoiseClass = loadClassWithFallback(
+                "net.minecraft.util.math.noise.OctavePerlinNoiseSampler",
+                "net.minecraft.world.level.levelgen.synth.PerlinNoise");
+        this.improvedNoiseClass = loadClassWithFallback(
+                "net.minecraft.util.math.noise.PerlinNoiseSampler",
+                "net.minecraft.world.level.levelgen.synth.ImprovedNoise");
+        this.cubicSplineClass = loadClassWithFallback(
+                "net.minecraft.util.math.Spline",
+                "net.minecraft.util.CubicSpline");
 
-        this.mapAllMethod = findMethodOrNull("mapAll", Object.class);
+        // Yarn: apply(DensityFunctionVisitor)  Mojang: mapAll(Visitor)
+        this.mapAllMethod = findMethodByNameFallback(
+                densityFunctionClass, densityFunctionVisitorClass,
+                "apply", "mapAll");
         this.noiseHolderNoiseMethod = findMethodOrNull(densityFunctionNoiseHolderClass, "noise");
+        // Yarn: Spline is an interface; concrete Spline$Implementation exposes
+        // locations()/values()/derivatives() — getControlPoints() no longer exists.
         this.cubicSplineControlPointsMethod = findMethodOrNull(cubicSplineClass, "getControlPoints");
     }
 
@@ -273,8 +300,8 @@ public class ShadowRouterExtractor {
                 noiseIndexMap.put(noiseObj, index);
                 normalNoises.add(noiseObj);
 
-                Object first  = getFieldValue(noiseObj, "first");
-                Object second = getFieldValue(noiseObj, "second");
+                Object first  = getFieldValue(noiseObj, "firstSampler");
+                Object second = getFieldValue(noiseObj, "secondSampler");
                 registerPerlinNoise(first);
                 registerPerlinNoise(second);
             }
@@ -298,8 +325,8 @@ public class ShadowRouterExtractor {
                 noiseIndexMap.put(noiseObj, index);
                 normalNoises.add(noiseObj);
 
-                Object first = getFieldValue(noiseObj, "first");
-                Object second = getFieldValue(noiseObj, "second");
+                Object first = getFieldValue(noiseObj, "firstSampler");
+                Object second = getFieldValue(noiseObj, "secondSampler");
 
                 registerPerlinNoise(first);
                 registerPerlinNoise(second);
@@ -365,9 +392,9 @@ public class ShadowRouterExtractor {
         FloatBuffer buffer = FloatBuffer.allocate(improvedNoises.size() * 3);
         for (Object improved : improvedNoises) {
             try {
-                double xo = getDoubleField(improved, "xo");
-                double yo = getDoubleField(improved, "yo");
-                double zo = getDoubleField(improved, "zo");
+                double xo = getDoubleField(improved, "originX");
+                double yo = getDoubleField(improved, "originY");
+                double zo = getDoubleField(improved, "originZ");
                 buffer.put((float) xo);
                 buffer.put((float) yo);
                 buffer.put((float) zo);
@@ -384,7 +411,7 @@ public class ShadowRouterExtractor {
         IntBuffer buffer = IntBuffer.allocate(improvedNoises.size() * IMPROVED_PERMS_STRIDE);
         for (Object improved : improvedNoises) {
             try {
-                byte[] perms = (byte[]) getFieldValue(improved, "p");
+                byte[] perms = (byte[]) getFieldValue(improved, "permutation");
                 for (byte perm : perms) {
                     buffer.put(perm & 0xFF);
                 }
@@ -431,8 +458,8 @@ public class ShadowRouterExtractor {
         FloatBuffer buffer = FloatBuffer.allocate(perlinNoises.size() * (2 + MAX_OCTAVES));
         for (Object pn : perlinNoises) {
             try {
-                double lowestFreqFactor = getDoubleField(pn, "lowestFreqInputFactor");
-                double lowestValFactor = getDoubleField(pn, "lowestFreqValueFactor");
+                double lowestFreqFactor = getDoubleField(pn, "lacunarity");
+                double lowestValFactor = getDoubleField(pn, "persistence");
                 buffer.put((float) lowestFreqFactor);
                 buffer.put((float) lowestValFactor);
 
@@ -472,8 +499,8 @@ public class ShadowRouterExtractor {
         IntBuffer buffer = IntBuffer.allocate(normalNoises.size() * 2);
         for (Object nn : normalNoises) {
             try {
-                Object first = getFieldValue(nn, "first");
-                Object second = getFieldValue(nn, "second");
+                Object first = getFieldValue(nn, "firstSampler");
+                Object second = getFieldValue(nn, "secondSampler");
                 Integer firstIdx = perlinNoiseIndexMap.get(first);
                 Integer secondIdx = perlinNoiseIndexMap.get(second);
                 buffer.put(firstIdx != null ? firstIdx : -1);
@@ -491,7 +518,7 @@ public class ShadowRouterExtractor {
         FloatBuffer buffer = FloatBuffer.allocate(normalNoises.size());
         for (Object nn : normalNoises) {
             try {
-                double valueFactor = getDoubleField(nn, "valueFactor");
+                double valueFactor = getDoubleField(nn, "amplitude");
                 buffer.put((float) valueFactor);
             } catch (Exception e) {
                 LOGGER.warn("Failed to extract NormalNoise float data", e);
@@ -514,6 +541,12 @@ public class ShadowRouterExtractor {
         }
     }
 
+    /** Try the primary (Yarn) name first, then the fallback (Mojang) name. */
+    private Class<?> loadClassWithFallback(String primary, String fallback) {
+        Class<?> cls = loadClassOrNull(primary);
+        return cls != null ? cls : loadClassOrNull(fallback);
+    }
+
     private Method findMethodOrNull(String methodName, Class<?>... paramTypes) {
         if (densityFunctionClass == null) return null;
         try {
@@ -521,6 +554,21 @@ public class ShadowRouterExtractor {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    /**
+     * Finds a method on {@code clazz} accepting a single parameter of {@code paramType},
+     * trying the primary (Yarn) method name first, then the fallback (Mojang) name.
+     */
+    private Method findMethodByNameFallback(Class<?> clazz, Class<?> paramType,
+                                            String primary, String fallback) {
+        if (clazz == null || paramType == null) return null;
+        try {
+            return clazz.getMethod(primary, paramType);
+        } catch (Exception ignored) { /* try fallback */ }
+        try {
+            return clazz.getMethod(fallback, paramType);
+        } catch (Exception ignored) { return null; }
     }
 
     private Method findMethodOrNull(Class<?> clazz, String methodName, Class<?>... paramTypes) {
@@ -561,7 +609,7 @@ public class ShadowRouterExtractor {
     }
 
     private Object getNoiseHolder(Object noiseFunc) {
-        return getFieldValue(noiseFunc, "noiseData");
+        return getFieldValue(noiseFunc, "noise");
     }
 
     private Object getMarkerArgument(Object marker) {
@@ -569,7 +617,7 @@ public class ShadowRouterExtractor {
     }
 
     private Object[] getImprovedOctaves(Object perlinNoise) {
-        Object value = getFieldValue(perlinNoise, "noiseLevels");
+        Object value = getFieldValue(perlinNoise, "octaveSamplers");
         if (value == null) return null;
         if (value.getClass().isArray()) {
             int len = Array.getLength(value);
@@ -658,7 +706,7 @@ public class ShadowRouterExtractor {
 
         // Direct: DensityFunctions.Noise → noiseData (NoiseHolder) → NormalNoise
         if (densityFunctionsNoiseClass != null && densityFunctionsNoiseClass.isInstance(densityFunction)) {
-            Object noiseHolder = getFieldValue(densityFunction, "noiseData");
+            Object noiseHolder = getFieldValue(densityFunction, "noise");
             if (noiseHolder == null) noiseHolder = getNoiseHolder(densityFunction);
             if (noiseHolder != null) {
                 try {

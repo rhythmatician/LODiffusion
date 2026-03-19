@@ -173,7 +173,9 @@ public final class ConfigLoader {
         // Sparse-root uses a different output layout (split/label tensors) and
         // does not include the usual "block_logits" output expected by the
         // standard octree pipeline.  Skip strict validation for this contract.
-        if (!"lodiffusion.v6.sparse_octree".equals(config.contract())) {
+        String contract = config.contract();
+        boolean isSparseOctree = contract != null && contract.endsWith(".sparse_octree");
+        if (!isSparseOctree) {
             config.validate();
         }
         LOGGER.info("Loaded model config: " + config.modelName() + " from " + jsonPath);
