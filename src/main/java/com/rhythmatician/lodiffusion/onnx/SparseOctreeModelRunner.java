@@ -647,6 +647,18 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
             }
             LOGGER.info("{}", sb);
         }
+
+        // ── Model-level defer policy (Layer 2 safety) ───────────────
+        // Validates raw tensors before decode.  On rejection, return null
+        // so the caller can fall back to the sampler-based generation path.
+        ModelOutputValidator.ValidationResult preCheck =
+                ModelOutputValidator.validatePreDecode(splitByLevel, labelByLevel, cByLevel, LEVELS);
+        if (preCheck != ModelOutputValidator.ValidationResult.ACCEPT) {
+            LOGGER.warn("[SparseOctree] Pre-decode validation failed: {} — deferring to fallback",
+                    preCheck);
+            return null;
+        }
+
         for (int i = 0; i < LEVELS; i++) {
             if (splitByLevel[i] == null || labelByLevel[i] == null) {
                 LOGGER.warn("[SparseOctree] Missing output tensor for level index {} "
@@ -708,6 +720,15 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 int blockId = argmaxLabel(labelByLevel[lvlIdx], nodeIdx, c);
                 fillRegion(grid, by0, bz0, bx0, size, blockId);
             }
+        }
+
+        // ── Post-decode validation ──────────────────────────────────
+        ModelOutputValidator.ValidationResult postCheck =
+                ModelOutputValidator.validatePostDecode(grid);
+        if (postCheck != ModelOutputValidator.ValidationResult.ACCEPT) {
+            LOGGER.warn("[SparseOctree] Post-decode validation failed: {} — deferring to fallback",
+                    postCheck);
+            return null;
         }
 
         return grid;

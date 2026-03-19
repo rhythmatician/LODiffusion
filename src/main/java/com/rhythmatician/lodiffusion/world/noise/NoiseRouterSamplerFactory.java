@@ -48,6 +48,9 @@ public final class NoiseRouterSamplerFactory implements AutoCloseable {
     /** Full upstream context — created lazily alongside the sampler. */
     private volatile UpstreamNoiseContext activeContext;
 
+    /** The active pipeline mode — tracks which sampler feeds the model. */
+    private volatile SamplerMode activeSamplerMode;
+
     private NoiseRouterSamplerFactory(ServerWorld serverWorld,
                                       ChunkGenerator generator,
                                       BiomeSource biomeSource,
@@ -119,18 +122,20 @@ public final class NoiseRouterSamplerFactory implements AutoCloseable {
 
             activeSampler = newSampler;
             activeBackendKey = requested;
+            activeSamplerMode = SamplerMode.fromBackendKey(requested);
             // Invalidate the context so it gets rebuilt on next request
             activeContext = null;
 
             if (oldSampler != null) {
                 oldSampler.close();
                 HelloTerrainMod.LOGGER.info(
-                        "[NoiseRouterSamplerFactory] Switched backend: {} → {}",
-                        oldSampler.backendName(), newSampler.backendName());
+                        "[NoiseRouterSamplerFactory] Switched backend: {} → {} (mode={})",
+                        oldSampler.backendName(), newSampler.backendName(),
+                        activeSamplerMode.configKey());
             } else {
                 HelloTerrainMod.LOGGER.info(
-                        "[NoiseRouterSamplerFactory] Initialized backend: {}",
-                        newSampler.backendName());
+                        "[NoiseRouterSamplerFactory] Initialized backend: {} (mode={})",
+                        newSampler.backendName(), activeSamplerMode.configKey());
             }
 
             return newSampler;
@@ -192,11 +197,26 @@ public final class NoiseRouterSamplerFactory implements AutoCloseable {
                 activeSampler.close();
             }
             HelloTerrainMod.LOGGER.info(
-                    "[NoiseRouterSamplerFactory] Closed (backend was: {})",
-                    activeBackendKey);
+                    "[NoiseRouterSamplerFactory] Closed (backend was: {}, mode was: {})",
+                    activeBackendKey, activeSamplerMode != null ? activeSamplerMode.configKey() : "none");
             activeSampler = null;
             activeBackendKey = null;
+            activeSamplerMode = null;
         }
+    }
+
+    /**
+     * Return the current {@link SamplerMode}, which defines which sampler
+     * feeds the model and which is authoritative.
+     *
+     * <p>This answers the critical question: "which sampler feeds the model
+     * during validation?"  In {@link SamplerMode#CPU_VS_GPU_COMPARE} mode,
+     * the model always receives CPU-sourced signals.
+     *
+     * @return current mode, or {@code null} before first sampler creation
+     */
+    public SamplerMode activeSamplerMode() {
+        return activeSamplerMode;
     }
 
     // ── internals ─────────────────────────────────────────────────────

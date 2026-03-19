@@ -3,6 +3,8 @@ package com.rhythmatician.lodiffusion.world.noise;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
 
 /**
@@ -40,6 +42,9 @@ public final class ParityReporter {
     private final long[]   signDisagrees;     // [RouterField.COUNT]
     private final long[]   totalCells;        // [RouterField.COUNT]
 
+    // ── Spatial divergence snapshots (ring buffer for current window) ──
+    private final List<DivergenceSnapshot> windowSnapshots;
+
     private int sectionsInWindow;
     private long windowStartMs;
 
@@ -51,6 +56,7 @@ public final class ParityReporter {
         this.sumSqError     = new double[n];
         this.signDisagrees  = new long[n];
         this.totalCells     = new long[n];
+        this.windowSnapshots = new ArrayList<>(config.aggregationWindow());
         this.windowStartMs  = System.currentTimeMillis();
     }
 
@@ -82,6 +88,10 @@ public final class ParityReporter {
     public void compare(SectionNoiseData reference,
                         SectionNoiseData candidate,
                         int sx, int sy, int sz) {
+
+        // Capture spatial divergence snapshot
+        DivergenceSnapshot snapshot = DivergenceSnapshot.compute(reference, candidate);
+        windowSnapshots.add(snapshot);
 
         boolean anyViolation = false;
 
@@ -214,6 +224,7 @@ public final class ParityReporter {
             signDisagrees[i] = 0;
             totalCells[i]    = 0;
         }
+        windowSnapshots.clear();
         sectionsInWindow = 0;
         windowStartMs = System.currentTimeMillis();
     }
@@ -221,6 +232,20 @@ public final class ParityReporter {
     /** Number of sections accumulated in the current window (for testing). */
     public int sectionsInWindow() {
         return sectionsInWindow;
+    }
+
+    /**
+     * Return the divergence snapshots collected in the current window.
+     * The returned list is a defensive copy.
+     *
+     * <p>Each snapshot contains per-cell density error, solid/air mismatch
+     * mask, and per-field error fields — exposing <i>where</i> the GPU
+     * diverges, not just <i>how much</i>.
+     *
+     * @return immutable list of divergence snapshots
+     */
+    public List<DivergenceSnapshot> windowSnapshots() {
+        return List.copyOf(windowSnapshots);
     }
 
     /** The config this reporter was created with. */
