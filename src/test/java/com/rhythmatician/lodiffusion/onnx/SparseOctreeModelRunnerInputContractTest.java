@@ -69,7 +69,7 @@ class SparseOctreeModelRunnerInputContractTest {
                     new long[] {1, 13, 4, 2, 4},
                     List.of("noise_2d", "noise_3d"));
             try {
-                int[][][] blocks = runner.runInferenceWithBiome(new float[13 * 4 * 2 * 4], null, null, null);
+                int[][][] blocks = runner.runInferenceWithBiome(new float[13 * 4 * 2 * 4], null, null);
                 assertNotNull(blocks);
 
                 assertArrayEquals(new long[] {1, 6, 4, 4}, capturedShapes[0]);
@@ -110,7 +110,7 @@ class SparseOctreeModelRunnerInputContractTest {
             int[][][] invalidBiome = new int[4][2][4];
             invalidBiome[0][0][0] = -1; // invalid value should trigger zeros fallback
             try {
-                int[][][] blocks = runner.runInferenceWithBiome(new float[13 * 4 * 2 * 4], invalidBiome, null, null);
+                int[][][] blocks = runner.runInferenceWithBiome(new float[13 * 4 * 2 * 4], invalidBiome, null);
                 assertNotNull(blocks);
 
                 assertEquals(3, capturedShapes.length);
@@ -125,7 +125,22 @@ class SparseOctreeModelRunnerInputContractTest {
     }
 
     @Test
-    void resolveInputOrder_includesHeightmapInputs() {
+    void resolveInputOrder_includesHeightmap5Input() {
+        Map<String, int[]> inputs = new LinkedHashMap<>();
+        inputs.put("noise_3d", new int[] {1, 15, 4, 2, 4});
+        inputs.put("biome_ids", new int[] {1, 4, 2, 4});
+        inputs.put("heightmap5", new int[] {1, 5, 16, 16});
+        ModelConfig cfg = new ModelConfig(
+                "sparse_octree", "1", inputs, null, Map.of("block_logits", new int[] {1, 16, 16, 16, 16}),
+                null, null, null, null, null, 256, null, null, null);
+
+        List<String> order = SparseOctreeModelRunner.resolveInputOrder(cfg);
+
+        assertEquals(List.of("noise_3d", "biome_ids", "heightmap5"), order);
+    }
+
+    @Test
+    void resolveInputOrder_includesLegacyHeightmapInputs() {
         Map<String, int[]> inputs = new LinkedHashMap<>();
         inputs.put("noise_3d", new int[] {1, 15, 4, 2, 4});
         inputs.put("biome_ids", new int[] {1, 4, 2, 4});
@@ -142,13 +157,13 @@ class SparseOctreeModelRunnerInputContractTest {
 
     @Test
     @SuppressWarnings({"unchecked"})
-    void runInferenceWithBiome_passesFiveInputsIncludingHeightmaps() throws Exception {
+    void runInferenceWithBiome_passesFourInputsIncludingHeightmap5() throws Exception {
         try (NDManager manager = NDManager.newBaseManager()) {
             Predictor<NDList, NDList> predictor = mock(Predictor.class);
             ZooModel<NDList, NDList> model = makeZooModel(predictor);
 
-            // Capture all 5 input shapes
-            final long[][] capturedShapes = new long[5][];
+            // Capture all 4 input shapes
+            final long[][] capturedShapes = new long[4][];
             when(predictor.predict(any())).thenAnswer(invocation -> {
                 NDList in = invocation.getArgument(0);
                 for (int i = 0; i < in.size(); i++) {
@@ -160,28 +175,24 @@ class SparseOctreeModelRunnerInputContractTest {
             SparseOctreeModelRunner runner = newRunner(manager, model,
                     true, new long[] {1, 6, 4, 4},
                     true, new long[] {1, 4, 2, 4},
-                    true, new long[] {1, 16, 16},
-                    true, new long[] {1, 16, 16},
+                    true, new long[] {1, 5, 16, 16},
                     new long[] {1, 15, 4, 2, 4},
-                    List.of("noise_2d", "noise_3d", "biome_ids",
-                            "heightmap_surface", "heightmap_ocean_floor"));
+                    List.of("noise_2d", "noise_3d", "biome_ids", "heightmap5"));
 
-            float[][] hmSurface = new float[16][16];
-            hmSurface[0][0] = 64.0f;
-            float[][] hmOcean = new float[16][16];
-            hmOcean[0][0] = 32.0f;
+            float[][] hp5 = new float[5][256];
+            hp5[0][0] = 64.0f;  // surface plane
+            hp5[1][0] = 32.0f;  // ocean plane
             int[][][] biome = new int[4][2][4];
             try {
                 int[][][] blocks = runner.runInferenceWithBiome(
-                        new float[15 * 4 * 2 * 4], biome, hmSurface, hmOcean);
+                        new float[15 * 4 * 2 * 4], biome, hp5);
                 assertNotNull(blocks);
 
-                // Verify all 5 inputs were passed in expected order and shape
+                // Verify all 4 inputs were passed in expected order and shape
                 assertArrayEquals(new long[] {1, 6, 4, 4}, capturedShapes[0], "noise_2d shape");
                 assertArrayEquals(new long[] {1, 15, 4, 2, 4}, capturedShapes[1], "noise_3d shape");
                 assertArrayEquals(new long[] {1, 4, 2, 4}, capturedShapes[2], "biome_ids shape");
-                assertArrayEquals(new long[] {1, 16, 16}, capturedShapes[3], "heightmap_surface shape");
-                assertArrayEquals(new long[] {1, 16, 16}, capturedShapes[4], "heightmap_ocean_floor shape");
+                assertArrayEquals(new long[] {1, 5, 16, 16}, capturedShapes[3], "heightmap5 shape");
             } finally {
                 runner.close();
             }
@@ -215,7 +226,7 @@ class SparseOctreeModelRunnerInputContractTest {
             List<String> inputOrder) throws Exception {
         return newRunner(manager, model, hasNoise2d, noise2dShape,
                 hasBiomeIds, biomeShape,
-                false, null, false, null,
+                false, null,
                 noise3dShape, inputOrder);
     }
 
@@ -226,10 +237,8 @@ class SparseOctreeModelRunnerInputContractTest {
             long[] noise2dShape,
             boolean hasBiomeIds,
             long[] biomeShape,
-            boolean hasHeightmapSurface,
-            long[] heightmapSurfaceShape,
-            boolean hasHeightmapOceanFloor,
-            long[] heightmapOceanFloorShape,
+            boolean hasHeightmap5,
+            long[] heightmap5Shape,
             long[] noise3dShape,
             List<String> inputOrder) throws Exception {
         Constructor<SparseOctreeModelRunner> ctor = SparseOctreeModelRunner.class.getDeclaredConstructor(
@@ -244,15 +253,12 @@ class SparseOctreeModelRunnerInputContractTest {
                 long[].class,
                 boolean.class,
                 long[].class,
-                boolean.class,
-                long[].class,
                 long[].class,
                 List.class);
         ctor.setAccessible(true);
         return ctor.newInstance(manager, model, null, 2, 0.6f,
                 hasNoise2d, noise2dShape, hasBiomeIds, biomeShape,
-                hasHeightmapSurface, heightmapSurfaceShape,
-                hasHeightmapOceanFloor, heightmapOceanFloorShape,
+                hasHeightmap5, heightmap5Shape,
                 noise3dShape, inputOrder);
     }
 }

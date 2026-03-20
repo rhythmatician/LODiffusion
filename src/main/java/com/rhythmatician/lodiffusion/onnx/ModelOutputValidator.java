@@ -47,23 +47,35 @@ public final class ModelOutputValidator {
     // ── Pre-decode validation (raw ONNX tensors) ─────────────────────
 
     /**
-     * Validate raw split and label tensors before octree decode.
+     * Validate raw occ/split and label tensors before octree decode.
      *
-     * @param splitByLevel split logit arrays indexed by level (0=L4 root)
+     * <p>v7+ models emit {@code occ_L{i} [1, N, 8]} per-child occupancy
+     * logits, while legacy v6 models emit {@code split_L{i} [1, N]}
+     * scalar split logits.  Both formats are validated uniformly.
+     *
+     * @param occByLevel   occ logit arrays indexed by level (v7+), may be all-null for legacy
+     * @param splitByLevel split logit arrays indexed by level (legacy v6), may be all-null for v7+
      * @param labelByLevel label logit arrays indexed by level (flat [N*C])
      * @param cByLevel     class count per level
      * @param levels       number of levels (typically 5)
+     * @param hasOcc       true if the model emits occ tensors (v7+)
      * @return validation result
      */
     public static ValidationResult validatePreDecode(
+            float[][] occByLevel,
             float[][] splitByLevel,
             float[][] labelByLevel,
             int[] cByLevel,
-            int levels) {
+            int levels,
+            boolean hasOcc) {
 
         // Guard 1: NaN / Inf in any tensor
         for (int lvl = 0; lvl < levels; lvl++) {
-            if (splitByLevel[lvl] != null && containsNanOrInf(splitByLevel[lvl])) {
+            if (occByLevel != null && occByLevel[lvl] != null && containsNanOrInf(occByLevel[lvl])) {
+                LOG.warn("[ModelValidator] REJECT: NaN/Inf in occ_L{}", 4 - lvl);
+                return ValidationResult.REJECT_NAN_INF;
+            }
+            if (splitByLevel != null && splitByLevel[lvl] != null && containsNanOrInf(splitByLevel[lvl])) {
                 LOG.warn("[ModelValidator] REJECT: NaN/Inf in split_L{}", 4 - lvl);
                 return ValidationResult.REJECT_NAN_INF;
             }
@@ -73,13 +85,12 @@ public final class ModelOutputValidator {
             }
         }
 
-        // Guard 2: Structural — at least one level must have both split and label.
-        // Missing individual levels are handled gracefully by the existing decode
-        // fallback logic (fill with argmax of available label).  Only reject when
-        // NO level has usable data at all.
+        // Guard 2: Structural — at least one level must have usable expansion + label data.
         boolean anyUsableLevel = false;
         for (int lvl = 0; lvl < levels; lvl++) {
-            if (splitByLevel[lvl] != null || labelByLevel[lvl] != null) {
+            boolean hasExpansion = (hasOcc && occByLevel != null && occByLevel[lvl] != null)
+                    || (splitByLevel != null && splitByLevel[lvl] != null);
+            if (hasExpansion || labelByLevel[lvl] != null) {
                 anyUsableLevel = true;
                 break;
             }
@@ -89,25 +100,45 @@ public final class ModelOutputValidator {
             return ValidationResult.REJECT_STRUCTURAL_VIOLATION;
         }
 
-        // Guard 3: Degenerate tree — if root split sigmoid is exactly 0 or 1
-        // AND all L0 labels collapse to a single class, the model is not
-        // producing meaningful output.
-        if (splitByLevel[0] != null && splitByLevel[0].length > 0) {
-            float rootSigmoid = sigmoid(splitByLevel[0][0]);
-            // Check if the entire L0 label layer is uniform
-            if (labelByLevel[levels - 1] != null && cByLevel[levels - 1] > 1) {
-                if (isUniformArgmax(labelByLevel[levels - 1], cByLevel[levels - 1])) {
-                    // Only flag if root doesn't split (entire chunk = 1 block)
-                    if (rootSigmoid < 0.01f) {
-                        LOG.warn("[ModelValidator] REJECT: Degenerate tree — root nosplit + "
-                                + "uniform L0 labels (sigmoid={:.4f})", rootSigmoid);
-                        return ValidationResult.REJECT_DEGENERATE_TREE;
-                    }
+        // Guard 3: Degenerate tree — root produces no expansion AND all L0
+        // labels collapse to a single class.
+        boolean rootExpands;
+        if (hasOcc && occByLevel != null && occByLevel[0] != null && occByLevel[0].length >= 8) {
+            // v7+ occ: check if any child exceeds a minimal threshold
+            rootExpands = false;
+            for (int i = 0; i < 8; i++) {
+                if (sigmoid(occByLevel[0][i]) > 0.01f) {
+                    rootExpands = true;
+                    break;
                 }
+            }
+        } else if (splitByLevel != null && splitByLevel[0] != null && splitByLevel[0].length > 0) {
+            // Legacy v6 split scalar
+            rootExpands = sigmoid(splitByLevel[0][0]) >= 0.01f;
+        } else {
+            // No expansion data at root — can't judge
+            rootExpands = true;
+        }
+
+        if (!rootExpands && labelByLevel[levels - 1] != null && cByLevel[levels - 1] > 1) {
+            if (isUniformArgmax(labelByLevel[levels - 1], cByLevel[levels - 1])) {
+                LOG.warn("[ModelValidator] REJECT: Degenerate tree — root nosplit + uniform L0 labels");
+                return ValidationResult.REJECT_DEGENERATE_TREE;
             }
         }
 
         return ValidationResult.ACCEPT;
+    }
+
+    /**
+     * Legacy overload for v6 models that only emit scalar split tensors.
+     */
+    public static ValidationResult validatePreDecode(
+            float[][] splitByLevel,
+            float[][] labelByLevel,
+            int[] cByLevel,
+            int levels) {
+        return validatePreDecode(null, splitByLevel, labelByLevel, cByLevel, levels, false);
     }
 
     // ── Post-decode validation (block grid) ──────────────────────────

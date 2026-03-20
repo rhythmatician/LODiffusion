@@ -27,27 +27,31 @@ import ai.djl.translate.TranslateException;
  * three-model octree pipeline (init / refine / leaf) for Stage 2 block
  * selection.
  *
- * <h3>Contract: {@code lodiffusion.v6.sparse_octree}</h3>
+ * <h3>Contract: {@code lodiffusion.v7.sparse_octree}</h3>
  *
  * <pre>
  *   sparse_octree.onnx
  *     Input:
- *       noise_3d   float32[1, C, Dy, Dz, Dx]  (noise channels × spatial cells)
- *                  Legacy models:  [1, 13, 4, 2, 4]   (13 intermediate channels, 4×2×4)
- *                  v7+ models:     [1, 15, 4, 4, 4]   (15 NoiseRouter fields, 4×4×4 quarts)
- *       biome_ids  int32[1, ...]   (discrete biome palette indices, optional)
+ *       noise_3d    float32[1, C, Dy, Dz, Dx]  (noise channels × spatial cells)
+ *                   Legacy models:  [1, 13, 4, 2, 4]   (13 intermediate channels, 4×2×4)
+ *                   v7+ models:     [1, 15, 4, 2, 4]   (15 NoiseRouter fields, 4×2×4 quarts)
+ *       biome_ids   int64[1, 4, 2, 4]  (discrete biome palette indices)
+ *       heightmap5  float32[1, 5, 16, 16]  (5-plane heightmap: surface, ocean, slope_x, slope_z, curvature)
  *
  *     Outputs (teacher-forced, all nodes expanded at every level):
- *       split_L4   float32[1,    1]           split logits at level 4 (root)
+ *       occ_L4     float32[1,    1, 8]       per-child occupancy logits at level 4 (root)
  *       label_L4   float32[1,    1, C]        block-class logits
- *       split_L3   float32[1,    8]
+ *       occ_L3     float32[1,    8, 8]
  *       label_L3   float32[1,    8, C]
- *       split_L2   float32[1,   64]
+ *       occ_L2     float32[1,   64, 8]
  *       label_L2   float32[1,   64, C]
- *       split_L1   float32[1,  512]
+ *       occ_L1     float32[1,  512, 8]
  *       label_L1   float32[1,  512, C]
- *       split_L0   float32[1, 4096]
+ *       occ_L0     float32[1, 4096, 8]
  *       label_L0   float32[1, 4096, C]
+ *
+ *     Legacy (v6) models also supported with split outputs:
+ *       split_L{i}  float32[1, N]  (scalar split logits, 2D tensors)
  * </pre>
  *
  * <p>The 4096 L0 nodes correspond to individual blocks in the 16³ subchunk.
@@ -59,9 +63,10 @@ import ai.djl.translate.TranslateException;
  *   by = ((a3&gt;&gt;2)&amp;1)*8 | ((a2&gt;&gt;2)&amp;1)*4 | ((a1&gt;&gt;2)&amp;1)*2 | ((a0&gt;&gt;2)&amp;1)
  * </pre>
  *
- * <p>At inference time, greedy top-down pruning is applied: a node is only
- * expanded to its 8 children if {@code sigmoid(split_logit) > splitThreshold}.
- * Otherwise the argmax of its label logits fills the entire sub-region.
+ * <p>At inference time, greedy top-down pruning is applied.  For v7+ models,
+ * a node is expanded to child {@code i} only if
+ * {@code sigmoid(occ_logits[i]) > splitThreshold}.  For legacy v6 models,
+ * a single scalar split logit determines expansion.
  *
  * @see com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler
  */
@@ -105,17 +110,11 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     /** Shape of the biome_ids input tensor, if present. */
     private final long[] biomeIdsShape;
 
-    /** Whether the model expects a heightmap_surface input. */
-    private final boolean hasHeightmapSurface;
+    /** Whether the model expects a heightmap5 input (5-plane heightmap). */
+    private final boolean hasHeightmap5;
 
-    /** Shape of the heightmap_surface input tensor, if present. */
-    private final long[] heightmapSurfaceShape;
-
-    /** Whether the model expects a heightmap_ocean_floor input. */
-    private final boolean hasHeightmapOceanFloor;
-
-    /** Shape of the heightmap_ocean_floor input tensor, if present. */
-    private final long[] heightmapOceanFloorShape;
+    /** Shape of the heightmap5 input tensor, e.g. [1, 5, 16, 16]. */
+    private final long[] heightmap5Shape;
 
     /**
      * Shape of the noise_3d input tensor as declared in the model config sidecar.
@@ -150,27 +149,23 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                                   long[] noise2dShape,
                                   boolean hasBiomeIds,
                                   long[] biomeIdsShape,
-                                  boolean hasHeightmapSurface,
-                                  long[] heightmapSurfaceShape,
-                                  boolean hasHeightmapOceanFloor,
-                                  long[] heightmapOceanFloorShape,
+                                  boolean hasHeightmap5,
+                                  long[] heightmap5Shape,
                                   long[] noise3dShape,
                                   List<String> inputOrder) {
-        this.manager                  = manager;
-        this.model                    = model;
-        this.vocabulary               = vocabulary;
-        this.numClasses               = numClasses;
-        this.splitThreshold           = splitThreshold;
-        this.hasNoise2d               = hasNoise2d;
-        this.noise2dShape             = noise2dShape;
-        this.hasBiomeIds              = hasBiomeIds;
-        this.biomeIdsShape            = biomeIdsShape;
-        this.hasHeightmapSurface      = hasHeightmapSurface;
-        this.heightmapSurfaceShape    = heightmapSurfaceShape;
-        this.hasHeightmapOceanFloor   = hasHeightmapOceanFloor;
-        this.heightmapOceanFloorShape = heightmapOceanFloorShape;
-        this.noise3dShape             = noise3dShape;
-        this.inputOrder               = List.copyOf(inputOrder);
+        this.manager           = manager;
+        this.model             = model;
+        this.vocabulary        = vocabulary;
+        this.numClasses        = numClasses;
+        this.splitThreshold    = splitThreshold;
+        this.hasNoise2d        = hasNoise2d;
+        this.noise2dShape      = noise2dShape;
+        this.hasBiomeIds       = hasBiomeIds;
+        this.biomeIdsShape     = biomeIdsShape;
+        this.hasHeightmap5     = hasHeightmap5;
+        this.heightmap5Shape   = heightmap5Shape;
+        this.noise3dShape      = noise3dShape;
+        this.inputOrder        = List.copyOf(inputOrder);
     }
 
     // ------------------------------------------------------------------
@@ -209,10 +204,8 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 long[] noise2dShape = null;
                 boolean hasBiomeIds = false;
                 long[] biomeIdsShape = null;
-                boolean hasHeightmapSurface = false;
-                long[] heightmapSurfaceShape = null;
-                boolean hasHeightmapOceanFloor = false;
-                long[] heightmapOceanFloorShape = null;
+                boolean hasHeightmap5 = false;
+                long[] heightmap5Shape = null;
                 long[] noise3dShape = new long[]{1, 13, 4, 2, 4}; // legacy default
                 List<String> inputOrder = List.of("noise_3d");
                 Path configPath = modelDir.resolve(CONFIG);
@@ -247,18 +240,11 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                         for (int i = 0; i < shape.length; i++) biomeIdsShape[i] = shape[i];
                     }
 
-                    hasHeightmapSurface = cfg.hasInput("heightmap_surface");
-                    if (hasHeightmapSurface) {
-                        int[] shape = cfg.getInputShape("heightmap_surface");
-                        heightmapSurfaceShape = new long[shape.length];
-                        for (int i = 0; i < shape.length; i++) heightmapSurfaceShape[i] = shape[i];
-                    }
-
-                    hasHeightmapOceanFloor = cfg.hasInput("heightmap_ocean_floor");
-                    if (hasHeightmapOceanFloor) {
-                        int[] shape = cfg.getInputShape("heightmap_ocean_floor");
-                        heightmapOceanFloorShape = new long[shape.length];
-                        for (int i = 0; i < shape.length; i++) heightmapOceanFloorShape[i] = shape[i];
+                    hasHeightmap5 = cfg.hasInput("heightmap5");
+                    if (hasHeightmap5) {
+                        int[] shape = cfg.getInputShape("heightmap5");
+                        heightmap5Shape = new long[shape.length];
+                        for (int i = 0; i < shape.length; i++) heightmap5Shape[i] = shape[i];
                     }
 
                     // Discover noise_3d shape from config sidecar.
@@ -304,8 +290,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 return new SparseOctreeModelRunner(manager, zm, vocab, numClassesFromConfig,
                         splitThreshold, hasNoise2d, noise2dShape,
                         hasBiomeIds, biomeIdsShape,
-                        hasHeightmapSurface, heightmapSurfaceShape,
-                        hasHeightmapOceanFloor, heightmapOceanFloorShape,
+                        hasHeightmap5, heightmap5Shape,
                         noise3dShape, inputOrder);
 
             } catch (Exception e) {
@@ -370,8 +355,9 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
 
     static List<String> resolveInputOrder(ModelConfig cfg) {
         List<String> order = new ArrayList<>();
+        // Recognize both v7+ (heightmap5) and legacy v6 (heightmap_surface, heightmap_ocean_floor)
         java.util.Set<String> knownInputs = java.util.Set.of(
-                "noise_2d", "noise_3d", "biome_ids",
+                "noise_2d", "noise_3d", "biome_ids", "heightmap5",
                 "heightmap_surface", "heightmap_ocean_floor");
         if (cfg.inputs() != null) {
             for (String name : cfg.inputs().keySet()) {
@@ -407,22 +393,22 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      *         inference failed
      */
     public int[][][] runInference(float[] noiseFlat, int... unused) {
-        return runInferenceWithBiome(noiseFlat, null, null, null);
+        return runInferenceWithBiome(noiseFlat, null, null);
     }
 
     /**
-     * Run inference with explicit biome IDs and heightmaps.
+     * Run inference with explicit biome IDs and 5-plane heightmap.
      *
-     * @param noiseFlat        flat noise input (length must match the product of
-     *                         {@link #noise3dShape()} dimensions)
-     * @param biomeIds         biome IDs array, or {@code null} for zero-fill
-     * @param heightmapSurface 16×16 surface heightmap (block Y), or {@code null}
-     * @param heightmapOceanFloor 16×16 ocean floor heightmap (block Y), or {@code null}
+     * @param noiseFlat  flat noise input (length must match the product of
+     *                   {@link #noise3dShape()} dimensions)
+     * @param biomeIds   biome IDs array, or {@code null} for zero-fill
+     * @param hp5        5-plane height data {@code float[5][H*W]} (row-major
+     *                   flattened per plane), or {@code null} for zero-fill.
+     *                   Planes: surface, ocean, slope_x, slope_z, curvature.
      * @return {@code int[16][16][16]} block IDs, or {@code null} if inference failed
      */
     public int[][][] runInferenceWithBiome(float[] noiseFlat, int[][][] biomeIds,
-                                           float[][] heightmapSurface,
-                                           float[][] heightmapOceanFloor) {
+                                           float[][] hp5) {
         ClassLoader prevCl = Thread.currentThread().getContextClassLoader();
         Thread.currentThread().setContextClassLoader(getClass().getClassLoader());
         try (NDManager sub = manager.newSubManager()) {
@@ -433,12 +419,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                     ? sub.zeros(new Shape(noise2dShape))
                     : null;
             NDArray biome = hasBiomeIds ? buildBiomeTensor(sub, biomeIds) : null;
-            NDArray hmSurface = hasHeightmapSurface
-                    ? buildHeightmapTensor(sub, heightmapSurface, heightmapSurfaceShape)
-                    : null;
-            NDArray hmOcean = hasHeightmapOceanFloor
-                    ? buildHeightmapTensor(sub, heightmapOceanFloor, heightmapOceanFloorShape)
-                    : null;
+            NDArray hm5 = hasHeightmap5 ? buildHeightmap5Tensor(sub, hp5) : null;
 
             NDList inputs = new NDList();
             for (String name : inputOrder) {
@@ -450,11 +431,18 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                     case "biome_ids" -> {
                         if (biome != null) inputs.add(biome);
                     }
+                    case "heightmap5" -> {
+                        if (hm5 != null) inputs.add(hm5);
+                    }
+                    // Legacy v6 model compatibility: derive separate heightmap
+                    // tensors from the first two hp5 planes (surface, ocean).
                     case "heightmap_surface" -> {
-                        if (hmSurface != null) inputs.add(hmSurface);
+                        NDArray hmS = buildLegacyHeightmapFromHp5(sub, hp5, 0);
+                        if (hmS != null) inputs.add(hmS);
                     }
                     case "heightmap_ocean_floor" -> {
-                        if (hmOcean != null) inputs.add(hmOcean);
+                        NDArray hmO = buildLegacyHeightmapFromHp5(sub, hp5, 1);
+                        if (hmO != null) inputs.add(hmO);
                     }
                     default -> {
                         // ignored
@@ -465,8 +453,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 inputs.add(noise3d);
                 if (noise2d != null) inputs.add(0, noise2d);
                 if (biome != null) inputs.add(biome);
-                if (hmSurface != null) inputs.add(hmSurface);
-                if (hmOcean != null) inputs.add(hmOcean);
+                if (hm5 != null) inputs.add(hm5);
             }
 
             long t0 = System.currentTimeMillis();
@@ -538,30 +525,52 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     }
 
     /**
-     * Build a heightmap tensor from a {@code float[16][16]} array.
+     * Build a 5-plane heightmap tensor {@code [1, 5, H, W]} from pre-flattened planes.
      *
-     * @param sub      NDManager for tensor allocation
-     * @param heightmap 16×16 block-Y heightmap, or {@code null} for zero-fill
-     * @param shape    declared shape from model config (e.g. [1, 16, 16])
-     * @return NDArray with the expected shape
+     * <p>Each plane in {@code hp5[p]} is row-major {@code float[H*W]}
+     * (surface, ocean, slope_x, slope_z, curvature).  The declared shape
+     * from the model config sidecar is used for H×W; defaults to 16×16.
+     *
+     * @param sub NDManager for tensor allocation
+     * @param hp5 height planes {@code float[5][H*W]}, or {@code null} for zero-fill
+     * @return NDArray shaped according to {@link #heightmap5Shape}
      */
-    private NDArray buildHeightmapTensor(NDManager sub, float[][] heightmap, long[] shape) {
-        long[] effectiveShape = (shape != null && shape.length >= 2) ? shape : new long[]{1, 16, 16};
-        int rows = (int) effectiveShape[effectiveShape.length - 2];
-        int cols = (int) effectiveShape[effectiveShape.length - 1];
-        float[] flat = new float[rows * cols];
-        if (heightmap != null) {
-            int idx = 0;
-            for (int r = 0; r < Math.min(rows, heightmap.length); r++) {
-                if (heightmap[r] != null) {
-                    for (int c = 0; c < Math.min(cols, heightmap[r].length); c++) {
-                        flat[idx + c] = heightmap[r][c];
-                    }
+    private NDArray buildHeightmap5Tensor(NDManager sub, float[][] hp5) {
+        long[] effectiveShape = (heightmap5Shape != null && heightmap5Shape.length == 4)
+                ? heightmap5Shape : new long[]{1, 5, 16, 16};
+        int planes = (int) effectiveShape[1];
+        int rows   = (int) effectiveShape[2];
+        int cols   = (int) effectiveShape[3];
+        int planeSize = rows * cols;
+        float[] flat = new float[planes * planeSize];
+        if (hp5 != null) {
+            for (int p = 0; p < Math.min(planes, hp5.length); p++) {
+                if (hp5[p] != null) {
+                    System.arraycopy(hp5[p], 0, flat, p * planeSize,
+                            Math.min(planeSize, hp5[p].length));
                 }
-                idx += cols;
             }
         }
         return sub.create(flat, new Shape(effectiveShape));
+    }
+
+    /**
+     * Build a legacy {@code [1, 16, 16]} heightmap tensor from a single plane
+     * of the 5-plane {@code hp5} array.  Used for backward compatibility with
+     * v6 models that declare {@code heightmap_surface / heightmap_ocean_floor}.
+     *
+     * @param sub       NDManager for tensor allocation
+     * @param hp5       5-plane height data, or {@code null}
+     * @param planeIdx  which plane to extract (0=surface, 1=ocean)
+     * @return NDArray shaped {@code [1, 16, 16]}, or zero-fill if data is missing
+     */
+    private NDArray buildLegacyHeightmapFromHp5(NDManager sub, float[][] hp5, int planeIdx) {
+        float[] flat = new float[16 * 16];
+        if (hp5 != null && planeIdx < hp5.length && hp5[planeIdx] != null) {
+            System.arraycopy(hp5[planeIdx], 0, flat, 0,
+                    Math.min(flat.length, hp5[planeIdx].length));
+        }
+        return sub.create(flat, new Shape(1, 16, 16));
     }
 
     // ------------------------------------------------------------------
@@ -584,28 +593,37 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      * remain robust to different ONNX export orderings.
      */
     private int[][][] decodeOutputs(NDList outputs, NDManager sub) {
-        // Locate split and label tensors by level node count
-        float[][] splitByLevel = new float[LEVELS][];   // index 0 = L4 (1 node)
+        // Locate occ/split and label tensors by level node count.
+        // v7+ models emit occ_L{i} [1, N, 8] (3D, last-dim=8).
+        // Legacy v6 models emit split_L{i} [1, N] (2D, scalar per node).
+        float[][] occByLevel   = new float[LEVELS][];   // [N * 8] per level (v7+)
+        float[][] splitByLevel = new float[LEVELS][];   // [N] per level (legacy v6)
         float[][] labelByLevel = new float[LEVELS][];   // flat [N*C]
         int[]    cByLevel      = new int[LEVELS];        // actual C from tensor shape
+        boolean  hasOcc        = false;                  // whether any occ tensor was found
 
         for (NDArray t : outputs) {
             long[] shape = t.getShape().getShape();
             if (shape.length == 2) {
-                // Split tensor: [1, N]
+                // Legacy split tensor: [1, N]
                 int n = (int) shape[1];
                 int lvlIdx = levelIndexFromNodeCount(n);
                 if (lvlIdx >= 0 && splitByLevel[lvlIdx] == null) {
                     splitByLevel[lvlIdx] = t.toFloatArray();
                 }
             } else if (shape.length == 3) {
-                // Label tensor: [1, N, C]  — capture C so argmax stride is correct
                 int n = (int) shape[1];
-                int c = (int) shape[2];
+                int lastDim = (int) shape[2];
                 int lvlIdx = levelIndexFromNodeCount(n);
-                if (lvlIdx >= 0 && labelByLevel[lvlIdx] == null) {
+                if (lvlIdx < 0) continue;
+                if (lastDim == 8 && occByLevel[lvlIdx] == null) {
+                    // Occ tensor: [1, N, 8] — 8 per-child occupancy logits
+                    occByLevel[lvlIdx] = t.toFloatArray();
+                    hasOcc = true;
+                } else if (lastDim != 8 && labelByLevel[lvlIdx] == null) {
+                    // Label tensor: [1, N, C]
                     labelByLevel[lvlIdx] = t.toFloatArray();
-                    cByLevel[lvlIdx] = c;
+                    cByLevel[lvlIdx] = lastDim;
                 }
             }
         }
@@ -618,8 +636,22 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 sb.append(" ").append(java.util.Arrays.toString(t.getShape().getShape()));
             }
             sb.append("\n  cByLevel: ").append(java.util.Arrays.toString(cByLevel));
-            // Root split
-            if (splitByLevel[0] != null && splitByLevel[0].length > 0) {
+            sb.append("\n  hasOcc: ").append(hasOcc);
+            // Root occ / split signal
+            if (hasOcc && occByLevel[0] != null && occByLevel[0].length >= 8) {
+                sb.append("\n  Root occ logits:");
+                for (int i = 0; i < 8; i++) {
+                    float logit = occByLevel[0][i];
+                    sb.append(String.format(" [%d]=%.3f(σ%.4f)", i, logit, sigmoid(logit)));
+                }
+                sb.append(" threshold=").append(splitThreshold);
+                // Check if any child passes
+                boolean anyExpand = false;
+                for (int i = 0; i < 8; i++) {
+                    if (sigmoid(occByLevel[0][i]) > splitThreshold) anyExpand = true;
+                }
+                sb.append(" => ").append(anyExpand ? "EXPAND" : "LEAF");
+            } else if (splitByLevel[0] != null && splitByLevel[0].length > 0) {
                 float rootLogit = splitByLevel[0][0];
                 float rootSigm = sigmoid(rootLogit);
                 sb.append("\n  Root split logit=").append(rootLogit)
@@ -631,14 +663,13 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
             if (labelByLevel[0] != null && cByLevel[0] > 0) {
                 int rootBlockId = argmaxLabel(labelByLevel[0], 0, cByLevel[0]);
                 sb.append("\n  Root label argmax=").append(rootBlockId);
-                // Show top-5 logit values at root
                 float[] rootLabel = labelByLevel[0];
                 sb.append(" top logits:");
                 for (int i = 0; i < Math.min(5, cByLevel[0]); i++) {
                     sb.append(" [").append(i).append("]").append(String.format("%.3f", rootLabel[i]));
                 }
             }
-            // L0 label class 0 logit vs class 1 at node 0
+            // L0 label class info at node 0
             if (labelByLevel[4] != null && cByLevel[4] > 0) {
                 int l0BlockId = argmaxLabel(labelByLevel[4], 0, cByLevel[4]);
                 sb.append("\n  L0[0] argmax=").append(l0BlockId)
@@ -653,7 +684,8 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
         // Validates raw tensors before decode.  On rejection, return null
         // so the caller can fall back to the sampler-based generation path.
         ModelOutputValidator.ValidationResult preCheck =
-                ModelOutputValidator.validatePreDecode(splitByLevel, labelByLevel, cByLevel, LEVELS);
+                ModelOutputValidator.validatePreDecode(occByLevel, splitByLevel,
+                        labelByLevel, cByLevel, LEVELS, hasOcc);
         if (preCheck != ModelOutputValidator.ValidationResult.ACCEPT) {
             LOGGER.warn("[SparseOctree] Pre-decode validation failed: {} — deferring to fallback",
                     preCheck);
@@ -661,10 +693,10 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
         }
 
         for (int i = 0; i < LEVELS; i++) {
-            if (splitByLevel[i] == null || labelByLevel[i] == null) {
+            boolean hasExpansion = hasOcc ? (occByLevel[i] != null) : (splitByLevel[i] != null);
+            if (!hasExpansion || labelByLevel[i] == null) {
                 LOGGER.warn("[SparseOctree] Missing output tensor for level index {} "
                         + "(nodeCount={}); using dense L0 fallback", i, LEVEL_NODES[i]);
-                // Fall back to filling the whole block with argmax of L0 label
             }
         }
 
@@ -672,55 +704,65 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
         float thresh = this.splitThreshold;
 
         // Greedy top-down traversal.  Each active node is represented as an
-        // integer triple (level_index, node_index_in_level, packed_block_origin)
-        // where packed_block_origin = by*256 + bz*16 + bx (all in [0,15]).
+        // integer triple (level_index, node_index_in_level, packed_block_origin).
         Deque<int[]> pending = new ArrayDeque<>(4096);
-        // Root: level_index=0, node_index=0, origin=(0,0,0)
         pending.push(new int[] { 0, 0, 0 });
 
         while (!pending.isEmpty()) {
             int[] node = pending.pop();
             int lvlIdx   = node[0];
             int nodeIdx  = node[1];
-            int origin   = node[2];  // packed by,bz,bx
+            int origin   = node[2];
 
             int by0 = (origin >> 8) & 0xF;
             int bz0 = (origin >> 4) & 0xF;
             int bx0 = origin & 0xF;
 
-            // Size of this node's sub-region in blocks: 16 >> lvlIdx
-            // lvlIdx 0=L4→16, 1=L3→8, 2=L2→4, 3=L1→2, 4=L0→1
             int size = SUBCHUNK >> lvlIdx;
 
-            boolean isSplit = false;
-            float[] splitArr = splitByLevel[lvlIdx];
-            if (splitArr != null && lvlIdx < LEVELS - 1) {
-                isSplit = shouldExpandNode(splitArr[nodeIdx], thresh);
+            if (lvlIdx < LEVELS - 1) {
+                // Determine which children to expand
+                byte occMask = 0;
+                if (hasOcc && occByLevel[lvlIdx] != null) {
+                    // v7+ model: per-child occupancy logits
+                    float[] occArr = occByLevel[lvlIdx];
+                    int base = nodeIdx * 8;
+                    for (int i = 0; i < 8; i++) {
+                        if (base + i < occArr.length && sigmoid(occArr[base + i]) > thresh) {
+                            occMask |= (byte) (1 << i);
+                        }
+                    }
+                } else if (splitByLevel[lvlIdx] != null) {
+                    // Legacy v6: scalar split → expand all 8 or none
+                    float[] splitArr = splitByLevel[lvlIdx];
+                    if (shouldExpandNode(splitArr[nodeIdx], thresh)) {
+                        occMask = (byte) 0xFF;
+                    }
+                }
+
+                if (occMask != 0) {
+                    // Expand selected children
+                    int childSize = size >> 1;
+                    int childLvlIdx = lvlIdx + 1;
+                    int childBase = nodeIdx * 8;
+                    for (int oct = 0; oct < 8; oct++) {
+                        if ((occMask & (1 << oct)) == 0) continue; // skip unoccupied
+                        int dx = oct & 1;
+                        int dz = (oct >> 1) & 1;
+                        int dy = (oct >> 2) & 1;
+                        int childOrigin = ((by0 + dy * childSize) << 8)
+                                        | ((bz0 + dz * childSize) << 4)
+                                        | (bx0 + dx * childSize);
+                        pending.push(new int[] { childLvlIdx, childBase + oct, childOrigin });
+                    }
+                    continue;
+                }
             }
 
-            if (isSplit && lvlIdx < LEVELS - 1) {
-                // Expand: enqueue 8 children at the next finer level
-                int childSize = size >> 1;
-                int childLvlIdx = lvlIdx + 1;
-                int childBase = nodeIdx * 8;
-                for (int oct = 0; oct < 8; oct++) {
-                    int dx = oct & 1;
-                    int dz = (oct >> 1) & 1;
-                    int dy = (oct >> 2) & 1;
-                    int childOrigin = ((by0 + dy * childSize) << 8)
-                                    | ((bz0 + dz * childSize) << 4)
-                                    | (bx0 + dx * childSize);
-                    pending.push(new int[] { childLvlIdx, childBase + oct, childOrigin });
-                }
-            } else {
-                // Leaf: fill sub-region with argmax of label logits.
-                // Use the actual C captured from the tensor shape — NOT numClasses
-                // (which is the config vocab size and may differ from the model's
-                // trained output width, causing incorrect stride and all-air output).
-                int c = (cByLevel[lvlIdx] > 0) ? cByLevel[lvlIdx] : numClasses;
-                int blockId = argmaxLabel(labelByLevel[lvlIdx], nodeIdx, c);
-                fillRegion(grid, by0, bz0, bx0, size, blockId);
-            }
+            // Leaf: fill sub-region with argmax of label logits.
+            int c = (cByLevel[lvlIdx] > 0) ? cByLevel[lvlIdx] : numClasses;
+            int blockId = argmaxLabel(labelByLevel[lvlIdx], nodeIdx, c);
+            fillRegion(grid, by0, bz0, bx0, size, blockId);
         }
 
         // ── Post-decode validation ──────────────────────────────────
@@ -821,7 +863,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     private volatile boolean batchSupported = true;
 
     public int[][][][] runBatchInference(float[][] noiseBatch, int[][][][] biomeBatch) {
-        return runBatchInference(noiseBatch, biomeBatch, null, null);
+        return runBatchInference(noiseBatch, biomeBatch, null);
     }
 
     /**
@@ -841,15 +883,14 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      *                   {@link #noise3dFlatLength()}).  Length ∈ [1, MAX_BATCH_SIZE].
      * @param biomeBatch optional parallel array of biome IDs (same length as
      *                   {@code noiseBatch}), or {@code null} to zero-fill all
-     * @param hmSurfaceBatch optional parallel array of surface heightmaps
-     * @param hmOceanBatch   optional parallel array of ocean floor heightmaps
+     * @param hp5Batch   optional parallel array of 5-plane heightmaps
+     *                   {@code float[batchSize][5][H*W]}, or {@code null}
      * @return array of {@code int[16][16][16]} block grids, same length as
      *         {@code noiseBatch}.  Individual entries may be {@code null} on
      *         per-section decode failure.
      */
     public int[][][][] runBatchInference(float[][] noiseBatch, int[][][][] biomeBatch,
-                                         float[][][] hmSurfaceBatch,
-                                         float[][][] hmOceanBatch) {
+                                         float[][][] hp5Batch) {
         if (noiseBatch == null || noiseBatch.length == 0) {
             return new int[0][][][];
         }
@@ -858,15 +899,13 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
             // Single-sample fast path (no batch overhead)
             int[][][] result = runInferenceWithBiome(noiseBatch[0],
                     biomeBatch != null ? biomeBatch[0] : null,
-                    hmSurfaceBatch != null ? hmSurfaceBatch[0] : null,
-                    hmOceanBatch != null ? hmOceanBatch[0] : null);
+                    hp5Batch != null ? hp5Batch[0] : null);
             return new int[][][][] { result };
         }
 
         // Try true batched inference if still supported
         if (batchSupported) {
-            int[][][][] batched = tryBatchedInference(noiseBatch, biomeBatch,
-                    hmSurfaceBatch, hmOceanBatch);
+            int[][][][] batched = tryBatchedInference(noiseBatch, biomeBatch, hp5Batch);
             if (batched != null) return batched;
             // First failure disables batching for all future calls
             batchSupported = false;
@@ -875,7 +914,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
         }
 
         // Sequential fallback
-        return runSequentialFallback(noiseBatch, biomeBatch, hmSurfaceBatch, hmOceanBatch);
+        return runSequentialFallback(noiseBatch, biomeBatch, hp5Batch);
     }
 
     /**
@@ -883,8 +922,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      * @return decoded grids, or {@code null} if the model rejects the batched input
      */
     private int[][][][] tryBatchedInference(float[][] noiseBatch, int[][][][] biomeBatch,
-                                            float[][][] hmSurfaceBatch,
-                                            float[][][] hmOceanBatch) {
+                                            float[][][] hp5Batch) {
         int n = noiseBatch.length;
         int flatLen = noise3dFlatLength();
 
@@ -906,11 +944,8 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
             NDArray biome = hasBiomeIds
                     ? buildBatchedBiomeTensor(sub, biomeBatch, n)
                     : null;
-            NDArray hmSurface = hasHeightmapSurface
-                    ? buildBatchedHeightmapTensor(sub, hmSurfaceBatch, n, heightmapSurfaceShape)
-                    : null;
-            NDArray hmOcean = hasHeightmapOceanFloor
-                    ? buildBatchedHeightmapTensor(sub, hmOceanBatch, n, heightmapOceanFloorShape)
+            NDArray hm5 = hasHeightmap5
+                    ? buildBatchedHeightmap5Tensor(sub, hp5Batch, n)
                     : null;
 
             NDList inputs = new NDList();
@@ -919,8 +954,24 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                     case "noise_2d" -> { if (noise2d != null) inputs.add(noise2d); }
                     case "noise_3d" -> inputs.add(noise3d);
                     case "biome_ids" -> { if (biome != null) inputs.add(biome); }
-                    case "heightmap_surface" -> { if (hmSurface != null) inputs.add(hmSurface); }
-                    case "heightmap_ocean_floor" -> { if (hmOcean != null) inputs.add(hmOcean); }
+                    case "heightmap5" -> { if (hm5 != null) inputs.add(hm5); }
+                    // Legacy v6 compat: stack per-sample legacy heightmaps from hp5 planes
+                    case "heightmap_surface" -> {
+                        NDList tensors = new NDList(n);
+                        for (int i = 0; i < n; i++) {
+                            float[][] h = hp5Batch != null && i < hp5Batch.length ? hp5Batch[i] : null;
+                            tensors.add(buildLegacyHeightmapFromHp5(sub, h, 0));
+                        }
+                        inputs.add(NDArrays.concat(tensors, 0));
+                    }
+                    case "heightmap_ocean_floor" -> {
+                        NDList tensors = new NDList(n);
+                        for (int i = 0; i < n; i++) {
+                            float[][] h = hp5Batch != null && i < hp5Batch.length ? hp5Batch[i] : null;
+                            tensors.add(buildLegacyHeightmapFromHp5(sub, h, 1));
+                        }
+                        inputs.add(NDArrays.concat(tensors, 0));
+                    }
                     default -> { /* ignored */ }
                 }
             }
@@ -928,8 +979,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 inputs.add(noise3d);
                 if (noise2d != null) inputs.add(0, noise2d);
                 if (biome != null) inputs.add(biome);
-                if (hmSurface != null) inputs.add(hmSurface);
-                if (hmOcean != null) inputs.add(hmOcean);
+                if (hm5 != null) inputs.add(hm5);
             }
 
             long t0 = System.currentTimeMillis();
@@ -957,14 +1007,13 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     }
 
     /**
-     * Build a batched heightmap tensor by stacking individual heightmaps.
+     * Build a batched 5-plane heightmap tensor by stacking individual hp5 arrays.
      */
-    private NDArray buildBatchedHeightmapTensor(NDManager sub, float[][][] hmBatch,
-                                                int n, long[] shape) {
+    private NDArray buildBatchedHeightmap5Tensor(NDManager sub, float[][][] hp5Batch, int n) {
         NDList tensors = new NDList(n);
         for (int i = 0; i < n; i++) {
-            tensors.add(buildHeightmapTensor(sub,
-                    hmBatch != null && i < hmBatch.length ? hmBatch[i] : null, shape));
+            tensors.add(buildHeightmap5Tensor(sub,
+                    hp5Batch != null && i < hp5Batch.length ? hp5Batch[i] : null));
         }
         return NDArrays.concat(tensors, 0);
     }
@@ -992,7 +1041,6 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
             // Slice each output tensor along dim 0 for this sample
             NDList sampleOutputs = new NDList(outputs.size());
             for (NDArray t : outputs) {
-                // t.get(i) selects index i along the first dimension
                 NDArray sliced = t.get(i).expandDims(0);  // restore [1, ...] shape
                 sampleOutputs.add(sliced);
             }
@@ -1005,15 +1053,13 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      * Sequential fallback: process one section at a time.
      */
     private int[][][][] runSequentialFallback(float[][] noiseBatch, int[][][][] biomeBatch,
-                                              float[][][] hmSurfaceBatch,
-                                              float[][][] hmOceanBatch) {
+                                              float[][][] hp5Batch) {
         int n = noiseBatch.length;
         int[][][][] results = new int[n][][][];
         for (int i = 0; i < n; i++) {
             results[i] = runInferenceWithBiome(noiseBatch[i],
                     biomeBatch != null && i < biomeBatch.length ? biomeBatch[i] : null,
-                    hmSurfaceBatch != null && i < hmSurfaceBatch.length ? hmSurfaceBatch[i] : null,
-                    hmOceanBatch != null && i < hmOceanBatch.length ? hmOceanBatch[i] : null);
+                    hp5Batch != null && i < hp5Batch.length ? hp5Batch[i] : null);
         }
         return results;
     }
@@ -1038,11 +1084,11 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     }
 
     /**
-     * Whether the loaded model config declares heightmap inputs
-     * ({@code heightmap_surface} and/or {@code heightmap_ocean_floor}).
+     * Whether the loaded model config declares a {@code heightmap5} input
+     * (5-plane heightmap: surface, ocean, slope_x, slope_z, curvature).
      */
     public boolean acceptsHeightmaps() {
-        return hasHeightmapSurface || hasHeightmapOceanFloor;
+        return hasHeightmap5;
     }
 
     /** Number of block classes the model was trained with. */

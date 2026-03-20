@@ -31,7 +31,7 @@ class SparseOctreeModelRunnerSmokeTest {
             SparseOctreeModelRunner runner = SparseOctreeModelRunner.tryLoad(modelDir);
             assumeTrue(runner != null, "Skipping smoke test (sparse_octree model not loadable)");
             try (SparseOctreeModelRunner r = runner) {
-                float[] noise = new float[13 * 4 * 2 * 4];
+                float[] noise = new float[r.noise3dFlatLength()];
                 int[][][] blocks = r.runInference(noise);
                 assertNotNull(blocks, "Inference should not return null");
                 assertEquals(16, blocks.length);
