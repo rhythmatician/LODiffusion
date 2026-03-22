@@ -116,6 +116,12 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     /** Shape of the heightmap5 input tensor, e.g. [1, 5, 16, 16]. */
     private final long[] heightmap5Shape;
 
+    /** Whether the model expects a block_y_min input (int64 Y-coord of subchunk bottom). */
+    private final boolean hasBlockYMin;
+
+    /** Shape of the block_y_min input tensor, e.g. [1]. */
+    private final long[] blockYMinShape;
+
     /**
      * Shape of the noise_3d input tensor as declared in the model config sidecar.
      * Legacy (v6): {@code [1, 13, 4, 2, 4]}.  New (v7+): {@code [1, 15, 4, 2, 4]}.
@@ -151,6 +157,8 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                                   long[] biomeIdsShape,
                                   boolean hasHeightmap5,
                                   long[] heightmap5Shape,
+                                  boolean hasBlockYMin,
+                                  long[] blockYMinShape,
                                   long[] noise3dShape,
                                   List<String> inputOrder) {
         this.manager           = manager;
@@ -164,6 +172,8 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
         this.biomeIdsShape     = biomeIdsShape;
         this.hasHeightmap5     = hasHeightmap5;
         this.heightmap5Shape   = heightmap5Shape;
+        this.hasBlockYMin      = hasBlockYMin;
+        this.blockYMinShape    = blockYMinShape;
         this.noise3dShape      = noise3dShape;
         this.inputOrder        = List.copyOf(inputOrder);
     }
@@ -206,6 +216,8 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                 long[] biomeIdsShape = null;
                 boolean hasHeightmap5 = false;
                 long[] heightmap5Shape = null;
+                boolean hasBlockYMin = false;
+                long[] blockYMinShape = null;
                 long[] noise3dShape = new long[]{1, 13, 4, 2, 4}; // legacy default
                 List<String> inputOrder = List.of("noise_3d");
                 Path configPath = modelDir.resolve(CONFIG);
@@ -245,6 +257,13 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                         int[] shape = cfg.getInputShape("heightmap5");
                         heightmap5Shape = new long[shape.length];
                         for (int i = 0; i < shape.length; i++) heightmap5Shape[i] = shape[i];
+                    }
+
+                    hasBlockYMin = cfg.hasInput("block_y_min");
+                    if (hasBlockYMin) {
+                        int[] shape = cfg.getInputShape("block_y_min");
+                        blockYMinShape = new long[shape.length];
+                        for (int i = 0; i < shape.length; i++) blockYMinShape[i] = shape[i];
                     }
 
                     // Discover noise_3d shape from config sidecar.
@@ -291,6 +310,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                         splitThreshold, hasNoise2d, noise2dShape,
                         hasBiomeIds, biomeIdsShape,
                         hasHeightmap5, heightmap5Shape,
+                        hasBlockYMin, blockYMinShape,
                         noise3dShape, inputOrder);
 
             } catch (Exception e) {
@@ -358,7 +378,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
         // Recognize both v7+ (heightmap5) and legacy v6 (heightmap_surface, heightmap_ocean_floor)
         java.util.Set<String> knownInputs = java.util.Set.of(
                 "noise_2d", "noise_3d", "biome_ids", "heightmap5",
-                "heightmap_surface", "heightmap_ocean_floor");
+                "heightmap_surface", "heightmap_ocean_floor", "block_y_min");
         if (cfg.inputs() != null) {
             for (String name : cfg.inputs().keySet()) {
                 if (knownInputs.contains(name)) {
@@ -409,6 +429,22 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      */
     public int[][][] runInferenceWithBiome(float[] noiseFlat, int[][][] biomeIds,
                                            float[][] hp5) {
+        return runInferenceWithBiome(noiseFlat, biomeIds, hp5, Integer.MIN_VALUE);
+    }
+
+    /**
+     * Run inference with explicit biome IDs, heightmap and Y position.
+     *
+     * @param noiseFlat  flat noise input
+     * @param biomeIds   biome IDs array, or {@code null} for zero-fill
+     * @param hp5        5-plane height data, or {@code null}
+     * @param blockYMin  block-space Y coord of the subchunk bottom (e.g. {@code sectionY * 16}).
+     *                   Ignored when the model doesn't declare a {@code block_y_min} input.
+     *                   Pass {@code Integer.MIN_VALUE} when unknown.
+     * @return {@code int[16][16][16]} block IDs, or {@code null} if inference failed
+     */
+    public int[][][] runInferenceWithBiome(float[] noiseFlat, int[][][] biomeIds,
+                                           float[][] hp5, int blockYMin) {
         ClassLoader prevCl = Thread.currentThread().getContextClassLoader();
         Thread.currentThread().setContextClassLoader(getClass().getClassLoader());
         try (NDManager sub = manager.newSubManager()) {
@@ -420,6 +456,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                     : null;
             NDArray biome = hasBiomeIds ? buildBiomeTensor(sub, biomeIds) : null;
             NDArray hm5 = hasHeightmap5 ? buildHeightmap5Tensor(sub, hp5) : null;
+            NDArray blockYMinTensor = hasBlockYMin ? buildBlockYMinTensor(sub, blockYMin) : null;
 
             NDList inputs = new NDList();
             for (String name : inputOrder) {
@@ -433,6 +470,9 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                     }
                     case "heightmap5" -> {
                         if (hm5 != null) inputs.add(hm5);
+                    }
+                    case "block_y_min" -> {
+                        if (blockYMinTensor != null) inputs.add(blockYMinTensor);
                     }
                     // Legacy v6 model compatibility: derive separate heightmap
                     // tensors from the first two hp5 planes (surface, ocean).
@@ -571,6 +611,41 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                     Math.min(flat.length, hp5[planeIdx].length));
         }
         return sub.create(flat, new Shape(1, 16, 16));
+    }
+
+    /**
+     * Build a {@code block_y_min} tensor (int64) from a block-space Y coordinate.
+     *
+     * @param sub        NDManager for tensor allocation
+     * @param blockYMin  Y-coordinate of the bottom of the subchunk in block space
+     *                   (e.g. sectionY * 16).  {@code Integer.MIN_VALUE} → 0 fallback.
+     * @return NDArray shaped according to {@link #blockYMinShape} (default [1])
+     */
+    /**
+     * Training-data Y range: the v2 sparse-root model was trained exclusively
+     * on sections with {@code block_y_min} in {−32, −16, 0, 16}.  Values
+     * outside this range cause extreme out-of-distribution logits (all-air).
+     * Clamping keeps the sinusoidal Y-encoding within a region where the model
+     * has learned meaningful occupancy patterns.
+     */
+    private static final int TRAIN_Y_MIN = -32;
+    private static final int TRAIN_Y_MAX =  16;
+
+    private NDArray buildBlockYMinTensor(NDManager sub, int blockYMin) {
+        long[] effectiveShape = (blockYMinShape != null && blockYMinShape.length > 0)
+                ? blockYMinShape : new long[]{1};
+        int size = 1;
+        for (long d : effectiveShape) size *= (int) d;
+        long yVal;
+        if (blockYMin == Integer.MIN_VALUE) {
+            yVal = 0L;
+        } else {
+            // Clamp to the training range to avoid out-of-distribution predictions.
+            yVal = Math.max(TRAIN_Y_MIN, Math.min(TRAIN_Y_MAX, blockYMin));
+        }
+        long[] data = new long[size];
+        data[0] = yVal;
+        return sub.create(data, new Shape(effectiveShape));
     }
 
     // ------------------------------------------------------------------
@@ -947,6 +1022,12 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
             NDArray hm5 = hasHeightmap5
                     ? buildBatchedHeightmap5Tensor(sub, hp5Batch, n)
                     : null;
+            // block_y_min not supported in batch path — fill with zeros.
+            // The single-sample fast path and sequential fallback both route
+            // through runInferenceWithBiome which handles block_y_min.
+            NDArray blockYMinBatch = hasBlockYMin
+                    ? sub.create(new long[n], new Shape(n))
+                    : null;
 
             NDList inputs = new NDList();
             for (String name : inputOrder) {
@@ -955,6 +1036,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
                     case "noise_3d" -> inputs.add(noise3d);
                     case "biome_ids" -> { if (biome != null) inputs.add(biome); }
                     case "heightmap5" -> { if (hm5 != null) inputs.add(hm5); }
+                    case "block_y_min" -> { if (blockYMinBatch != null) inputs.add(blockYMinBatch); }
                     // Legacy v6 compat: stack per-sample legacy heightmaps from hp5 planes
                     case "heightmap_surface" -> {
                         NDList tensors = new NDList(n);
@@ -1089,6 +1171,14 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      */
     public boolean acceptsHeightmaps() {
         return hasHeightmap5;
+    }
+
+    /**
+     * Whether the loaded model config declares a {@code block_y_min} input
+     * (int64 Y-coordinate of the subchunk bottom in block space).
+     */
+    public boolean acceptsBlockYMin() {
+        return hasBlockYMin;
     }
 
     /** Number of block classes the model was trained with. */

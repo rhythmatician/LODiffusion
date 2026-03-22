@@ -941,7 +941,7 @@ public final class LodGenerationService {
                         }
                     }
                     int[][][] blocks = sparseRootRunner.runInferenceWithBiome(
-                            noise, biomeIds, ctx.hp5());
+                            noise, biomeIds, ctx.hp5(), sy * 16);
 
                     if (blocks != null) {
                         // Build a VoxelizedSection (16³ L0) and insert via Voxy's

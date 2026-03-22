@@ -156,6 +156,21 @@ class SparseOctreeModelRunnerInputContractTest {
     }
 
     @Test
+    void resolveInputOrder_includesBlockYMinInput() {
+        Map<String, int[]> inputs = new LinkedHashMap<>();
+        inputs.put("noise_3d", new int[] {1, 15, 4, 2, 4});
+        inputs.put("biome_ids", new int[] {1, 4, 2, 4});
+        inputs.put("block_y_min", new int[] {1});
+        ModelConfig cfg = new ModelConfig(
+                "sparse_octree", "1", inputs, null, Map.of("block_logits", new int[] {1, 16, 16, 16, 16}),
+                null, null, null, null, null, 256, null, null, null);
+
+        List<String> order = SparseOctreeModelRunner.resolveInputOrder(cfg);
+
+        assertEquals(List.of("noise_3d", "biome_ids", "block_y_min"), order);
+    }
+
+    @Test
     @SuppressWarnings({"unchecked"})
     void runInferenceWithBiome_passesFourInputsIncludingHeightmap5() throws Exception {
         try (NDManager manager = NDManager.newBaseManager()) {
@@ -227,6 +242,7 @@ class SparseOctreeModelRunnerInputContractTest {
         return newRunner(manager, model, hasNoise2d, noise2dShape,
                 hasBiomeIds, biomeShape,
                 false, null,
+                false, null,
                 noise3dShape, inputOrder);
     }
 
@@ -241,6 +257,26 @@ class SparseOctreeModelRunnerInputContractTest {
             long[] heightmap5Shape,
             long[] noise3dShape,
             List<String> inputOrder) throws Exception {
+        return newRunner(manager, model, hasNoise2d, noise2dShape,
+                hasBiomeIds, biomeShape,
+                hasHeightmap5, heightmap5Shape,
+                false, null,
+                noise3dShape, inputOrder);
+    }
+
+    private static SparseOctreeModelRunner newRunner(
+            NDManager manager,
+            ZooModel<NDList, NDList> model,
+            boolean hasNoise2d,
+            long[] noise2dShape,
+            boolean hasBiomeIds,
+            long[] biomeShape,
+            boolean hasHeightmap5,
+            long[] heightmap5Shape,
+            boolean hasBlockYMin,
+            long[] blockYMinShape,
+            long[] noise3dShape,
+            List<String> inputOrder) throws Exception {
         Constructor<SparseOctreeModelRunner> ctor = SparseOctreeModelRunner.class.getDeclaredConstructor(
                 NDManager.class,
                 ZooModel.class,
@@ -253,12 +289,15 @@ class SparseOctreeModelRunnerInputContractTest {
                 long[].class,
                 boolean.class,
                 long[].class,
+                boolean.class,
+                long[].class,
                 long[].class,
                 List.class);
         ctor.setAccessible(true);
         return ctor.newInstance(manager, model, null, 2, 0.6f,
                 hasNoise2d, noise2dShape, hasBiomeIds, biomeShape,
                 hasHeightmap5, heightmap5Shape,
+                hasBlockYMin, blockYMinShape,
                 noise3dShape, inputOrder);
     }
 }

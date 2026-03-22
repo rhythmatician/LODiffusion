@@ -69,6 +69,8 @@ bin/
 
 # Minecraft Development
 run/
+!run/*.onnx
+!run/config/
 logs/
 .minecraft/
 crash-reports/
