@@ -819,8 +819,12 @@ public final class LodGenerationService {
                             }
                         }
                     }
+                    // blockYMin = the actual block-Y of this section's bottom edge.
+                    // The model is trained at per-section granularity (16 blocks),
+                    // so blockYMin is simply sy * 16.
+                    int blockYMin = sy * 16;
                     int[][][] blocks = sparseRootRunner.runInferenceWithBiome(
-                            noise, biomeIds, ctx.hp5(), sy * 16);
+                            noise, biomeIds, ctx.hp5(), blockYMin);
 
                     if (blocks != null) {
                         // Build a VoxelizedSection (16³ L0) and insert via Voxy's
