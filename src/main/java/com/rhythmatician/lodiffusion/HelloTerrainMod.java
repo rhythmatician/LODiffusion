@@ -39,15 +39,13 @@ public class HelloTerrainMod implements ModInitializer {
 			LOGGER.info("[LODiffusion] Voxy reflection bindings OK — LOD injection path available");
 		}
 
-		// Check if octree model files are present in the model dir (v5.octree pipeline)
+		// Check if the sparse-octree model is present in the model dir
 		java.nio.file.Path modelDir = Config.modelDir();
-		boolean modelsPresent = Files.isRegularFile(modelDir.resolve("octree_init.onnx"))
-				&& Files.isRegularFile(modelDir.resolve("octree_refine.onnx"))
-				&& Files.isRegularFile(modelDir.resolve("octree_leaf.onnx"));
-		if (modelsPresent) {
-			LOGGER.info("[LODiffusion] Octree ONNX models found in {}", modelDir);
+		boolean modelPresent = Files.isRegularFile(modelDir.resolve("sparse_octree.onnx"));
+		if (modelPresent) {
+			LOGGER.info("[LODiffusion] sparse_octree.onnx found in {}", modelDir);
 		} else {
-			LOGGER.warn("[LODiffusion] Octree model files not found in {} — LOD generation will fail until models are placed", modelDir);
+			LOGGER.warn("[LODiffusion] sparse_octree.onnx not found in {} — LOD generation will fail until the model is placed", modelDir);
 		}
 
 		LOGGER.info("[LODiffusion] Mod initialization complete!");

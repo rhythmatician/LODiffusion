@@ -21,7 +21,7 @@ import net.minecraft.world.chunk.Chunk;
  * information.  See {@code docs/NOISE-DESIGN.md} for rationale.
  *
  * <p>This class retains the 16×16 sampling helpers used by the heightmap
- * fallback pipeline and the {@code OctreeColumnContext} builder.
+ * fallback pipeline and the sparse-octree column builder.
  */
 public final class AnchorSampler {
 

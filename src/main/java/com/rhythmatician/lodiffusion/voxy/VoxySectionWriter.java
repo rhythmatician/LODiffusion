@@ -507,7 +507,7 @@ public final class VoxySectionWriter {
      * guide the GPU to descend from coarse to fine.
      *
      * <p>Accepts pre-computed argmax IDs to avoid redundant argmax
-     * computation (already computed in OctreeModelRunner).
+     * computation (already computed in SparseOctreeModelRunner).
      *
      * @param blockArgmax  {@code int[32][32][32]} argmax class indices in Y,Z,X order
      * @param biomeIdx32   {@code int[32][32]} canonical biome indices, indexed [z][x]
@@ -602,7 +602,7 @@ public final class VoxySectionWriter {
      * {@code writeFullWorldSection}.
      *
      * <p>Accepts pre-computed argmax IDs to avoid redundant argmax
-     * computation (already computed in OctreeModelRunner).
+     * computation (already computed in SparseOctreeModelRunner).
      *
      * @param blockArgmax  {@code int[32][32][32]} argmax class indices in Y,Z,X order
      * @param biomeIdx32   {@code int[32][32]} canonical biome indices covering the section footprint
