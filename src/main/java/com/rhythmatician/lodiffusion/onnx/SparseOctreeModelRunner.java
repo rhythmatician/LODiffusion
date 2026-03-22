@@ -621,28 +621,12 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      *                   (e.g. sectionY * 16).  {@code Integer.MIN_VALUE} → 0 fallback.
      * @return NDArray shaped according to {@link #blockYMinShape} (default [1])
      */
-    /**
-     * Training-data Y range: the v2 sparse-root model was trained exclusively
-     * on sections with {@code block_y_min} in {−32, −16, 0, 16}.  Values
-     * outside this range cause extreme out-of-distribution logits (all-air).
-     * Clamping keeps the sinusoidal Y-encoding within a region where the model
-     * has learned meaningful occupancy patterns.
-     */
-    private static final int TRAIN_Y_MIN = -32;
-    private static final int TRAIN_Y_MAX =  16;
-
     private NDArray buildBlockYMinTensor(NDManager sub, int blockYMin) {
         long[] effectiveShape = (blockYMinShape != null && blockYMinShape.length > 0)
                 ? blockYMinShape : new long[]{1};
         int size = 1;
         for (long d : effectiveShape) size *= (int) d;
-        long yVal;
-        if (blockYMin == Integer.MIN_VALUE) {
-            yVal = 0L;
-        } else {
-            // Clamp to the training range to avoid out-of-distribution predictions.
-            yVal = Math.max(TRAIN_Y_MIN, Math.min(TRAIN_Y_MAX, blockYMin));
-        }
+        long yVal = (blockYMin == Integer.MIN_VALUE) ? 0L : (long) blockYMin;
         long[] data = new long[size];
         data[0] = yVal;
         return sub.create(data, new Shape(effectiveShape));
