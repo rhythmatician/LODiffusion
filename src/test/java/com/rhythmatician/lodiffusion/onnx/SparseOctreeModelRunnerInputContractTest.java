@@ -129,7 +129,7 @@ class SparseOctreeModelRunnerInputContractTest {
         Map<String, int[]> inputs = new LinkedHashMap<>();
         inputs.put("noise_3d", new int[] {1, 15, 4, 2, 4});
         inputs.put("biome_ids", new int[] {1, 4, 2, 4});
-        inputs.put("heightmap5", new int[] {1, 5, 16, 16});
+        inputs.put("heightmap5", new int[] {1, 5, 4, 4});
         ModelConfig cfg = new ModelConfig(
                 "sparse_octree", "1", inputs, null, Map.of("block_logits", new int[] {1, 16, 16, 16, 16}),
                 null, null, null, null, null, 256, null, null, null);
@@ -190,11 +190,11 @@ class SparseOctreeModelRunnerInputContractTest {
             SparseOctreeModelRunner runner = newRunner(manager, model,
                     true, new long[] {1, 6, 4, 4},
                     true, new long[] {1, 4, 2, 4},
-                    true, new long[] {1, 5, 16, 16},
+                    true, new long[] {1, 5, 4, 4},
                     new long[] {1, 15, 4, 2, 4},
                     List.of("noise_2d", "noise_3d", "biome_ids", "heightmap5"));
 
-            float[][] hp5 = new float[5][256];
+            float[][] hp5 = new float[5][16];
             hp5[0][0] = 64.0f;  // surface plane
             hp5[1][0] = 32.0f;  // ocean plane
             int[][][] biome = new int[4][2][4];
@@ -207,7 +207,7 @@ class SparseOctreeModelRunnerInputContractTest {
                 assertArrayEquals(new long[] {1, 6, 4, 4}, capturedShapes[0], "noise_2d shape");
                 assertArrayEquals(new long[] {1, 15, 4, 2, 4}, capturedShapes[1], "noise_3d shape");
                 assertArrayEquals(new long[] {1, 4, 2, 4}, capturedShapes[2], "biome_ids shape");
-                assertArrayEquals(new long[] {1, 5, 16, 16}, capturedShapes[3], "heightmap5 shape");
+                assertArrayEquals(new long[] {1, 5, 4, 4}, capturedShapes[3], "heightmap5 shape");
             } finally {
                 runner.close();
             }

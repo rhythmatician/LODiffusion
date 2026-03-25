@@ -446,7 +446,7 @@ public final class LodGenerationService {
     record ColumnContext(
         float[][] rawHm,          // [16][16] surface heightmap in block Y
         int[][]   biomeIdx,       // [16][16] biome indices
-        float[][] hp5,            // [5][256] height-planes (row-major)
+        float[][] hp5,            // [5][16] height-planes (4×4, row-major)
         float[][] oceanFloorHm    // [16][16] ocean/river floor block-Y (may be null)
     ) {}
 

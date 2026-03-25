@@ -36,7 +36,7 @@ import ai.djl.translate.TranslateException;
  *                   Legacy models:  [1, 13, 4, 2, 4]   (13 intermediate channels, 4×2×4)
  *                   v7+ models:     [1, 15, 4, 2, 4]   (15 NoiseRouter fields, 4×2×4 quarts)
  *       biome_ids   int64[1, 4, 2, 4]  (discrete biome palette indices)
- *       heightmap5  float32[1, 5, 16, 16]  (5-plane heightmap: surface, ocean, slope_x, slope_z, curvature)
+ *       heightmap5  float32[1, 5, 4, 4]    (5-plane heightmap at density-cell resolution: surface, ocean, slope_x, slope_z, curvature)
  *
  *     Outputs (teacher-forced, all nodes expanded at every level):
  *       occ_L4     float32[1,    1, 8]       per-child occupancy logits at level 4 (root)
@@ -113,7 +113,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
     /** Whether the model expects a heightmap5 input (5-plane heightmap). */
     private final boolean hasHeightmap5;
 
-    /** Shape of the heightmap5 input tensor, e.g. [1, 5, 16, 16]. */
+    /** Shape of the heightmap5 input tensor, e.g. [1, 5, 4, 4]. */
     private final long[] heightmap5Shape;
 
     /** Whether the model expects a block_y_min input (int64 Y-coord of subchunk bottom). */
@@ -569,7 +569,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      *
      * <p>Each plane in {@code hp5[p]} is row-major {@code float[H*W]}
      * (surface, ocean, slope_x, slope_z, curvature).  The declared shape
-     * from the model config sidecar is used for H×W; defaults to 16×16.
+     * from the model config sidecar is used for H×W; defaults to 4×4.
      *
      * @param sub NDManager for tensor allocation
      * @param hp5 height planes {@code float[5][H*W]}, or {@code null} for zero-fill
@@ -577,7 +577,7 @@ public final class SparseOctreeModelRunner implements AutoCloseable {
      */
     private NDArray buildHeightmap5Tensor(NDManager sub, float[][] hp5) {
         long[] effectiveShape = (heightmap5Shape != null && heightmap5Shape.length == 4)
-                ? heightmap5Shape : new long[]{1, 5, 16, 16};
+                ? heightmap5Shape : new long[]{1, 5, 4, 4};
         int planes = (int) effectiveShape[1];
         int rows   = (int) effectiveShape[2];
         int cols   = (int) effectiveShape[3];
