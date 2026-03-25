@@ -211,3 +211,5 @@ logs/
 # Cache directories
 .cache/
 cache/
+tmp.md
+docs/terraingen.mmd
