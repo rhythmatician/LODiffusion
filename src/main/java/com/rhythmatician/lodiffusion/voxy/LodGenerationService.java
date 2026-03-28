@@ -102,6 +102,10 @@ public final class LodGenerationService {
         private static final int DEMAND_IDLE_SLEEP_MS =
             Config.getInt("demandIdleSleepMs", 25);
 
+            /** Throttle interval for demand-pipeline progress diagnostics. */
+            private static final int DEMAND_PROGRESS_LOG_MS =
+                Config.getInt("demandProgressLogMs", 5000);
+
         /** Occupancy threshold for expanding child octants in hierarchical inference. */
         private static final float VOXY_OCC_THRESHOLD =
             (float) Config.getDouble("voxyOccThreshold", 0.5);
@@ -1206,11 +1210,13 @@ public final class LodGenerationService {
     private boolean runDemandVoxyPipeline(World world, Object worldEngine,
                                           VoxySectionWriter writer,
                                           VoxyBlockMapper blockMapper) {
+        int dequeued = 0;
         int written = 0;
         int skipped = 0;
         int deferred = 0;
         int failed = 0;
         long startMs = System.currentTimeMillis();
+        long lastProgressLogMs = startMs;
 
         while (!stopRequested.get()) {
             VoxyRequestDecoder.VoxyNodeRequest req = ShadowRouterJobQueue.dequeueAny();
@@ -1223,6 +1229,8 @@ public final class LodGenerationService {
                 }
                 continue;
             }
+
+            dequeued++;
 
             boolean requeued = false;
             try {
@@ -1239,12 +1247,12 @@ public final class LodGenerationService {
                     case FAILED -> failed++;
                 }
 
-                int total = written + skipped + deferred + failed;
-                if (total % 200 == 0) {
-                    long elapsed = System.currentTimeMillis() - startMs;
-                    HelloTerrainMod.LOGGER.info(
-                            "[LodGen] Demand pipeline: processed={} written={} skipped={} deferred={} failed={} ({}s)",
-                            total, written, skipped, deferred, failed, elapsed / 1000);
+                long now = System.currentTimeMillis();
+                if (written == 1
+                        || dequeued == 1
+                        || now - lastProgressLogMs >= DEMAND_PROGRESS_LOG_MS) {
+                    logDemandProgress(startMs, dequeued, written, skipped, deferred, failed);
+                    lastProgressLogMs = now;
                 }
             } finally {
                 if (!requeued) {
@@ -1253,10 +1261,21 @@ public final class LodGenerationService {
             }
         }
 
+        logDemandProgress(startMs, dequeued, written, skipped, deferred, failed);
         HelloTerrainMod.LOGGER.info(
-                "[LodGen] Demand pipeline stopped: written={} skipped={} deferred={} failed={}",
-                written, skipped, deferred, failed);
+                "[LodGen] Demand pipeline stopped: dequeued={} written={} skipped={} deferred={} failed={}",
+                dequeued, written, skipped, deferred, failed);
         return written > 0;
+    }
+
+    private void logDemandProgress(long startMs, int dequeued,
+                                   int written, int skipped,
+                                   int deferred, int failed) {
+        long elapsedMs = Math.max(1L, System.currentTimeMillis() - startMs);
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen][Demand] dequeued={} written={} skipped={} deferred={} failed={} inFlight={} elapsed={}s",
+                dequeued, written, skipped, deferred, failed,
+                ShadowRouterJobQueue.inFlightSize(), elapsedMs / 1000);
     }
 
     private DemandProcessResult processDemandRequest(World world, Object worldEngine,
