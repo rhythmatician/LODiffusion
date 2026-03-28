@@ -23,7 +23,8 @@ Render plausible terrain for far chunks via an **octree‑based LOD pipeline** d
 
 **What’s new**
 
-* **Three octree models**: `octree_init` (L4 seed), `octree_refine` (shared for L3→L2→L1→L0), `octree_leaf` (final 32³ leaf) – vanilla handles LOD0
+* **Three octree models**: `octree_init` (L4 seed), `octree_refine` (shared for L3→L2→L1), `octree_leaf` (final L0 leaf 16³) – vanilla handles empty/ambient LOD0
+* **Top-down distance-gated pipeline** (new target architecture): L4 init all, then L3/L2/L1/ L0 conditionally as player nears. Avoid `mipSection()` for generated data.
 * **Shared conditioning inputs** (identical across all models):
 
   * `x_height_planes` **[1,5,16,16]** float32 — surface, ocean\_floor, slope\_x, slope\_z, curvature
