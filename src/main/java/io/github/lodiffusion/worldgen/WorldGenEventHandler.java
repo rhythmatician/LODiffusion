@@ -2,6 +2,7 @@ package io.github.lodiffusion.worldgen;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.lwjgl.opengl.GL;
 
 import java.lang.reflect.Method;
 import java.nio.FloatBuffer;
@@ -152,6 +153,13 @@ public class WorldGenEventHandler {
             LOGGER.info("Extraction complete: {} noise instances discovered", 
                     countExtractedInstances(data));
 
+            // Integrated server world-load callbacks run on the server thread,
+            // which does not necessarily own a current OpenGL context.
+            if (!hasCurrentOpenGlContext()) {
+                LOGGER.warn("No current OpenGL context on world-load thread; skipping GPU shadow-router initialization for {}", dimensionInfo);
+                return;
+            }
+
             // Upload to GPU SSBOs
             LOGGER.info("Creating ShaderSSBOManager and uploading to GPU...");
             ShaderSSBOManager manager = new ShaderSSBOManager();
@@ -256,6 +264,14 @@ public class WorldGenEventHandler {
 
         } catch (Exception e) {
             LOGGER.warn("WS-2: writeBlocksToVoxy failed (non-fatal): {}", e.getMessage(), e);
+        }
+    }
+
+    private boolean hasCurrentOpenGlContext() {
+        try {
+            return GL.getCapabilities() != null;
+        } catch (IllegalStateException e) {
+            return false;
         }
     }
 
