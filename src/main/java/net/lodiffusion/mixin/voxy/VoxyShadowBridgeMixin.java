@@ -1,5 +1,6 @@
 package net.lodiffusion.mixin.voxy;
 
+import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import net.lodiffusion.shadow.VoxyRequestDecoder;
 import net.lodiffusion.shadow.ShadowRouterJobQueue;
 import org.spongepowered.asm.mixin.Mixin;
@@ -23,6 +24,10 @@ import org.lwjgl.system.MemoryUtil;
  */
 @Mixin(targets = "me.cortex.voxy.client.core.rendering.hierachical.HierarchicalOcclusionTraverser")
 public class VoxyShadowBridgeMixin {
+
+    private static long lastBridgeLogMs;
+    private static int bridgeBatchCount;
+    private static int bridgeRequestCount;
     
     /**
      * Intercept the request batch callback to extract and enqueue requests for generation.
@@ -81,11 +86,28 @@ public class VoxyShadowBridgeMixin {
             // This happens before Voxy's normal nodeManager.submitRequestBatch(),
             // so LODiffusion gets first crack at generating missing terrain
             ShadowRouterJobQueue.enqueueBatch(requests);
+            logBridgeProgress(count);
             
         } catch (Exception e) {
             // Fail gracefully: don't crash Voxy if bridge code has issues
             System.err.println("[LODiffusion] VoxyShadowBridge error: " + e);
             e.printStackTrace();
+        }
+    }
+
+    private static void logBridgeProgress(int requestCount) {
+        bridgeBatchCount++;
+        bridgeRequestCount += requestCount;
+
+        long now = System.currentTimeMillis();
+        if (bridgeBatchCount == 1 || now - lastBridgeLogMs >= 5000L) {
+            HelloTerrainMod.LOGGER.info(
+                    "[LodGen][Bridge] batches={} requests={} queued={} inFlight={}",
+                    bridgeBatchCount,
+                    bridgeRequestCount,
+                    ShadowRouterJobQueue.size(),
+                    ShadowRouterJobQueue.inFlightSize());
+            lastBridgeLogMs = now;
         }
     }
 }
