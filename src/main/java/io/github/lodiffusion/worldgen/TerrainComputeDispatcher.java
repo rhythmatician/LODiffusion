@@ -237,20 +237,25 @@ public class TerrainComputeDispatcher {
         if (req == null) {
             return false;
         }
-        
-        // Convert Voxy world coordinates to chunk coordinates.
-        // Voxy stores coordinates in a 16-voxel unit space, so divide by 16 to get chunk coords.
-        int chunkX = req.worldX / 16;
-        int chunkZ = req.worldZ / 16;
-        
-        // Dispatch for this request
-        dispatch(chunkX, chunkZ);
-        
-        // Log for debugging (can be disabled later)
-        LOGGER.debug("TerrainComputeDispatcher: processed request LOD={} at chunk ({}, {})",
-                req.lodLevel, chunkX, chunkZ);
-        
-        return true;
+        try {
+            // Convert Voxy world coordinates to chunk coordinates.
+            // Voxy stores coordinates in a 16-voxel unit space, so divide by 16 to get chunk coords.
+            int chunkX = req.worldX / 16;
+            int chunkZ = req.worldZ / 16;
+
+            // Dispatch for this request
+            dispatch(chunkX, chunkZ);
+
+            // Log for debugging (can be disabled later)
+            LOGGER.debug("TerrainComputeDispatcher: processed request LOD={} at chunk ({}, {})",
+                    req.lodLevel, chunkX, chunkZ);
+
+            return true;
+        } finally {
+            // Always release the in-flight token so future identical requests
+            // can be enqueued if traversal still needs this node.
+            ShadowRouterJobQueue.markCompleted(req);
+        }
     }
 
     // -------------------------------------------------------------------------

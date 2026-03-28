@@ -18,6 +18,7 @@ import com.rhythmatician.lodiffusion.world.noise.HeightmapData;
 import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler;
 import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSamplerFactory;
 import com.rhythmatician.lodiffusion.world.noise.SectionNoiseData;
+import net.lodiffusion.shadow.ShadowRouterJobQueue;
 
 import net.minecraft.registry.Registry;
 import net.minecraft.registry.RegistryKeys;
@@ -292,6 +293,7 @@ public final class LodGenerationService {
         this.playerSectionX = WorldSectionCoord.blockToSection(pos.getX());
         this.playerSectionY = WorldSectionCoord.blockToSection(pos.getY());
         this.playerSectionZ = WorldSectionCoord.blockToSection(pos.getZ());
+        ShadowRouterJobQueue.updatePlayerSection(this.playerSectionX, this.playerSectionZ);
         if (positionReady.compareAndSet(false, true)) {
             HelloTerrainMod.LOGGER.info("[LodGen] Player position initialized: section ({}, {}, {})",
                     playerSectionX, playerSectionY, playerSectionZ);
@@ -658,6 +660,14 @@ public final class LodGenerationService {
     }
 
     /**
+     * True when a full vanilla chunk is currently loaded at this section X/Z.
+     * Section coordinates on X/Z are 16-block aligned and match chunk coords.
+     */
+    private boolean isVanillaChunkLoaded(World world, int sectionX, int sectionZ) {
+        return tryGetLoadedChunk(world, sectionX, sectionZ) != null;
+    }
+
+    /**
      * Pack section coordinates into a single long key for deduplication.
      * Each axis uses 20 bits, supporting ±524,287 sections.
      */
@@ -784,6 +794,13 @@ public final class LodGenerationService {
                     long key = sectionKey(sx, sy, sz);
                     if (generatedSections.contains(key)) continue;
 
+                    // Never infer into sections backed by loaded vanilla chunks.
+                    if (isVanillaChunkLoaded(world, sx, sz)) {
+                        skippedExisting++;
+                        generatedSections.add(key);
+                        continue;
+                    }
+
                     // Skip if Voxy already has real data for this section
                     if (VoxyCompat.sectionExists(worldEngine, sx, sy, sz)) {
                         skippedExisting++;
@@ -857,6 +874,12 @@ public final class LodGenerationService {
                         }
 
                         if (nonAir > 0) {
+                            // Double-check before write to avoid races with real chunk ingestion.
+                            if (VoxyCompat.sectionExists(worldEngine, sx, sy, sz)) {
+                                skippedExisting++;
+                                generatedSections.add(key);
+                                continue;
+                            }
                             VoxyCompat.setNonAirCount(section, nonAir);
                             VoxyCompat.mipSection(section, voxyMapper);
                             VoxyCompat.insertUpdate(worldEngine, section);
@@ -1009,6 +1032,14 @@ public final class LodGenerationService {
                     long key = sectionKey(sx, sy, sz);
                     if (generatedSections.contains(key)) continue;
 
+                    // Never generate fallback terrain into sections backed by
+                    // loaded vanilla chunks.
+                    if (isVanillaChunkLoaded(world, sx, sz)) {
+                        skippedExisting++;
+                        generatedSections.add(key);
+                        continue;
+                    }
+
                     // Skip if Voxy already has real data for this section
                     if (VoxyCompat.sectionExists(worldEngine, sx, sy, sz)) {
                         skippedExisting++;
@@ -1023,6 +1054,12 @@ public final class LodGenerationService {
                     if (section == null) {
                         skippedAir++;
                     } else {
+                        // Double-check before write to avoid races with real chunk ingestion.
+                        if (VoxyCompat.sectionExists(worldEngine, sx, sy, sz)) {
+                            skippedExisting++;
+                            generatedSections.add(key);
+                            continue;
+                        }
                         VoxyCompat.insertUpdate(worldEngine, section);
                         totalSections++;
                         anyNew = true;
