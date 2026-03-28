@@ -191,8 +191,8 @@ public class ShadowRouterExtractor {
         if (noiseRouter == null) {
             throw new IllegalArgumentException("noiseRouter must not be null");
         }
-        if (mapAllMethod == null || densityFunctionVisitorClass == null) {
-            throw new IllegalStateException("Unable to locate DensityFunction.mapAll or Visitor interface at runtime");
+        if (densityFunctionVisitorClass == null) {
+            throw new IllegalStateException("Unable to locate DensityFunction visitor interface at runtime");
         }
 
         Object visitor = createVisitorProxy();
@@ -284,11 +284,44 @@ public class ShadowRouterExtractor {
                 continue;
             }
 
-            mapAllMethod.invoke(densityFn, visitor);
+            if (!invokeMapAllCompatible(densityFn, visitor)) {
+                // Last resort: process the node directly so extraction still proceeds.
+                unwrapAndProcess(densityFn);
+                LOGGER.debug("Visited {} via direct fallback (mapAll/apply unavailable)", densityFn.getClass().getName());
+            }
             traversed++;
         }
 
         return traversed;
+    }
+
+    /**
+     * Invoke mapAll/apply on a concrete DensityFunction instance, tolerating
+     * declaring-class mismatches caused by mapping/classloader differences.
+     */
+    private boolean invokeMapAllCompatible(Object densityFn, Object visitor) {
+        // Fast path: method discovered from the interface cache.
+        if (mapAllMethod != null && mapAllMethod.getDeclaringClass().isInstance(densityFn)) {
+            try {
+                mapAllMethod.invoke(densityFn, visitor);
+                return true;
+            } catch (Exception e) {
+                LOGGER.debug("Cached mapAll/apply invocation failed on {}", densityFn.getClass().getName(), e);
+            }
+        }
+
+        // Fallback: resolve on concrete runtime class.
+        Method concrete = findMethodByNameFallback(densityFn.getClass(), densityFunctionVisitorClass, "apply", "mapAll");
+        if (concrete == null) {
+            return false;
+        }
+        try {
+            concrete.invoke(densityFn, visitor);
+            return true;
+        } catch (Exception e) {
+            LOGGER.debug("Concrete mapAll/apply invocation failed on {}", densityFn.getClass().getName(), e);
+            return false;
+        }
     }
 
     // ----------------------------------------------------------------------------------------------------------------
