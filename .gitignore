@@ -78,8 +78,12 @@ screenshots/
 saves/
 resourcepacks/
 shaderpacks/
-config/
+config/*
+!config/checkstyle/
 !config/checkstyle/checkstyle.xml
+!config/lodiffusion/
+!config/lodiffusion/*.onnx
+!config/lodiffusion/*.json
 mods/
 *.log
 *.log.*
