@@ -2,7 +2,9 @@ package com.rhythmatician.lodiffusion.voxy;
 
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
@@ -13,12 +15,15 @@ import java.util.concurrent.atomic.AtomicInteger;
 import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import com.rhythmatician.lodiffusion.onnx.SparseOctreeModelRunner;
+import com.rhythmatician.lodiffusion.onnx.VoxyModelRunner;
 import com.rhythmatician.lodiffusion.world.noise.BiomeProvider;
+import com.rhythmatician.lodiffusion.world.noise.RouterField;
 import com.rhythmatician.lodiffusion.world.noise.HeightmapData;
 import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler;
 import com.rhythmatician.lodiffusion.world.noise.NoiseRouterSamplerFactory;
 import com.rhythmatician.lodiffusion.world.noise.SectionNoiseData;
 import net.lodiffusion.shadow.ShadowRouterJobQueue;
+import net.lodiffusion.shadow.VoxyRequestDecoder;
 
 import net.minecraft.registry.Registry;
 import net.minecraft.registry.RegistryKeys;
@@ -93,6 +98,33 @@ public final class LodGenerationService {
      */
     private static final int FALLBACK_MIN_COLUMNS = Config.getInt("fallbackMinColumns", 50);
 
+        /** Demand-driven queue poll sleep when there is no pending job. */
+        private static final int DEMAND_IDLE_SLEEP_MS =
+            Config.getInt("demandIdleSleepMs", 25);
+
+        /** Occupancy threshold for expanding child octants in hierarchical inference. */
+        private static final float VOXY_OCC_THRESHOLD =
+            (float) Config.getDouble("voxyOccThreshold", 0.5);
+
+            private static final int[] L2_CLIMATE_CHANNELS = {
+                RouterField.TEMPERATURE.ordinal(),
+                RouterField.VEGETATION.ordinal(),
+                RouterField.CONTINENTS.ordinal(),
+                RouterField.EROSION.ordinal(),
+                RouterField.DEPTH.ordinal(),
+                RouterField.RIDGES.ordinal(),
+                RouterField.FINAL_DENSITY.ordinal(),
+            };
+
+            private static final int[] L3_L4_CLIMATE_CHANNELS = {
+                RouterField.TEMPERATURE.ordinal(),
+                RouterField.VEGETATION.ordinal(),
+                RouterField.CONTINENTS.ordinal(),
+                RouterField.EROSION.ordinal(),
+                RouterField.DEPTH.ordinal(),
+                RouterField.RIDGES.ordinal(),
+            };
+
     /**
      * Mod-wide singleton reference — set by {@code LodiffusionClient} during
      * client initialisation.  {@code null} in dedicated-server contexts where
@@ -138,6 +170,9 @@ public final class LodGenerationService {
      * octree init/refine/leaf hierarchy.
      */
     private volatile SparseOctreeModelRunner sparseRootRunner;
+
+    /** New 5-model hierarchical runner (L4→L0). */
+    private volatile VoxyModelRunner voxyModelRunner;
 
     /** Updated each tick from the client thread. */
     private volatile int playerSectionX;
@@ -283,6 +318,14 @@ public final class LodGenerationService {
             try { samplerFactory.close(); } catch (Exception ignored) {}
             samplerFactory = null;
         }
+        if (voxyModelRunner != null) {
+            try { voxyModelRunner.close(); } catch (Exception ignored) {}
+            voxyModelRunner = null;
+        }
+        if (sparseRootRunner != null) {
+            try { sparseRootRunner.close(); } catch (Exception ignored) {}
+            sparseRootRunner = null;
+        }
         HelloTerrainMod.LOGGER.info("[LodGen] Service stopped");
     }
 
@@ -342,13 +385,41 @@ public final class LodGenerationService {
                         "will fall back to heightmap-only generation");
             }
 
-            // ── Primary path: sparse-root model ─────────────────────────
+            // ── Primary path: demand-driven 5-model voxy runtime ────────
+            voxyModelRunner = resolveVoxyModel();
+
+            // Legacy fallback path: sparse-root model.
             // Resolve from pre-loaded future if available, otherwise load synchronously.
             sparseRootRunner = resolveSparseOctreeModel();
 
             Object voxyMapper = VoxyCompat.getMapper(worldEngine);
             Registry<Biome> biomeRegistry =
                     world.getRegistryManager().getOrThrow(RegistryKeys.BIOME);
+
+                    if (voxyModelRunner != null && noiseAccess != null
+                        && voxyModelRunner.vocabulary() != null) {
+                VoxyBlockMapper blockMapper = VoxyBlockMapper.build(
+                    voxyModelRunner.vocabulary(), voxyMapper, biomeRegistry);
+                VoxySectionWriter writer = new VoxySectionWriter(worldEngine, blockMapper);
+
+                waitForPlayerPosition();
+                if (stopRequested.get()) return;
+
+                HelloTerrainMod.LOGGER.info(
+                    "[LodGen] VoxyModelRunner loaded — starting demand-driven generation "
+                    + "(vocab={}, inFlight={})",
+                    voxyModelRunner.vocabulary() != null
+                        ? voxyModelRunner.vocabulary().size() : "none",
+                    ShadowRouterJobQueue.inFlightSize());
+
+                boolean produced = runDemandVoxyPipeline(world, worldEngine, writer, blockMapper);
+                if (produced) return;
+
+                HelloTerrainMod.LOGGER.warn(
+                    "[LodGen] Demand-driven Voxy pipeline produced no terrain — "
+                    + "falling back to sparse-root pipeline");
+                generatedSections.clear();
+                }
 
             if (sparseRootRunner != null && noiseAccess != null) {
                 // Sparse-root pipeline — flat per-subchunk generation
@@ -1115,6 +1186,403 @@ public final class LodGenerationService {
                 + "({} columns, {} air-skipped, {} existing-skipped)",
                 totalSections, elapsed / 1000, elapsed % 1000,
                 columnsProcessed, skippedAir, skippedExisting);
+    }
+
+    private enum DemandProcessResult {
+        WRITTEN,
+        SKIPPED,
+        DEFERRED,
+        FAILED,
+    }
+
+    private record Noise3dBundle(float[] noise3d, long[] biome3d, int[][] biomeForWrite) {}
+
+    private record Climate2dBundle(float[] climate2d, long[] biome2d, int[][] biomeForWrite) {}
+
+    /**
+     * Demand-driven runtime pipeline consuming Voxy traversal requests from
+     * ShadowRouterJobQueue and servicing them through VoxyModelRunner.
+     */
+    private boolean runDemandVoxyPipeline(World world, Object worldEngine,
+                                          VoxySectionWriter writer,
+                                          VoxyBlockMapper blockMapper) {
+        int written = 0;
+        int skipped = 0;
+        int deferred = 0;
+        int failed = 0;
+        long startMs = System.currentTimeMillis();
+
+        while (!stopRequested.get()) {
+            VoxyRequestDecoder.VoxyNodeRequest req = ShadowRouterJobQueue.dequeueAny();
+            if (req == null) {
+                try {
+                    Thread.sleep(DEMAND_IDLE_SLEEP_MS);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+                continue;
+            }
+
+            try {
+                DemandProcessResult result =
+                        processDemandRequest(world, worldEngine, writer, blockMapper, req);
+                switch (result) {
+                    case WRITTEN -> written++;
+                    case SKIPPED -> skipped++;
+                    case DEFERRED -> {
+                        deferred++;
+                    }
+                    case FAILED -> failed++;
+                }
+
+                int total = written + skipped + deferred + failed;
+                if (total % 200 == 0) {
+                    long elapsed = System.currentTimeMillis() - startMs;
+                    HelloTerrainMod.LOGGER.info(
+                            "[LodGen] Demand pipeline: processed={} written={} skipped={} deferred={} failed={} ({}s)",
+                            total, written, skipped, deferred, failed, elapsed / 1000);
+                }
+            } finally {
+                ShadowRouterJobQueue.markCompleted(req);
+            }
+        }
+
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen] Demand pipeline stopped: written={} skipped={} deferred={} failed={}",
+                written, skipped, deferred, failed);
+        return written > 0;
+    }
+
+    private DemandProcessResult processDemandRequest(World world, Object worldEngine,
+                                                     VoxySectionWriter writer,
+                                                     VoxyBlockMapper blockMapper,
+                                                     VoxyRequestDecoder.VoxyNodeRequest req) {
+        if (req == null || voxyModelRunner == null || samplerFactory == null) {
+            return DemandProcessResult.FAILED;
+        }
+
+        int level = req.lodLevel;
+        int wsX = req.worldX;
+        int wsY = req.worldY;
+        int wsZ = req.worldZ;
+
+        if (level < 0 || level > 4) return DemandProcessResult.SKIPPED;
+        if (!voxyModelRunner.hasLevel(level)) return DemandProcessResult.SKIPPED;
+        if (isOutOfWorldY(level, wsY)) return DemandProcessResult.SKIPPED;
+        if (hasLoadedVanillaChunkInWorldSection(world, level, wsX, wsY, wsZ)) {
+            return DemandProcessResult.SKIPPED;
+        }
+        if (VoxyCompat.allOctantsPopulated(worldEngine, level, wsX, wsY, wsZ)) {
+            return DemandProcessResult.SKIPPED;
+        }
+
+        // Dependency scheduling: finer levels require a parent section to exist first.
+        long[] parentInput = null;
+        if (level < 4) {
+            int parentLevel = level + 1;
+            int pX = wsX >> 1;
+            int pY = wsY >> 1;
+            int pZ = wsZ >> 1;
+
+            if (!VoxyCompat.sectionExistsAtLevel(worldEngine, parentLevel, pX, pY, pZ)) {
+                enqueueParentRequest(parentLevel, pX, pY, pZ);
+                return DemandProcessResult.DEFERRED;
+            }
+
+            int[][][] parentBlocks = VoxyCompat.readWorldSectionBlocks(
+                    worldEngine, parentLevel, pX, pY, pZ);
+            if (parentBlocks == null) {
+                enqueueParentRequest(parentLevel, pX, pY, pZ);
+                return DemandProcessResult.DEFERRED;
+            }
+            int octant = (wsX & 1) | ((wsZ & 1) << 1) | ((wsY & 1) << 2);
+            parentInput = VoxyCompat.extractOctantAndUpsample(parentBlocks, octant);
+        }
+
+        int yPosition = (wsY << (level + 1)) + 4;
+        VoxyModelRunner.LevelResult modelOut;
+        int[][] biome32;
+
+        if (level <= 1) {
+            Noise3dBundle bundle = buildNoise3dInput(level, wsX, wsY, wsZ);
+            if (bundle == null) return DemandProcessResult.FAILED;
+
+            modelOut = level == 1
+                    ? voxyModelRunner.runL1(bundle.noise3d(), bundle.biome3d(), yPosition, parentInput)
+                    : voxyModelRunner.runL0(bundle.noise3d(), bundle.biome3d(), yPosition, parentInput);
+            biome32 = upsampleBiomeTo32(bundle.biomeForWrite());
+        } else {
+            Climate2dBundle bundle = buildClimate2dInput(level, wsX, wsY, wsZ);
+            if (bundle == null) return DemandProcessResult.FAILED;
+
+            modelOut = switch (level) {
+                case 4 -> voxyModelRunner.runL4(bundle.climate2d(), bundle.biome2d(), yPosition);
+                case 3 -> voxyModelRunner.runL3(bundle.climate2d(), bundle.biome2d(), yPosition, parentInput);
+                case 2 -> voxyModelRunner.runL2(bundle.climate2d(), bundle.biome2d(), yPosition, parentInput);
+                default -> null;
+            };
+            biome32 = upsampleBiomeTo32(bundle.biomeForWrite());
+        }
+
+        if (modelOut == null) {
+            return DemandProcessResult.FAILED;
+        }
+
+        // Optional occupancy-based defer: if coarse level predicts no child detail,
+        // keep the current request in queue and let parent/coarse data stand for now.
+        if (modelOut.occLogits() != null && level < 4) {
+            boolean anyChild = false;
+            for (int i = 0; i < 8; i++) {
+                if (modelOut.shouldExpand(i, VOXY_OCC_THRESHOLD)) {
+                    anyChild = true;
+                    break;
+                }
+            }
+            if (!anyChild) {
+                return DemandProcessResult.SKIPPED;
+            }
+        }
+
+        int[][][] writeBlocks = padYTo32(modelOut.blocks(), modelOut.dimY());
+        int nonAir = writer.writeOctreeToLevel(writeBlocks, biome32, level, wsX, wsY, wsZ);
+        return nonAir > 0 ? DemandProcessResult.WRITTEN : DemandProcessResult.SKIPPED;
+    }
+
+    private Noise3dBundle buildNoise3dInput(int level, int wsX, int wsY, int wsZ) {
+        int axisTiles = 1 << (level + 1); // L0=2, L1=4
+        int xCells = axisTiles * 4;
+        int yCells = axisTiles * 2;
+        int zCells = axisTiles * 4;
+
+        float[] noise = new float[RouterField.COUNT * xCells * yCells * zCells];
+        long[] biome = new long[xCells * yCells * zCells];
+
+        Map<Long, SectionNoiseData> noiseCache = new HashMap<>();
+        Map<Long, int[][][]> biomeCache = new HashMap<>();
+
+        NoiseRouterSampler sampler = samplerFactory.getSampler();
+        BiomeProvider bp = null;
+        try {
+            bp = samplerFactory.getUpstreamContext().biomeProvider();
+        } catch (Exception ignored) {
+        }
+
+        int sxBase = wsX << (level + 1);
+        int syBase = wsY << (level + 1);
+        int szBase = wsZ << (level + 1);
+
+        for (int tx = 0; tx < axisTiles; tx++) {
+            for (int ty = 0; ty < axisTiles; ty++) {
+                for (int tz = 0; tz < axisTiles; tz++) {
+                    int sx = sxBase + tx;
+                    int sy = syBase + ty;
+                    int sz = szBase + tz;
+                    long key = sectionKey(sx, sy, sz);
+
+                    SectionNoiseData snd = noiseCache.get(key);
+                    if (snd == null) {
+                        snd = sampler.sampleSection(sx, sy, sz);
+                        noiseCache.put(key, snd);
+                    }
+
+                    int[][][] b = biomeCache.get(key);
+                    if (b == null) {
+                        b = new int[4][2][4];
+                        if (bp != null) {
+                            try {
+                                b = bp.classifyBiomes(sx, sy, sz, snd);
+                            } catch (Exception ignored) {
+                            }
+                        }
+                        biomeCache.put(key, b);
+                    }
+
+                    for (int qx = 0; qx < 4; qx++) {
+                        for (int qy = 0; qy < 2; qy++) {
+                            for (int qz = 0; qz < 4; qz++) {
+                                int gx = tx * 4 + qx;
+                                int gy = ty * 2 + qy;
+                                int gz = tz * 4 + qz;
+
+                                int dstBiome = ((gx * yCells) + gy) * zCells + gz;
+                                biome[dstBiome] = b[qx][qy][qz];
+
+                                int srcOff = qx * 8 + qy * 4 + qz;
+                                for (int c = 0; c < RouterField.COUNT; c++) {
+                                    int src = c * SectionNoiseData.CELLS_PER_FIELD + srcOff;
+                                    int dst = (((c * xCells) + gx) * yCells + gy) * zCells + gz;
+                                    noise[dst] = snd.flat()[src];
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        int midY = yCells / 2;
+        int[][] biome2d = new int[zCells][xCells];
+        for (int x = 0; x < xCells; x++) {
+            for (int z = 0; z < zCells; z++) {
+                int idx = ((x * yCells) + midY) * zCells + z;
+                biome2d[z][x] = (int) biome[idx];
+            }
+        }
+
+        return new Noise3dBundle(noise, biome, biome2d);
+    }
+
+    private Climate2dBundle buildClimate2dInput(int level, int wsX, int wsY, int wsZ) {
+        int[] channels = level == 2 ? L2_CLIMATE_CHANNELS : L3_L4_CLIMATE_CHANNELS;
+        float[] climate = new float[channels.length * 8 * 8];
+        long[] biome2d = new long[8 * 8];
+        int[][] biomeForWrite = new int[8][8];
+
+        int axisTiles = 1 << (level + 1);
+        int nativeX = axisTiles * 4;
+        int nativeY = axisTiles * 2;
+        int nativeZ = axisTiles * 4;
+
+        int sxBase = wsX << (level + 1);
+        int syBase = wsY << (level + 1);
+        int szBase = wsZ << (level + 1);
+        int srcY = nativeY / 2;
+
+        NoiseRouterSampler sampler = samplerFactory.getSampler();
+        BiomeProvider bp = null;
+        try {
+            bp = samplerFactory.getUpstreamContext().biomeProvider();
+        } catch (Exception ignored) {
+        }
+
+        Map<Long, SectionNoiseData> noiseCache = new HashMap<>();
+        Map<Long, int[][][]> biomeCache = new HashMap<>();
+
+        for (int oz = 0; oz < 8; oz++) {
+            for (int ox = 0; ox < 8; ox++) {
+                int srcX = (ox * (nativeX - 1)) / 7;
+                int srcZ = (oz * (nativeZ - 1)) / 7;
+
+                int tx = srcX / 4;
+                int ty = srcY / 2;
+                int tz = srcZ / 4;
+                int qx = srcX % 4;
+                int qy = srcY % 2;
+                int qz = srcZ % 4;
+
+                int sx = sxBase + tx;
+                int sy = syBase + ty;
+                int sz = szBase + tz;
+                long key = sectionKey(sx, sy, sz);
+
+                SectionNoiseData snd = noiseCache.get(key);
+                if (snd == null) {
+                    snd = sampler.sampleSection(sx, sy, sz);
+                    noiseCache.put(key, snd);
+                }
+
+                int[][][] b = biomeCache.get(key);
+                if (b == null) {
+                    b = new int[4][2][4];
+                    if (bp != null) {
+                        try {
+                            b = bp.classifyBiomes(sx, sy, sz, snd);
+                        } catch (Exception ignored) {
+                        }
+                    }
+                    biomeCache.put(key, b);
+                }
+
+                int off = qx * 8 + qy * 4 + qz;
+                int spatial = oz * 8 + ox;
+                for (int c = 0; c < channels.length; c++) {
+                    climate[(c * 64) + spatial] =
+                            snd.flat()[channels[c] * SectionNoiseData.CELLS_PER_FIELD + off];
+                }
+
+                int biomeId = b[qx][qy][qz];
+                biome2d[spatial] = biomeId;
+                biomeForWrite[oz][ox] = biomeId;
+            }
+        }
+
+        return new Climate2dBundle(climate, biome2d, biomeForWrite);
+    }
+
+    private int[][] upsampleBiomeTo32(int[][] smallBiomeZx) {
+        int srcZ = smallBiomeZx.length;
+        int srcX = smallBiomeZx[0].length;
+        int[][] out = new int[32][32];
+        for (int z = 0; z < 32; z++) {
+            int sz = (z * srcZ) / 32;
+            for (int x = 0; x < 32; x++) {
+                int sx = (x * srcX) / 32;
+                out[z][x] = smallBiomeZx[sz][sx];
+            }
+        }
+        return out;
+    }
+
+    private int[][][] padYTo32(int[][][] blocks, int dimY) {
+        if (dimY >= 32) {
+            return blocks;
+        }
+        int[][][] out = new int[32][32][32];
+        for (int y = 0; y < dimY; y++) {
+            for (int z = 0; z < 32; z++) {
+                System.arraycopy(blocks[y][z], 0, out[y][z], 0, 32);
+            }
+        }
+        return out;
+    }
+
+    private void enqueueParentRequest(int parentLevel, int pX, int pY, int pZ) {
+        VoxyRequestDecoder.VoxyNodeRequest parentReq = new VoxyRequestDecoder.VoxyNodeRequest();
+        parentReq.lodLevel = parentLevel;
+        parentReq.worldX = pX;
+        parentReq.worldY = pY;
+        parentReq.worldZ = pZ;
+        ShadowRouterJobQueue.enqueue(parentReq);
+    }
+
+    private boolean hasLoadedVanillaChunkInWorldSection(World world, int level,
+                                                         int wsX, int wsY, int wsZ) {
+        int minBlockY = WorldSectionCoord.worldSectionToBlockMin(wsY, level);
+        int maxBlockY = WorldSectionCoord.worldSectionToBlockMax(wsY, level);
+        if (maxBlockY < MIN_WORLD_BLOCK_Y || minBlockY >= MAX_WORLD_BLOCK_Y) {
+            return false;
+        }
+
+        int minBlockX = WorldSectionCoord.worldSectionToBlockMin(wsX, level);
+        int maxBlockX = WorldSectionCoord.worldSectionToBlockMax(wsX, level);
+        int minBlockZ = WorldSectionCoord.worldSectionToBlockMin(wsZ, level);
+        int maxBlockZ = WorldSectionCoord.worldSectionToBlockMax(wsZ, level);
+
+        int minChunkX = Math.floorDiv(minBlockX, 16);
+        int maxChunkX = Math.floorDiv(maxBlockX, 16);
+        int minChunkZ = Math.floorDiv(minBlockZ, 16);
+        int maxChunkZ = Math.floorDiv(maxBlockZ, 16);
+
+        for (int cx = minChunkX; cx <= maxChunkX; cx++) {
+            for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
+                if (tryGetLoadedChunk(world, cx, cz) != null) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private VoxyModelRunner resolveVoxyModel() {
+        try {
+            java.nio.file.Path modelDir = Config.modelDir();
+            HelloTerrainMod.LOGGER.info("[LodGen] Loading VoxyModelRunner from {}...", modelDir);
+            return VoxyModelRunner.tryLoad(modelDir);
+        } catch (Exception e) {
+            HelloTerrainMod.LOGGER.warn("[LodGen] VoxyModelRunner load failed: {}", e.getMessage());
+            return null;
+        }
     }
 
     /**

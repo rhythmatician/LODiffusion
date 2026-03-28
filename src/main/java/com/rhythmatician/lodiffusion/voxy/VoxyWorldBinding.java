@@ -662,4 +662,66 @@ public final class VoxyWorldBinding {
             return false;
         }
     }
+
+    /**
+     * Read block IDs from a stored 32^3 WorldSection at a given level.
+     *
+     * @return int[32][32][32] in [Y][Z][X] order, or null when absent
+     */
+    public static int[][][] readWorldSectionBlocks(Object worldEngine, int lvl,
+                                                   int wsX, int wsY, int wsZ) {
+        ensureWorldSectionBindings();
+        try {
+            Object section = VoxyEngine.acquireIfExistsMethod.invoke(
+                    worldEngine, lvl, wsX, wsY, wsZ);
+            if (section == null) {
+                return null;
+            }
+
+            long[] data = (long[]) worldSectionDataField.get(section);
+            int[][][] out = new int[32][32][32];
+            for (int y = 0; y < 32; y++) {
+                for (int z = 0; z < 32; z++) {
+                    for (int x = 0; x < 32; x++) {
+                        int idx = (y << 10) | (z << 5) | x;
+                        long voxel = data[idx];
+                        out[y][z][x] = (int) ((voxel & BLOCK_ID_MASK) >> BLOCK_ID_SHIFT);
+                    }
+                }
+            }
+
+            VoxyEngine.worldSectionReleaseMethod.invoke(section);
+            return out;
+        } catch (Exception e) {
+            LOGGER.warn("readWorldSectionBlocks failed: {}", e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * Extract one 16^3 octant from a parent 32^3 block-id grid and nearest-neighbor
+     * upsample back to 32^3 for child model parent input.
+     *
+     * Octant bit layout: bit0=x, bit1=z, bit2=y.
+     */
+    public static long[] extractOctantAndUpsample(int[][][] parent32, int octant) {
+        long[] out = new long[32 * 32 * 32];
+
+        int ox = (octant & 1) * 16;
+        int oz = ((octant >> 1) & 1) * 16;
+        int oy = ((octant >> 2) & 1) * 16;
+
+        int i = 0;
+        for (int y = 0; y < 32; y++) {
+            int py = oy + (y >> 1);
+            for (int z = 0; z < 32; z++) {
+                int pz = oz + (z >> 1);
+                for (int x = 0; x < 32; x++) {
+                    int px = ox + (x >> 1);
+                    out[i++] = parent32[py][pz][px];
+                }
+            }
+        }
+        return out;
+    }
 }

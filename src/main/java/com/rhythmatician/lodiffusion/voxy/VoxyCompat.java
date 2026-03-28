@@ -144,6 +144,17 @@ public final class VoxyCompat {
         return VoxyWorldBinding.sectionExistsAtLevel(worldEngine, lvl, wsX, wsY, wsZ);
     }
 
+    /** @see VoxyWorldBinding#readWorldSectionBlocks(Object, int, int, int, int) */
+    public static int[][][] readWorldSectionBlocks(Object worldEngine, int lvl,
+                                                   int wsX, int wsY, int wsZ) {
+        return VoxyWorldBinding.readWorldSectionBlocks(worldEngine, lvl, wsX, wsY, wsZ);
+    }
+
+    /** @see VoxyWorldBinding#extractOctantAndUpsample(int[][][], int) */
+    public static long[] extractOctantAndUpsample(int[][][] parent32, int octant) {
+        return VoxyWorldBinding.extractOctantAndUpsample(parent32, octant);
+    }
+
     /**
      * Returns {@code true} if Voxy has fully claimed all 8 octants
      * ({@code nonEmptyChildren == 0xFF}).  Use this as the upstream inference
