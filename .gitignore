@@ -68,9 +68,13 @@ bin/
 *.code-workspace
 
 # Minecraft Development
-run/
+run/*
 !run/*.onnx
 !run/config/
+run/config/*
+!run/config/lodiffusion/
+run/config/lodiffusion/*
+!run/config/lodiffusion/*.onnx
 logs/
 .minecraft/
 crash-reports/
@@ -81,8 +85,6 @@ shaderpacks/
 config/*
 !config/checkstyle/
 !config/checkstyle/checkstyle.xml
-!config/lodiffusion/
-!config/lodiffusion/*.onnx
 mods/
 *.log
 *.log.*
@@ -136,7 +138,7 @@ wandb/
 *.json
 !fabric.mod.json
 !lodiffusion.defaults.json
-!config/lodiffusion/*.json
+!run/config/lodiffusion/*.json
 *.pkl
 *.pickle
 *.npz

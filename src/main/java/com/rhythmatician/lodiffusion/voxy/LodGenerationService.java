@@ -3,7 +3,6 @@ package com.rhythmatician.lodiffusion.voxy;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.HashMap;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -238,7 +237,7 @@ public final class LodGenerationService {
         HelloTerrainMod.LOGGER.info("[LodGen] Pre-loading sparse-root model in background...");
         preloadFuture = CompletableFuture.supplyAsync(() -> {
             try {
-                java.nio.file.Path modelDir = findSparseModelDir(Config.modelDir());
+                java.nio.file.Path modelDir = Config.modelDir();
                 SparseOctreeModelRunner runner = SparseOctreeModelRunner.tryLoad(modelDir);
                 if (runner != null) {
                     HelloTerrainMod.LOGGER.info("[LodGen] Sparse-root pre-load complete");
@@ -1581,14 +1580,8 @@ public final class LodGenerationService {
     }
 
     private VoxyModelRunner resolveVoxyModel() {
-        java.nio.file.Path configuredDir = Config.modelDir();
-        java.nio.file.Path modelDir = findVoxyModelDir(configuredDir);
+        java.nio.file.Path modelDir = Config.modelDir();
         try {
-            if (!modelDir.equals(configuredDir)) {
-                HelloTerrainMod.LOGGER.info(
-                        "[LodGen] Voxy models not found in configured dir {}; using {}",
-                        configuredDir, modelDir);
-            }
             HelloTerrainMod.LOGGER.info("[LodGen] Loading VoxyModelRunner from {}...", modelDir);
             return VoxyModelRunner.tryLoad(modelDir);
         } catch (Exception e) {
@@ -1632,13 +1625,7 @@ public final class LodGenerationService {
 
         // Synchronous fallback
         try {
-            java.nio.file.Path configuredDir = Config.modelDir();
-            java.nio.file.Path modelDir = findSparseModelDir(configuredDir);
-            if (!modelDir.equals(configuredDir)) {
-                HelloTerrainMod.LOGGER.info(
-                        "[LodGen] Sparse-root model not found in configured dir {}; using {}",
-                        configuredDir, modelDir);
-            }
+            java.nio.file.Path modelDir = Config.modelDir();
             HelloTerrainMod.LOGGER.info("[LodGen] Loading sparse-root model from {}...", modelDir);
             return SparseOctreeModelRunner.tryLoad(modelDir);
         } catch (Exception e) {
@@ -1646,67 +1633,6 @@ public final class LodGenerationService {
                     e.getMessage(), e);
             return null;
         }
-    }
-
-    private static java.nio.file.Path findVoxyModelDir(java.nio.file.Path configuredDir) {
-        return findVoxyModelDir(configuredDir, java.nio.file.Paths.get("").toAbsolutePath().normalize());
-    }
-
-    static java.nio.file.Path findVoxyModelDir(java.nio.file.Path configuredDir,
-                                                java.nio.file.Path cwd) {
-        for (java.nio.file.Path candidate : candidateModelDirs(configuredDir, cwd)) {
-            for (int level = 0; level <= 4; level++) {
-                if (java.nio.file.Files.isRegularFile(candidate.resolve("voxy_l" + level + ".onnx"))) {
-                    return candidate;
-                }
-            }
-        }
-        return configuredDir;
-    }
-
-    private static java.nio.file.Path findSparseModelDir(java.nio.file.Path configuredDir) {
-        return findSparseModelDir(configuredDir, java.nio.file.Paths.get("").toAbsolutePath().normalize());
-    }
-
-    static java.nio.file.Path findSparseModelDir(java.nio.file.Path configuredDir,
-                                                  java.nio.file.Path cwd) {
-        for (java.nio.file.Path candidate : candidateModelDirs(configuredDir, cwd)) {
-            if (java.nio.file.Files.isRegularFile(candidate.resolve("sparse_octree.onnx"))) {
-                return candidate;
-            }
-        }
-        return configuredDir;
-    }
-
-    static List<java.nio.file.Path> candidateModelDirs(java.nio.file.Path configuredDir) {
-        return candidateModelDirs(configuredDir, java.nio.file.Paths.get("").toAbsolutePath().normalize());
-    }
-
-    static List<java.nio.file.Path> candidateModelDirs(java.nio.file.Path configuredDir,
-                                                        java.nio.file.Path cwd) {
-        LinkedHashSet<java.nio.file.Path> out = new LinkedHashSet<>();
-        if (configuredDir == null) {
-            return List.of(cwd.resolve(java.nio.file.Paths.get("config", "lodiffusion")).normalize());
-        }
-
-        if (configuredDir.isAbsolute()) {
-            out.add(configuredDir.normalize());
-            return new ArrayList<>(out);
-        }
-
-        java.nio.file.Path rel = configuredDir.normalize();
-        java.nio.file.Path normalizedCwd = cwd.normalize();
-
-        // Typical runClient cwd candidates: run/, project root, and one parent above.
-        java.nio.file.Path cursor = normalizedCwd;
-        for (int i = 0; i < 4 && cursor != null; i++) {
-            out.add(cursor.resolve(rel).normalize());
-            // Monorepo layout: workspace root contains "LODiffusion/" module dir.
-            out.add(cursor.resolve("LODiffusion").resolve(rel).normalize());
-            cursor = cursor.getParent();
-        }
-
-        return new ArrayList<>(out);
     }
 
 }

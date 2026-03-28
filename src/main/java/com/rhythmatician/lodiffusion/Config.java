@@ -19,7 +19,8 @@ import com.google.gson.JsonParser;
 /**
  * Lightweight runtime config loader with overlay semantics.
  * Base: classpath /lodiffusion.defaults.json
- * Overlay: config/lodiffusion/runtime.json (created lazily on first write)
+ * Overlay: the game config directory's lodiffusion/runtime.json
+ * (typically run/config/lodiffusion/runtime.json under Fabric Loom)
  */
 public final class Config {
   private static final Gson GSON = new Gson();
@@ -77,8 +78,9 @@ public final class Config {
   }
 
   /**
-   * Directory containing the 4 progressive ONNX models exported by export_lod.py.
-   * Defaults to the parent of {@link #modelPath()} (i.e. {@code config/lodiffusion/}).
+  * Directory containing deployed ONNX models and sidecar configs.
+  * Defaults to the parent of {@link #modelPath()} relative to the game run directory
+  * (typically {@code run/config/lodiffusion/} under Fabric Loom).
    */
   public static java.nio.file.Path modelDir() {
     String raw = getString("modelDir", "");
