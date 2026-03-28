@@ -73,7 +73,8 @@ run/*
 !run/config/
 run/config/*
 !run/config/lodiffusion/
-run/config/lodiffusion/*
+!run/config/lodiffusion/*
+!run/config/lodiffusion/*.json
 !run/config/lodiffusion/*.onnx
 logs/
 .minecraft/
@@ -126,7 +127,6 @@ venv.bak/
 
 # PyTorch/ML models
 *.pth
-# *.onnx  # Unignoring until VoxelTree includes builds in CD
 *.pt
 *.model
 checkpoints/
@@ -138,7 +138,6 @@ wandb/
 *.json
 !fabric.mod.json
 !lodiffusion.defaults.json
-!run/config/lodiffusion/*.json
 *.pkl
 *.pickle
 *.npz
