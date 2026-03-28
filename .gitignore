@@ -70,23 +70,17 @@ bin/
 # Minecraft Development
 run/*
 !run/*.onnx
-!run/config/
-run/config/*
 !run/config/lodiffusion/
 !run/config/lodiffusion/*
 !run/config/lodiffusion/*.json
 !run/config/lodiffusion/*.onnx
 logs/
-.minecraft/
-crash-reports/
-screenshots/
-saves/
-resourcepacks/
-shaderpacks/
-config/*
-!config/checkstyle/
-!config/checkstyle/checkstyle.xml
-mods/
+run/crash-reports/
+run/screenshots/
+run/saves/
+run/resourcepacks/
+run/shaderpacks/
+run/mods/
 *.log
 *.log.*
 

@@ -1325,27 +1325,40 @@ public final class LodGenerationService {
         }
 
         int yPosition = (wsY << (level + 1)) + 4;
-        VoxyModelRunner.LevelResult modelOut;
+        VoxyModelRunner.LevelResult modelOut = null;
         int[][] biome32;
+        long inferStartNs;
 
         if (level <= 1) {
             Noise3dBundle bundle = buildNoise3dInput(level, wsX, wsY, wsZ);
             if (bundle == null) return DemandProcessResult.FAILED;
 
-            modelOut = level == 1
-                    ? voxyModelRunner.runL1(bundle.noise3d(), bundle.biome3d(), yPosition, parentInput)
-                    : voxyModelRunner.runL0(bundle.noise3d(), bundle.biome3d(), yPosition, parentInput);
+            inferStartNs = System.nanoTime();
+            logInferenceStart(level, wsX, wsY, wsZ, yPosition);
+            try {
+                modelOut = level == 1
+                        ? voxyModelRunner.runL1(bundle.noise3d(), bundle.biome3d(), yPosition, parentInput)
+                        : voxyModelRunner.runL0(bundle.noise3d(), bundle.biome3d(), yPosition, parentInput);
+            } finally {
+                logInferenceEnd(level, wsX, wsY, wsZ, yPosition, inferStartNs, modelOut != null);
+            }
             biome32 = upsampleBiomeTo32(bundle.biomeForWrite());
         } else {
             Climate2dBundle bundle = buildClimate2dInput(level, wsX, wsY, wsZ);
             if (bundle == null) return DemandProcessResult.FAILED;
 
-            modelOut = switch (level) {
-                case 4 -> voxyModelRunner.runL4(bundle.climate2d(), bundle.biome2d(), yPosition);
-                case 3 -> voxyModelRunner.runL3(bundle.climate2d(), bundle.biome2d(), yPosition, parentInput);
-                case 2 -> voxyModelRunner.runL2(bundle.climate2d(), bundle.biome2d(), yPosition, parentInput);
-                default -> null;
-            };
+            inferStartNs = System.nanoTime();
+            logInferenceStart(level, wsX, wsY, wsZ, yPosition);
+            try {
+                modelOut = switch (level) {
+                    case 4 -> voxyModelRunner.runL4(bundle.climate2d(), bundle.biome2d(), yPosition);
+                    case 3 -> voxyModelRunner.runL3(bundle.climate2d(), bundle.biome2d(), yPosition, parentInput);
+                    case 2 -> voxyModelRunner.runL2(bundle.climate2d(), bundle.biome2d(), yPosition, parentInput);
+                    default -> null;
+                };
+            } finally {
+                logInferenceEnd(level, wsX, wsY, wsZ, yPosition, inferStartNs, modelOut != null);
+            }
             biome32 = upsampleBiomeTo32(bundle.biomeForWrite());
         }
 
@@ -1371,6 +1384,20 @@ public final class LodGenerationService {
         int[][][] writeBlocks = padYTo32(modelOut.blocks(), modelOut.dimY());
         int nonAir = writer.writeOctreeToLevel(writeBlocks, biome32, level, wsX, wsY, wsZ);
         return nonAir > 0 ? DemandProcessResult.WRITTEN : DemandProcessResult.SKIPPED;
+    }
+
+    private void logInferenceStart(int level, int wsX, int wsY, int wsZ, int yPosition) {
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen][Infer] start lod={} ws=({}, {}, {}) yPos={}",
+                level, wsX, wsY, wsZ, yPosition);
+    }
+
+    private void logInferenceEnd(int level, int wsX, int wsY, int wsZ,
+                                 int yPosition, long startNs, boolean ok) {
+        long elapsedMs = Math.max(0L, (System.nanoTime() - startNs) / 1_000_000L);
+        HelloTerrainMod.LOGGER.info(
+                "[LodGen][Infer] end lod={} ws=({}, {}, {}) yPos={} ok={} elapsedMs={}",
+                level, wsX, wsY, wsZ, yPosition, ok, elapsedMs);
     }
 
     private Noise3dBundle buildNoise3dInput(int level, int wsX, int wsY, int wsZ) {

@@ -14,6 +14,7 @@ import org.slf4j.LoggerFactory;
 import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.NDManager;
+import ai.djl.ndarray.types.DataType;
 import ai.djl.ndarray.types.Shape;
 import ai.djl.repository.zoo.Criteria;
 import ai.djl.repository.zoo.ZooModel;
@@ -527,25 +528,27 @@ public final class VoxyModelRunner implements AutoCloseable {
      */
     private LevelResult runAndDecode(int level, NDList inputs, NDManager sub)
             throws TranslateException {
-        long t0 = System.currentTimeMillis();
+        long tPredictStart = System.currentTimeMillis();
 
         NDList outputs;
         try (var predictor = models[level].newPredictor()) {
             outputs = predictor.predict(inputs);
         }
 
-        long elapsedMs = System.currentTimeMillis() - t0;
+        long predictMs = System.currentTimeMillis() - tPredictStart;
 
         if (debugOnce.compareAndSet(false, true)) {
-            LOGGER.info("[VoxyModel] First inference — L{} completed in {}ms, "
-                    + "{} outputs", level, elapsedMs, outputs.size());
+            LOGGER.info("[VoxyModel] First predict — L{} completed in {}ms, "
+                    + "{} outputs", level, predictMs, outputs.size());
             for (int i = 0; i < outputs.size(); i++) {
                 LOGGER.info("[VoxyModel]   output[{}]: shape={}",
                         i, Arrays.toString(outputs.get(i).getShape().getShape()));
             }
         } else {
-            LOGGER.debug("[VoxyModel] L{} inference: {}ms", level, elapsedMs);
+            LOGGER.debug("[VoxyModel] L{} predict: {}ms", level, predictMs);
         }
+
+        long tDecodeStart = System.currentTimeMillis();
 
         // Decode block_logits: argmax along class dimension
         // block_logits shape: [1, V, Y, Z, X]
@@ -557,7 +560,7 @@ public final class VoxyModelRunner implements AutoCloseable {
 
         // argmax along dim=1 (class dimension) → [1, Y, Z, X]
         NDArray argmax = blockLogits.argMax(1);
-        long[] blockIds = argmax.toLongArray();
+        int[] blockIds = argmax.toType(DataType.INT32, false).toIntArray();
 
         // Convert to [Y][Z][X] int array
         int[][][] blocks = new int[dimY][dimZ][dimX];
@@ -565,7 +568,7 @@ public final class VoxyModelRunner implements AutoCloseable {
         for (int y = 0; y < dimY; y++) {
             for (int z = 0; z < dimZ; z++) {
                 for (int x = 0; x < dimX; x++) {
-                    blocks[y][z][x] = (int) blockIds[idx++];
+                    blocks[y][z][x] = blockIds[idx++];
                 }
             }
         }
@@ -575,6 +578,14 @@ public final class VoxyModelRunner implements AutoCloseable {
         if (hasOccupancy[level] && outputs.size() > 1) {
             NDArray occArray = outputs.get(1);
             occLogits = occArray.toFloatArray();
+        }
+
+        long decodeMs = System.currentTimeMillis() - tDecodeStart;
+        long totalMs = predictMs + decodeMs;
+        if (debugOnce.get()) {
+            LOGGER.info("[VoxyModel] L{} decode={}ms total={}ms", level, decodeMs, totalMs);
+        } else {
+            LOGGER.debug("[VoxyModel] L{} decode={}ms total={}ms", level, decodeMs, totalMs);
         }
 
         return new LevelResult(blocks, occLogits, dimY, dimZ, dimX);
