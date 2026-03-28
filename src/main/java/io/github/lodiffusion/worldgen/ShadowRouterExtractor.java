@@ -11,9 +11,11 @@ import java.lang.reflect.Proxy;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.util.IdentityHashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
+import java.util.Set;
 
 /**
  * {@code ShadowRouterExtractor} — Java-side initialization stage of the
@@ -195,7 +197,11 @@ public class ShadowRouterExtractor {
 
         Object visitor = createVisitorProxy();
         try {
-            mapAllMethod.invoke(noiseRouter, visitor);
+            int traversed = traverseNoiseRouterDensityFunctions(noiseRouter, visitor);
+            if (traversed == 0) {
+                throw new IllegalStateException("NoiseRouter traversal found no DensityFunction accessors");
+            }
+            LOGGER.info("Traversed {} NoiseRouter density functions via mapAll/apply", traversed);
         } catch (Exception e) {
             throw new RuntimeException("Failed to invoke mapAll() on NoiseRouter", e);
         }
@@ -247,6 +253,42 @@ public class ShadowRouterExtractor {
             new Class<?>[]{densityFunctionVisitorClass},
             handler
         );
+    }
+
+    /**
+     * Visits every zero-arg NoiseRouter accessor that returns a DensityFunction
+     * and invokes DensityFunction.mapAll/apply with our visitor.
+     */
+    private int traverseNoiseRouterDensityFunctions(Object noiseRouter, Object visitor) throws Exception {
+        Class<?> routerClass = noiseRouter.getClass();
+        Set<Object> seenFunctions = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<String> attemptedAccessors = new HashSet<>();
+        int traversed = 0;
+
+        for (Method accessor : routerClass.getMethods()) {
+            if (accessor.getParameterCount() != 0) continue;
+            if (!densityFunctionClass.isAssignableFrom(accessor.getReturnType())) continue;
+            if (accessor.getDeclaringClass() == Object.class) continue;
+
+            String name = accessor.getName();
+            if (!attemptedAccessors.add(name)) continue;
+
+            Object densityFn;
+            try {
+                densityFn = accessor.invoke(noiseRouter);
+            } catch (Exception e) {
+                LOGGER.debug("Skipping NoiseRouter accessor {} due to invocation failure", name, e);
+                continue;
+            }
+            if (densityFn == null || !seenFunctions.add(densityFn)) {
+                continue;
+            }
+
+            mapAllMethod.invoke(densityFn, visitor);
+            traversed++;
+        }
+
+        return traversed;
     }
 
     // ----------------------------------------------------------------------------------------------------------------
