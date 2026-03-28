@@ -83,7 +83,6 @@ config/*
 !config/checkstyle/checkstyle.xml
 !config/lodiffusion/
 !config/lodiffusion/*.onnx
-!config/lodiffusion/*.json
 mods/
 *.log
 *.log.*
@@ -137,6 +136,7 @@ wandb/
 *.json
 !fabric.mod.json
 !lodiffusion.defaults.json
+!config/lodiffusion/*.json
 *.pkl
 *.pickle
 *.npz
