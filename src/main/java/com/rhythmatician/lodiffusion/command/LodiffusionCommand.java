@@ -3,7 +3,7 @@ package com.rhythmatician.lodiffusion.command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.context.CommandContext;
 import com.rhythmatician.lodiffusion.Config;
-import java.nio.file.Files;
+import com.rhythmatician.lodiffusion.onnx.OnnxModelFiles;
 import com.rhythmatician.lodiffusion.util.DebugUtils;
 import com.rhythmatician.lodiffusion.util.PerformanceMonitor;
 import com.rhythmatician.lodiffusion.voxy.LodGenerationService;
@@ -65,8 +65,10 @@ public final class LodiffusionCommand {
         status.append("§7ONNX Terrain: §").append(Config.useOnnxTerrain() ? "aEnabled" : "cDisabled").append("§r\n");
         status.append("§7Current Adapter: §f").append(Config.adapter()).append("§r\n");
         java.nio.file.Path modelDir = Config.modelDir();
-        boolean modelPresent = Files.isRegularFile(modelDir.resolve("sparse_octree.onnx"));
+        boolean modelPresent = OnnxModelFiles.hasFullVoxyModelSet(modelDir)
+            || OnnxModelFiles.hasLegacySparseModel(modelDir);
         status.append("§7Model Present: §").append(modelPresent ? "aYes" : "cNo").append("§r\n");
+        status.append("§7Model Contract: §f").append(OnnxModelFiles.describeModelState(modelDir)).append("§r\n");
         status.append("§7Model Dir: §f").append(modelDir).append("§r\n");
         
         long chunksGenerated = PerformanceMonitor.getCounter(PerformanceMonitor.CHUNKS_GENERATED);
@@ -181,11 +183,14 @@ public final class LodiffusionCommand {
         // Models are managed by LodGenerationService lifecycle — stop/restart the
         // service to pick up new ONNX files.  For now we just validate the files exist.
         java.nio.file.Path modelDir = Config.modelDir();
-        boolean modelPresent = Files.isRegularFile(modelDir.resolve("sparse_octree.onnx"));
-        if (modelPresent) {
-            source.sendFeedback(() -> Text.literal("§asparse_octree.onnx found in " + modelDir + ". Restart the world to reload.§r"), true);
+        if (OnnxModelFiles.hasFullVoxyModelSet(modelDir)) {
+            source.sendFeedback(() -> Text.literal("§aVoxy 5-model set found in " + modelDir + ". Restart the world to reload.§r"), true);
+        } else if (OnnxModelFiles.hasAnyVoxyModel(modelDir)) {
+            source.sendFeedback(() -> Text.literal("§cPartial Voxy model set in " + modelDir + " (expected voxy_l0.onnx through voxy_l4.onnx).§r"), true);
+        } else if (OnnxModelFiles.hasLegacySparseModel(modelDir)) {
+            source.sendFeedback(() -> Text.literal("§aLegacy sparse_octree.onnx found in " + modelDir + ". Restart the world to reload.§r"), true);
         } else {
-            source.sendFeedback(() -> Text.literal("§csparse_octree.onnx not found in " + modelDir + "§r"), true);
+            source.sendFeedback(() -> Text.literal("§cNo supported ONNX model files found in " + modelDir + ".§r"), true);
         }
         return 1;
     }

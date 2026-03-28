@@ -4,8 +4,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.rhythmatician.lodiffusion.command.LodiffusionCommand;
+import com.rhythmatician.lodiffusion.onnx.OnnxModelFiles;
 import io.github.lodiffusion.worldgen.WorldGenEventHandler;
-import java.nio.file.Files;
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
 
 import net.fabricmc.api.ModInitializer;
@@ -39,13 +39,16 @@ public class HelloTerrainMod implements ModInitializer {
 			LOGGER.info("[LODiffusion] Voxy reflection bindings OK — LOD injection path available");
 		}
 
-		// Check if the sparse-octree model is present in the model dir
+		// Report which ONNX model contract is currently available.
 		java.nio.file.Path modelDir = Config.modelDir();
-		boolean modelPresent = Files.isRegularFile(modelDir.resolve("sparse_octree.onnx"));
-		if (modelPresent) {
-			LOGGER.info("[LODiffusion] sparse_octree.onnx found in {}", modelDir);
+		if (OnnxModelFiles.hasFullVoxyModelSet(modelDir)) {
+			LOGGER.info("[LODiffusion] Voxy 5-model set found in {}", modelDir);
+		} else if (OnnxModelFiles.hasAnyVoxyModel(modelDir)) {
+			LOGGER.warn("[LODiffusion] Partial Voxy model set in {} — expected voxy_l0.onnx through voxy_l4.onnx", modelDir);
+		} else if (OnnxModelFiles.hasLegacySparseModel(modelDir)) {
+			LOGGER.info("[LODiffusion] Legacy sparse_octree.onnx found in {}", modelDir);
 		} else {
-			LOGGER.warn("[LODiffusion] sparse_octree.onnx not found in {} — LOD generation will fail until the model is placed", modelDir);
+			LOGGER.warn("[LODiffusion] No supported ONNX model files found in {} — place voxy_l0.onnx through voxy_l4.onnx for the new runtime", modelDir);
 		}
 
 		LOGGER.info("[LODiffusion] Mod initialization complete!");
