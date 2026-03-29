@@ -572,6 +572,18 @@ public final class VoxyWorldBinding {
                 nec = anyNonAir ? (byte) 0xFF : 0;
             } else {
                 nec = computeChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ);
+                // Preserve NEC bits already set by propagateChildExistence from finer children.
+                // We write top-down (L4 before L3, etc), so at write time the child NEC chain
+                // is incomplete. propagateChildExistence sets parent bits eagerly when a child
+                // section has voxel data.  Without this merge, each L4 re-write would clear the
+                // L3 bits — orphaning those children from Voxy's octree traversal.
+                byte prevNec;
+                if (worldSectionNecVarHandle != null) {
+                    prevNec = (byte)(Byte) worldSectionNecVarHandle.get(worldSection);
+                } else {
+                    prevNec = worldSectionNonEmptyChildrenField.getByte(worldSection);
+                }
+                nec = (byte)(nec | prevNec);
             }
 
             if (worldSectionNecVarHandle != null) {

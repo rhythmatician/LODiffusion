@@ -1456,12 +1456,15 @@ public final class LodGenerationService {
                     if (loadedMask == 0 || loadedMask == (byte) 0xFF) {
                         continue;
                     }
-                    if (!VoxyCompat.sectionExistsAtLevel(worldEngine, 0, wsX, wsY, wsZ)) {
-                        continue;
-                    }
 
+                    // Non-vanilla octants: the ones LODiffusion is responsible for filling.
+                    // getOccupiedOctantMask returns 0 when the section doesn't exist yet, so
+                    // we also enqueue when Voxy hasn't created the section yet (which is correct
+                    // — processDemandRequest will create it, writing only the non-vanilla octants).
+                    byte nonVanillaMask = (byte)(~loadedMask & 0xFF);
                     byte occupiedMask = VoxyCompat.getOccupiedOctantMask(worldEngine, 0, wsX, wsY, wsZ);
-                    if (occupiedMask != loadedMask) {
+                    if ((occupiedMask & nonVanillaMask) == nonVanillaMask) {
+                        // All non-vanilla octants already have LODiffusion predictions.
                         continue;
                     }
 
