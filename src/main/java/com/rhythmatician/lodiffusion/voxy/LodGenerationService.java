@@ -1329,12 +1329,12 @@ public final class LodGenerationService {
         long lastProgressLogMs = startMs;
         long lastPartialFillScanMs = 0;
 
-        // Initial partial-fill scan before entering the main loop.
-        int initialFill = scanAndEnqueuePartialFill(worldEngine, MILESTONE_LOD_LEVEL, NEAR_SEED_L4_RADIUS);
+        // Initial partial-fill scan across ALL levels before entering the main loop.
+        int initialFill = scanAndEnqueuePartialFillAllLevels(worldEngine, NEAR_SEED_L4_RADIUS);
         if (initialFill > 0) {
             HelloTerrainMod.LOGGER.info(
-                    "[LodGen][PartialFill] initial scan enqueued {} L{} fill requests",
-                    initialFill, MILESTONE_LOD_LEVEL - 1);
+                    "[LodGen][PartialFill] initial scan enqueued {} fill requests across all levels",
+                    initialFill);
         }
 
         while (!stopRequested.get()) {
@@ -1343,13 +1343,13 @@ public final class LodGenerationService {
                 // Periodically rescan for partial sections when the queue is idle.
                 long now = System.currentTimeMillis();
                 if (now - lastPartialFillScanMs >= PARTIAL_FILL_SCAN_INTERVAL_MS) {
-                    int filled = scanAndEnqueuePartialFill(
-                            worldEngine, MILESTONE_LOD_LEVEL, NEAR_SEED_L4_RADIUS);
+                    int filled = scanAndEnqueuePartialFillAllLevels(
+                            worldEngine, NEAR_SEED_L4_RADIUS);
                     lastPartialFillScanMs = now;
                     if (filled > 0) {
                         HelloTerrainMod.LOGGER.info(
-                                "[LodGen][PartialFill] rescan enqueued {} L{} fill requests",
-                                filled, MILESTONE_LOD_LEVEL - 1);
+                                "[LodGen][PartialFill] rescan enqueued {} fill requests across all levels",
+                                filled);
                         continue; // skip sleep, process fill requests immediately
                     }
                 }
@@ -1398,6 +1398,18 @@ public final class LodGenerationService {
                 "[LodGen] Demand pipeline stopped: dequeued={} written={} skipped={} deferred={} failed={}",
                 dequeued, written, skipped, deferred, failed);
         return written > 0;
+    }
+
+    /**
+     * Scan ALL levels (L4 → L1) for partial WorldSections and enqueue child
+     * fill requests.  Returns total enqueued across all levels.
+     */
+    private int scanAndEnqueuePartialFillAllLevels(Object worldEngine, int radius) {
+        int total = 0;
+        for (int parentLevel = 4; parentLevel >= 1; parentLevel--) {
+            total += scanAndEnqueuePartialFill(worldEngine, parentLevel, radius);
+        }
+        return total;
     }
 
     /**
@@ -1459,6 +1471,7 @@ public final class LodGenerationService {
                         req.worldX = childWsX;
                         req.worldY = childWsY;
                         req.worldZ = childWsZ;
+                        req.isPartialFill = true;
                         ShadowRouterJobQueue.enqueue(req);
                         enqueued++;
                     }
@@ -1491,7 +1504,9 @@ public final class LodGenerationService {
         int wsY = req.worldY;
         int wsZ = req.worldZ;
 
-        if (level < MILESTONE_MIN_LOD_LEVEL || level > 4) return DemandProcessResult.SKIPPED;
+        if (level < 0 || level > 4) return DemandProcessResult.SKIPPED;
+        // Partial-fill requests bypass the milestone gate — they fix rendering holes.
+        if (!req.isPartialFill && (level < MILESTONE_MIN_LOD_LEVEL)) return DemandProcessResult.SKIPPED;
         if (!voxyModelRunner.hasLevel(level)) return DemandProcessResult.SKIPPED;
         if (isOutOfWorldY(level, wsY)) return DemandProcessResult.SKIPPED;
         if (VoxyCompat.allOctantsPopulated(worldEngine, level, wsX, wsY, wsZ)) {

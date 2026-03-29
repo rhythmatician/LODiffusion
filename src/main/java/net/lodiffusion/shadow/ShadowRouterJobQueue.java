@@ -29,6 +29,11 @@ public class ShadowRouterJobQueue {
     private static final PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] lodQueues = 
         new PriorityQueue[5];
 
+    // Separate per-LOD queues for partial-fill requests (highest priority).
+    @SuppressWarnings("unchecked")
+    private static final PriorityQueue<VoxyRequestDecoder.VoxyNodeRequest>[] partialFillQueues =
+        new PriorityQueue[5];
+
     // Player position in section-space units (updated by LodGenerationService).
     private static volatile int playerSectionX = 0;
     private static volatile int playerSectionZ = 0;
@@ -44,6 +49,9 @@ public class ShadowRouterJobQueue {
             ShadowRouterJobQueue.lodQueues[i] = new PriorityQueue<>(
                 Comparator.comparingDouble(ShadowRouterJobQueue::estimateDistance)
             );
+            ShadowRouterJobQueue.partialFillQueues[i] = new PriorityQueue<>(
+                Comparator.comparingDouble(ShadowRouterJobQueue::estimateDistance)
+            );
         }
     }
     
@@ -56,7 +64,7 @@ public class ShadowRouterJobQueue {
         if (request == null || request.lodLevel < 0 || request.lodLevel > 4) {
             return;  // Ignore invalid requests
         }
-        if (!shouldAccept(request)) {
+        if (!request.isPartialFill && !shouldAccept(request)) {
             return;
         }
         
@@ -66,7 +74,11 @@ public class ShadowRouterJobQueue {
             if (queuedKeys.contains(key) || inFlightKeys.contains(key)) {
                 return;
             }
-            lodQueues[request.lodLevel].offer(request);
+            if (request.isPartialFill) {
+                partialFillQueues[request.lodLevel].offer(request);
+            } else {
+                lodQueues[request.lodLevel].offer(request);
+            }
             queuedKeys.add(key);
         } finally {
             lock.writeLock().unlock();
@@ -112,7 +124,17 @@ public class ShadowRouterJobQueue {
     public static VoxyRequestDecoder.VoxyNodeRequest dequeueAny() {
         lock.writeLock().lock();
         try {
-            // Priority: coarsest level first (L4 → L3).
+            // Priority 1: partial-fill at ANY level (closest first within each level).
+            for (int lod = 4; lod >= 0; lod--) {
+                VoxyRequestDecoder.VoxyNodeRequest req = partialFillQueues[lod].poll();
+                if (req != null) {
+                    RequestKey key = RequestKey.of(req);
+                    queuedKeys.remove(key);
+                    inFlightKeys.add(key);
+                    return req;
+                }
+            }
+            // Priority 2: regular generation, coarsest first (L4 → L3 → ...).
             for (int lod = 4; lod >= MILESTONE_MIN_LOD_LEVEL; lod--) {
                 VoxyRequestDecoder.VoxyNodeRequest req = lodQueues[lod].poll();
                 if (req != null) {
@@ -203,6 +225,9 @@ public class ShadowRouterJobQueue {
             for (Queue<?> queue : lodQueues) {
                 total += queue.size();
             }
+            for (Queue<?> queue : partialFillQueues) {
+                total += queue.size();
+            }
             return total;
         } finally {
             lock.readLock().unlock();
@@ -233,6 +258,9 @@ public class ShadowRouterJobQueue {
             for (Queue<?> queue : lodQueues) {
                 queue.clear();
             }
+            for (Queue<?> queue : partialFillQueues) {
+                queue.clear();
+            }
             queuedKeys.clear();
             inFlightKeys.clear();
         } finally {
@@ -256,6 +284,11 @@ public class ShadowRouterJobQueue {
     public static boolean hasWork() {
         lock.readLock().lock();
         try {
+            for (Queue<?> queue : partialFillQueues) {
+                if (!queue.isEmpty()) {
+                    return true;
+                }
+            }
             for (Queue<?> queue : lodQueues) {
                 if (!queue.isEmpty()) {
                     return true;

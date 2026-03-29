@@ -21,11 +21,14 @@ public class VoxyRequestDecoder {
         public int worldX;    // World X coordinate (signed, in 16-voxel units)
         public int worldY;    // World Y coordinate (signed, [-128, 127] valid)
         public int worldZ;    // World Z coordinate (signed, in 16-voxel units)
+        /** True when this request fills a missing child of a partial WorldSection. */
+        public boolean isPartialFill;
         
         @Override
         public String toString() {
-            return String.format("VoxyNodeRequest{lod=%d, pos=(%d,%d,%d)}", 
-                lodLevel, worldX, worldY, worldZ);
+            return String.format("VoxyNodeRequest{lod=%d, pos=(%d,%d,%d)%s}", 
+                lodLevel, worldX, worldY, worldZ,
+                isPartialFill ? ", PARTIAL_FILL" : "");
         }
     }
     
