@@ -14,7 +14,6 @@ import org.slf4j.LoggerFactory;
 import ai.djl.ndarray.NDArray;
 import ai.djl.ndarray.NDList;
 import ai.djl.ndarray.NDManager;
-import ai.djl.ndarray.types.DataType;
 import ai.djl.ndarray.types.Shape;
 import ai.djl.repository.zoo.Criteria;
 import ai.djl.repository.zoo.ZooModel;
@@ -548,19 +547,25 @@ public final class VoxyModelRunner implements AutoCloseable {
             LOGGER.debug("[VoxyModel] L{} predict: {}ms", level, predictMs);
         }
 
-        long tDecodeStart = System.currentTimeMillis();
-
         // Decode block_logits: argmax along class dimension
         // block_logits shape: [1, V, Y, Z, X]
         NDArray blockLogits = outputs.get(0);  // first output is always block_logits
         long[] shape = blockLogits.getShape().getShape();
+        int classes = (int) shape[1];
         int dimY = (int) shape[2];
         int dimZ = (int) shape[3];
         int dimX = (int) shape[4];
 
-        // argmax along dim=1 (class dimension) → [1, Y, Z, X]
-        NDArray argmax = blockLogits.argMax(1);
-        int[] blockIds = argmax.toType(DataType.INT32, false).toIntArray();
+        long tDecodeStart = System.currentTimeMillis();
+        int[] blockIds = decodeArgmaxFromLogits(blockLogits, classes, dimY, dimZ, dimX);
+
+        long decodeMs = System.currentTimeMillis() - tDecodeStart;
+        long totalMs = predictMs + decodeMs;
+        if (debugOnce.get()) {
+            LOGGER.info("[VoxyModel] L{} decode={}ms total={}ms", level, decodeMs, totalMs);
+        } else {
+            LOGGER.debug("[VoxyModel] L{} decode={}ms total={}ms", level, decodeMs, totalMs);
+        }
 
         // Convert to [Y][Z][X] int array
         int[][][] blocks = new int[dimY][dimZ][dimX];
@@ -580,15 +585,42 @@ public final class VoxyModelRunner implements AutoCloseable {
             occLogits = occArray.toFloatArray();
         }
 
-        long decodeMs = System.currentTimeMillis() - tDecodeStart;
-        long totalMs = predictMs + decodeMs;
-        if (debugOnce.get()) {
-            LOGGER.info("[VoxyModel] L{} decode={}ms total={}ms", level, decodeMs, totalMs);
-        } else {
-            LOGGER.debug("[VoxyModel] L{} decode={}ms total={}ms", level, decodeMs, totalMs);
+        return new LevelResult(blocks, occLogits, dimY, dimZ, dimX);
+    }
+
+    /**
+     * Decode class logits [1, V, Y, Z, X] to class IDs [Y*Z*X] using a manual
+     * argmax pass. This avoids NDArray argMax overhead that can be very slow on
+     * some ONNX Runtime CPU paths.
+     */
+    private int[] decodeArgmaxFromLogits(NDArray blockLogits,
+                                         int classes,
+                                         int dimY,
+                                         int dimZ,
+                                         int dimX) {
+        float[] logits = blockLogits.toFloatArray();
+        int voxelCount = dimY * dimZ * dimX;
+        int[] out = new int[voxelCount];
+
+        // Flattened layout for [1, V, Y, Z, X] with row-major storage:
+        // index = c * voxelCount + v, where v iterates [Y][Z][X] with X fastest.
+        for (int v = 0; v < voxelCount; v++) {
+            int bestClass = 0;
+            float best = logits[v];
+            int classBase = voxelCount;
+
+            for (int c = 1; c < classes; c++) {
+                float score = logits[classBase + v];
+                if (score > best) {
+                    best = score;
+                    bestClass = c;
+                }
+                classBase += voxelCount;
+            }
+            out[v] = bestClass;
         }
 
-        return new LevelResult(blocks, occLogits, dimY, dimZ, dimX);
+        return out;
     }
 
     // ------------------------------------------------------------------

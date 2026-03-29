@@ -9,8 +9,14 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * Maintains separate per-LOD priority queues (LOD 0–4) ordered by distance to player.
  * Supports enqueue (from mixin callback) and dequeue (from dispatcher).
  */
-@SuppressWarnings("unchecked")
 public class ShadowRouterJobQueue {
+
+    // Temporary milestone mode: only process L4 until coarse visibility is stable.
+    private static final int MILESTONE_LOD_LEVEL = 4;
+
+    // Hard cap to prevent far-field request floods from starving nearby refinement.
+    // Units are player-section coordinates (16-block sections).
+    private static final double MAX_PLAYER_SECTION_DISTANCE = 256.0;
 
     private record RequestKey(int lod, int x, int y, int z) {
         static RequestKey of(VoxyRequestDecoder.VoxyNodeRequest req) {
@@ -50,6 +56,9 @@ public class ShadowRouterJobQueue {
         if (request == null || request.lodLevel < 0 || request.lodLevel > 4) {
             return;  // Ignore invalid requests
         }
+        if (!shouldAccept(request)) {
+            return;
+        }
         
         lock.writeLock().lock();
         try {
@@ -78,6 +87,9 @@ public class ShadowRouterJobQueue {
         try {
             for (VoxyRequestDecoder.VoxyNodeRequest req : requests) {
                 if (req != null && req.lodLevel >= 0 && req.lodLevel <= 4) {
+                    if (!shouldAccept(req)) {
+                        continue;
+                    }
                     RequestKey key = RequestKey.of(req);
                     if (queuedKeys.contains(key) || inFlightKeys.contains(key)) {
                         continue;
@@ -100,32 +112,14 @@ public class ShadowRouterJobQueue {
     public static VoxyRequestDecoder.VoxyNodeRequest dequeueAny() {
         lock.writeLock().lock();
         try {
-            // Sort by distance; prefer finer LOD (smaller level number) on ties.
-            VoxyRequestDecoder.VoxyNodeRequest best = null;
-            int bestLod = Integer.MAX_VALUE;
-            double bestDist = Double.MAX_VALUE;
-            
-            for (int lod = 0; lod <= 4; lod++) {
-                if (!lodQueues[lod].isEmpty()) {
-                    VoxyRequestDecoder.VoxyNodeRequest peek = lodQueues[lod].peek();
-                    double dist = estimateDistance(peek);
-                    if (dist < bestDist || (dist == bestDist && lod < bestLod)) {
-                        best = peek;
-                        bestLod = lod;
-                        bestDist = dist;
-                    }
-                }
-            }
-            
-            // Dequeue the best candidate
-            if (best != null) {
-                lodQueues[bestLod].poll();
-                RequestKey key = RequestKey.of(best);
+            VoxyRequestDecoder.VoxyNodeRequest req = lodQueues[MILESTONE_LOD_LEVEL].poll();
+            if (req != null) {
+                RequestKey key = RequestKey.of(req);
                 queuedKeys.remove(key);
                 inFlightKeys.add(key);
-                return best;
+                return req;
             }
-            
+
             return null;
         } finally {
             lock.writeLock().unlock();
@@ -139,7 +133,7 @@ public class ShadowRouterJobQueue {
      * @return Next request at that LOD, or null
      */
     public static VoxyRequestDecoder.VoxyNodeRequest dequeue(int lod) {
-        if (lod < 0 || lod > 4) {
+        if (lod < 0 || lod > 4 || lod != MILESTONE_LOD_LEVEL) {
             return null;
         }
         
@@ -177,6 +171,9 @@ public class ShadowRouterJobQueue {
      */
     public static void requeue(VoxyRequestDecoder.VoxyNodeRequest request) {
         if (request == null || request.lodLevel < 0 || request.lodLevel > 4) {
+            return;
+        }
+        if (!shouldAccept(request)) {
             return;
         }
 
@@ -286,13 +283,37 @@ public class ShadowRouterJobQueue {
         if (req == null) {
             return Double.MAX_VALUE;
         }
-        // Squared distance ignoring Y (vertical), scaled by LOD
-        double dx = req.worldX - playerSectionX;
-        double dz = req.worldZ - playerSectionZ;
-        double distSq = dx * dx + dz * dz;
-        
-        // Scale by LOD: higher LOD = slightly less urgent
-        double lodScale = 1.0 + (req.lodLevel * 0.1);
-        return Math.sqrt(distSq) * lodScale;
+
+        // Convert world-section coords at level L into player-section-space center.
+        // worldSection(block, L) == playerSection >> (L+1), so inverse is << (L+1).
+        int sectionScale = 1 << (req.lodLevel + 1);
+        double reqCenterX = (req.worldX * (double) sectionScale) + (sectionScale * 0.5);
+        double reqCenterZ = (req.worldZ * (double) sectionScale) + (sectionScale * 0.5);
+
+        double dx = reqCenterX - playerSectionX;
+        double dz = reqCenterZ - playerSectionZ;
+        double distance = Math.sqrt((dx * dx) + (dz * dz));
+
+        // Prefer coarser levels slightly for the same location so dependency chains
+        // (L4->L3->L2->L1->L0) don't thrash on deferred child requests.
+        double lodBias = (4 - req.lodLevel) * 2.0;
+        return distance + lodBias;
+    }
+
+    private static boolean shouldAccept(VoxyRequestDecoder.VoxyNodeRequest req) {
+        return req.lodLevel == MILESTONE_LOD_LEVEL
+                && estimateRawPlayerSectionDistance(req) <= MAX_PLAYER_SECTION_DISTANCE;
+    }
+
+    private static double estimateRawPlayerSectionDistance(VoxyRequestDecoder.VoxyNodeRequest req) {
+        if (req == null) {
+            return Double.MAX_VALUE;
+        }
+        int sectionScale = 1 << (req.lodLevel + 1);
+        double reqCenterX = (req.worldX * (double) sectionScale) + (sectionScale * 0.5);
+        double reqCenterZ = (req.worldZ * (double) sectionScale) + (sectionScale * 0.5);
+        double dx = reqCenterX - playerSectionX;
+        double dz = reqCenterZ - playerSectionZ;
+        return Math.sqrt((dx * dx) + (dz * dz));
     }
 }

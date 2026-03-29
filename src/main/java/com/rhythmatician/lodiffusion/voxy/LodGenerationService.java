@@ -102,13 +102,28 @@ public final class LodGenerationService {
         private static final int DEMAND_IDLE_SLEEP_MS =
             Config.getInt("demandIdleSleepMs", 25);
 
+        /** Temporary milestone gate: only service L4 until coarse visibility is stable. */
+        private static final int MILESTONE_LOD_LEVEL = 4;
+
             /** Throttle interval for demand-pipeline progress diagnostics. */
             private static final int DEMAND_PROGRESS_LOG_MS =
                 Config.getInt("demandProgressLogMs", 5000);
 
-        /** Occupancy threshold for expanding child octants in hierarchical inference. */
-        private static final float VOXY_OCC_THRESHOLD =
-            (float) Config.getDouble("voxyOccThreshold", 0.5);
+            /** Periodic near-player seed to avoid local LOD starvation on zoom/FOV changes. */
+            private static final int NEAR_SEED_INTERVAL_MS =
+                Config.getInt("nearSeedIntervalMs", 1000);
+
+            /** Avoid flooding demand queue with seed traffic when backlog already exists. */
+            private static final int NEAR_SEED_MAX_QUEUE_DEPTH =
+                Config.getInt("nearSeedMaxQueueDepth", 384);
+
+            /** Minimum time between re-seeding the exact same (lod, wsX, wsY, wsZ). */
+            private static final int NEAR_SEED_REENQUEUE_MS =
+                Config.getInt("nearSeedReenqueueMs", 8000);
+
+            /** Horizontal ring radius in world-sections for L4 seed requests. */
+            private static final int NEAR_SEED_L4_RADIUS =
+                Config.getInt("nearSeedL4Radius", 4);
 
             private static final int[] L2_CLIMATE_CHANNELS = {
                 RouterField.TEMPERATURE.ordinal(),
@@ -182,6 +197,12 @@ public final class LodGenerationService {
     private volatile int playerSectionX;
     private volatile int playerSectionY;
     private volatile int playerSectionZ;
+
+    /** Local near-player demand seed throttling state. */
+    private volatile long lastNearSeedMs;
+    private volatile int lastSeedPlayerSectionX = Integer.MIN_VALUE;
+    private volatile int lastSeedPlayerSectionZ = Integer.MIN_VALUE;
+    private final ConcurrentHashMap<Long, Long> recentSeededAtMs = new ConcurrentHashMap<>();
 
     /** Tracks which (section) positions we've already generated. Thread-safe. */
     private final Set<Long> generatedSections = ConcurrentHashMap.newKeySet();
@@ -341,10 +362,90 @@ public final class LodGenerationService {
         this.playerSectionY = WorldSectionCoord.blockToSection(pos.getY());
         this.playerSectionZ = WorldSectionCoord.blockToSection(pos.getZ());
         ShadowRouterJobQueue.updatePlayerSection(this.playerSectionX, this.playerSectionZ);
+
+        seedNearPlayerDemandIfNeeded();
+
         if (positionReady.compareAndSet(false, true)) {
             HelloTerrainMod.LOGGER.info("[LodGen] Player position initialized: section ({}, {}, {})",
                     playerSectionX, playerSectionY, playerSectionZ);
         }
+    }
+
+    private void seedNearPlayerDemandIfNeeded() {
+        if (!running.get()) {
+            return;
+        }
+
+        int queueDepth = ShadowRouterJobQueue.size();
+        if (queueDepth > NEAR_SEED_MAX_QUEUE_DEPTH) {
+            return;
+        }
+
+        long now = System.currentTimeMillis();
+        boolean movedSection = (playerSectionX != lastSeedPlayerSectionX)
+                || (playerSectionZ != lastSeedPlayerSectionZ);
+        if (!movedSection && (now - lastNearSeedMs) < NEAR_SEED_INTERVAL_MS) {
+            return;
+        }
+
+        int enqueued = enqueueLocalSeedRing(MILESTONE_LOD_LEVEL, NEAR_SEED_L4_RADIUS, now);
+
+        lastSeedPlayerSectionX = playerSectionX;
+        lastSeedPlayerSectionZ = playerSectionZ;
+        lastNearSeedMs = now;
+
+        if (recentSeededAtMs.size() > 8192) {
+            long cutoff = now - (NEAR_SEED_REENQUEUE_MS * 3L);
+            recentSeededAtMs.entrySet().removeIf(e -> e.getValue() < cutoff);
+        }
+
+        if (enqueued > 0 && (movedSection || (now % 5000L) < NEAR_SEED_INTERVAL_MS)) {
+            HelloTerrainMod.LOGGER.info(
+                    "[LodGen][Seed] enqueued={} lod={} r={} queueDepth={} player=({}, {}, {})",
+                    enqueued, MILESTONE_LOD_LEVEL, NEAR_SEED_L4_RADIUS,
+                    queueDepth,
+                    playerSectionX, playerSectionY, playerSectionZ);
+        }
+    }
+
+    private int enqueueLocalSeedRing(int level, int radius, long nowMs) {
+        int centerX = WorldSectionCoord.sectionToWorldSection(playerSectionX, level);
+        int centerZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, level);
+        int centerY = WorldSectionCoord.sectionToWorldSection(playerSectionY, level);
+
+        int enqueued = 0;
+        for (int dy = -1; dy <= 1; dy++) {
+            int wsY = centerY + dy;
+            for (int dz = -radius; dz <= radius; dz++) {
+                for (int dx = -radius; dx <= radius; dx++) {
+                    int wsX = centerX + dx;
+                    int wsZ = centerZ + dz;
+                    long seedKey = seedKey(level, wsX, wsY, wsZ);
+                    Long last = recentSeededAtMs.get(seedKey);
+                    if (last != null && (nowMs - last) < NEAR_SEED_REENQUEUE_MS) {
+                        continue;
+                    }
+
+                    VoxyRequestDecoder.VoxyNodeRequest req = new VoxyRequestDecoder.VoxyNodeRequest();
+                    req.lodLevel = level;
+                    req.worldX = wsX;
+                    req.worldY = wsY;
+                    req.worldZ = wsZ;
+                    ShadowRouterJobQueue.enqueue(req);
+                    recentSeededAtMs.put(seedKey, nowMs);
+                    enqueued++;
+                }
+            }
+        }
+        return enqueued;
+    }
+
+    private static long seedKey(int level, int wsX, int wsY, int wsZ) {
+        long x = ((long) wsX) & 0x1FFFFFL;
+        long y = ((long) wsY) & 0x1FFFFFL;
+        long z = ((long) wsZ) & 0x1FFFFFL;
+        long l = ((long) level) & 0x7L;
+        return (l << 63) ^ (x << 42) ^ (y << 21) ^ z;
     }
 
     public boolean isRunning() {
@@ -1292,11 +1393,9 @@ public final class LodGenerationService {
         int wsZ = req.worldZ;
 
         if (level < 0 || level > 4) return DemandProcessResult.SKIPPED;
+        if (level != MILESTONE_LOD_LEVEL) return DemandProcessResult.SKIPPED;
         if (!voxyModelRunner.hasLevel(level)) return DemandProcessResult.SKIPPED;
         if (isOutOfWorldY(level, wsY)) return DemandProcessResult.SKIPPED;
-        if (hasLoadedVanillaChunkInWorldSection(world, level, wsX, wsY, wsZ)) {
-            return DemandProcessResult.SKIPPED;
-        }
         if (VoxyCompat.allOctantsPopulated(worldEngine, level, wsX, wsY, wsZ)) {
             return DemandProcessResult.SKIPPED;
         }
@@ -1366,23 +1465,20 @@ public final class LodGenerationService {
             return DemandProcessResult.FAILED;
         }
 
-        // Optional occupancy-based defer: if coarse level predicts no child detail,
-        // keep the current request in queue and let parent/coarse data stand for now.
-        if (modelOut.occLogits() != null && level < 4) {
-            boolean anyChild = false;
-            for (int i = 0; i < 8; i++) {
-                if (modelOut.shouldExpand(i, VOXY_OCC_THRESHOLD)) {
-                    anyChild = true;
-                    break;
-                }
-            }
-            if (!anyChild) {
+        // Do not skip writing the requested level when occupancy predicts no child expansion.
+        // Voxy can still render this coarse level as fallback while finer children are absent.
+
+        byte preserveOctantsMask = 0;
+        if (level == 0) {
+            preserveOctantsMask = loadedChunkOctantMaskL0(world, wsX, wsY, wsZ);
+            if (preserveOctantsMask == (byte) 0xFF) {
                 return DemandProcessResult.SKIPPED;
             }
         }
 
         int[][][] writeBlocks = padYTo32(modelOut.blocks(), modelOut.dimY());
-        int nonAir = writer.writeOctreeToLevel(writeBlocks, biome32, level, wsX, wsY, wsZ);
+        int nonAir = writer.writeOctreeToLevel(
+                writeBlocks, biome32, level, wsX, wsY, wsZ, preserveOctantsMask);
         return nonAir > 0 ? DemandProcessResult.WRITTEN : DemandProcessResult.SKIPPED;
     }
 
@@ -1597,32 +1693,22 @@ public final class LodGenerationService {
         ShadowRouterJobQueue.enqueue(parentReq);
     }
 
-    private boolean hasLoadedVanillaChunkInWorldSection(World world, int level,
-                                                         int wsX, int wsY, int wsZ) {
-        int minBlockY = WorldSectionCoord.worldSectionToBlockMin(wsY, level);
-        int maxBlockY = WorldSectionCoord.worldSectionToBlockMax(wsY, level);
-        if (maxBlockY < MIN_WORLD_BLOCK_Y || minBlockY >= MAX_WORLD_BLOCK_Y) {
-            return false;
-        }
+    private byte loadedChunkOctantMaskL0(World world, int wsX, int wsY, int wsZ) {
+        int baseChunkX = wsX << 1;
+        int baseChunkZ = wsZ << 1;
+        byte mask = 0;
 
-        int minBlockX = WorldSectionCoord.worldSectionToBlockMin(wsX, level);
-        int maxBlockX = WorldSectionCoord.worldSectionToBlockMax(wsX, level);
-        int minBlockZ = WorldSectionCoord.worldSectionToBlockMin(wsZ, level);
-        int maxBlockZ = WorldSectionCoord.worldSectionToBlockMax(wsZ, level);
-
-        int minChunkX = Math.floorDiv(minBlockX, 16);
-        int maxChunkX = Math.floorDiv(maxBlockX, 16);
-        int minChunkZ = Math.floorDiv(minBlockZ, 16);
-        int maxChunkZ = Math.floorDiv(maxBlockZ, 16);
-
-        for (int cx = minChunkX; cx <= maxChunkX; cx++) {
-            for (int cz = minChunkZ; cz <= maxChunkZ; cz++) {
-                if (tryGetLoadedChunk(world, cx, cz) != null) {
-                    return true;
-                }
+        // L0 world-section is 32^3, i.e., 2x2x2 octants of 16^3.
+        // For preservation we use loaded chunk presence in X/Z; this prevents
+        // overwriting known-good near-player data at chunk boundaries.
+        for (int octant = 0; octant < 8; octant++) {
+            int cx = baseChunkX + (octant & 1);
+            int cz = baseChunkZ + ((octant >> 1) & 1);
+            if (tryGetLoadedChunk(world, cx, cz) != null) {
+                mask |= (byte) (1 << octant);
             }
         }
-        return false;
+        return mask;
     }
 
     private VoxyModelRunner resolveVoxyModel() {
