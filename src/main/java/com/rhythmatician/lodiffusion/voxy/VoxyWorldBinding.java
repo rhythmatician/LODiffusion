@@ -637,6 +637,23 @@ public final class VoxyWorldBinding {
     }
 
     /**
+     * Returns the bitmask of which child WorldSections actually exist and
+     * have non-zero NEC.  Bit layout: bit0=X, bit1=Z, bit2=Y.
+     *
+     * @return 0x00–0xFF child existence mask, or 0 on error
+     */
+    public static byte getChildExistenceMask(Object worldEngine, int lvl,
+                                              int wsX, int wsY, int wsZ) {
+        ensureWorldSectionBindings();
+        try {
+            return computeChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ);
+        } catch (Exception e) {
+            LOGGER.warn("getChildExistenceMask failed: {}", e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
      * Returns {@code true} if Voxy has fully claimed all 8 octants of the specified
      * WorldSection ({@code nonEmptyChildren == 0xFF}).  This is the correct guard
      * for skipping model inference entirely: if all octants are already populated,

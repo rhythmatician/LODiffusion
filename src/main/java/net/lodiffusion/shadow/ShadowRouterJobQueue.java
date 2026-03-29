@@ -11,8 +11,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  */
 public class ShadowRouterJobQueue {
 
-    // Temporary milestone mode: only process L4 until coarse visibility is stable.
-    private static final int MILESTONE_LOD_LEVEL = 4;
+    // Milestone mode: process L3+ until coarse visibility and partial fill are stable.
+    private static final int MILESTONE_MIN_LOD_LEVEL = 3;
 
     // Hard cap to prevent far-field request floods from starving nearby refinement.
     // Units are player-section coordinates (16-block sections).
@@ -112,14 +112,16 @@ public class ShadowRouterJobQueue {
     public static VoxyRequestDecoder.VoxyNodeRequest dequeueAny() {
         lock.writeLock().lock();
         try {
-            VoxyRequestDecoder.VoxyNodeRequest req = lodQueues[MILESTONE_LOD_LEVEL].poll();
-            if (req != null) {
-                RequestKey key = RequestKey.of(req);
-                queuedKeys.remove(key);
-                inFlightKeys.add(key);
-                return req;
+            // Priority: coarsest level first (L4 → L3).
+            for (int lod = 4; lod >= MILESTONE_MIN_LOD_LEVEL; lod--) {
+                VoxyRequestDecoder.VoxyNodeRequest req = lodQueues[lod].poll();
+                if (req != null) {
+                    RequestKey key = RequestKey.of(req);
+                    queuedKeys.remove(key);
+                    inFlightKeys.add(key);
+                    return req;
+                }
             }
-
             return null;
         } finally {
             lock.writeLock().unlock();
@@ -133,7 +135,7 @@ public class ShadowRouterJobQueue {
      * @return Next request at that LOD, or null
      */
     public static VoxyRequestDecoder.VoxyNodeRequest dequeue(int lod) {
-        if (lod < 0 || lod > 4 || lod != MILESTONE_LOD_LEVEL) {
+        if (lod < MILESTONE_MIN_LOD_LEVEL || lod > 4) {
             return null;
         }
         
@@ -301,7 +303,7 @@ public class ShadowRouterJobQueue {
     }
 
     private static boolean shouldAccept(VoxyRequestDecoder.VoxyNodeRequest req) {
-        return req.lodLevel == MILESTONE_LOD_LEVEL
+        return req.lodLevel >= MILESTONE_MIN_LOD_LEVEL
                 && estimateRawPlayerSectionDistance(req) <= MAX_PLAYER_SECTION_DISTANCE;
     }
 

@@ -102,7 +102,8 @@ public final class LodGenerationService {
         private static final int DEMAND_IDLE_SLEEP_MS =
             Config.getInt("demandIdleSleepMs", 25);
 
-        /** Temporary milestone gate: only service L4 until coarse visibility is stable. */
+        /** Temporary milestone gate: only service L3+ until coarse visibility is stable. */
+        private static final int MILESTONE_MIN_LOD_LEVEL = 3;
         private static final int MILESTONE_LOD_LEVEL = 4;
 
             /** Throttle interval for demand-pipeline progress diagnostics. */
@@ -116,6 +117,10 @@ public final class LodGenerationService {
             /** Avoid flooding demand queue with seed traffic when backlog already exists. */
             private static final int NEAR_SEED_MAX_QUEUE_DEPTH =
                 Config.getInt("nearSeedMaxQueueDepth", 384);
+
+            /** Interval between partial-fill scans (ms). */
+            private static final int PARTIAL_FILL_SCAN_INTERVAL_MS =
+                Config.getInt("partialFillScanIntervalMs", 5000);
 
             /** Minimum time between re-seeding the exact same (lod, wsX, wsY, wsZ). */
             private static final int NEAR_SEED_REENQUEUE_MS =
@@ -414,7 +419,11 @@ public final class LodGenerationService {
         int centerY = WorldSectionCoord.sectionToWorldSection(playerSectionY, level);
 
         int enqueued = 0;
-        for (int dy = -1; dy <= 1; dy++) {
+        // At L4, only wsY=0 produces a valid yPosition for the model.
+        // At finer levels, scan ±1 in Y.
+        int minDy = level >= 4 ? 0 : -1;
+        int maxDy = level >= 4 ? 0 : 1;
+        for (int dy = minDy; dy <= maxDy; dy++) {
             int wsY = centerY + dy;
             for (int dz = -radius; dz <= radius; dz++) {
                 for (int dx = -radius; dx <= radius; dx++) {
@@ -1318,10 +1327,32 @@ public final class LodGenerationService {
         int failed = 0;
         long startMs = System.currentTimeMillis();
         long lastProgressLogMs = startMs;
+        long lastPartialFillScanMs = 0;
+
+        // Initial partial-fill scan before entering the main loop.
+        int initialFill = scanAndEnqueuePartialFill(worldEngine, MILESTONE_LOD_LEVEL, NEAR_SEED_L4_RADIUS);
+        if (initialFill > 0) {
+            HelloTerrainMod.LOGGER.info(
+                    "[LodGen][PartialFill] initial scan enqueued {} L{} fill requests",
+                    initialFill, MILESTONE_LOD_LEVEL - 1);
+        }
 
         while (!stopRequested.get()) {
             VoxyRequestDecoder.VoxyNodeRequest req = ShadowRouterJobQueue.dequeueAny();
             if (req == null) {
+                // Periodically rescan for partial sections when the queue is idle.
+                long now = System.currentTimeMillis();
+                if (now - lastPartialFillScanMs >= PARTIAL_FILL_SCAN_INTERVAL_MS) {
+                    int filled = scanAndEnqueuePartialFill(
+                            worldEngine, MILESTONE_LOD_LEVEL, NEAR_SEED_L4_RADIUS);
+                    lastPartialFillScanMs = now;
+                    if (filled > 0) {
+                        HelloTerrainMod.LOGGER.info(
+                                "[LodGen][PartialFill] rescan enqueued {} L{} fill requests",
+                                filled, MILESTONE_LOD_LEVEL - 1);
+                        continue; // skip sleep, process fill requests immediately
+                    }
+                }
                 try {
                     Thread.sleep(DEMAND_IDLE_SLEEP_MS);
                 } catch (InterruptedException ie) {
@@ -1369,6 +1400,74 @@ public final class LodGenerationService {
         return written > 0;
     }
 
+    /**
+     * Scan existing WorldSections at {@code parentLevel} around the player and
+     * enqueue child-level generation requests for any octant that is missing.
+     *
+     * <p>This fills the "holes" in WorldSections that have partial child
+     * existence (0 &lt; NEC &lt; 0xFF), such as L4 sections with some vanilla
+     * L3 children.  The GPU descends into children when NEC bits are set; if
+     * only some children exist, the missing octants render as blank terrain.
+     *
+     * @return number of child-level requests enqueued
+     */
+    private int scanAndEnqueuePartialFill(Object worldEngine,
+                                           int parentLevel, int radius) {
+        if (parentLevel < 1 || parentLevel > 4) return 0;
+
+        int centerX = WorldSectionCoord.sectionToWorldSection(playerSectionX, parentLevel);
+        int centerZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, parentLevel);
+        int centerY = WorldSectionCoord.sectionToWorldSection(playerSectionY, parentLevel);
+
+        int childLevel = parentLevel - 1;
+        int enqueued = 0;
+
+        // At L4, only wsY=0 is valid for the model.
+        int minDy = parentLevel >= 4 ? 0 : -1;
+        int maxDy = parentLevel >= 4 ? 0 : 1;
+
+        for (int dy = minDy; dy <= maxDy; dy++) {
+            int wsY = centerY + dy;
+            for (int dz = -radius; dz <= radius; dz++) {
+                for (int dx = -radius; dx <= radius; dx++) {
+                    int wsX = centerX + dx;
+                    int wsZ = centerZ + dz;
+
+                    byte childMask = VoxyCompat.getChildExistenceMask(
+                            worldEngine, parentLevel, wsX, wsY, wsZ);
+                    if (childMask == 0 || childMask == (byte) 0xFF) {
+                        continue; // fully empty or fully populated — nothing to fill
+                    }
+
+                    // Partial section — enqueue generation for missing children.
+                    for (int octant = 0; octant < 8; octant++) {
+                        if ((childMask & (1 << octant)) != 0) {
+                            continue; // this child already exists
+                        }
+
+                        int childWsX = (wsX << 1) + (octant & 1);
+                        int childWsY = (wsY << 1) + ((octant >> 2) & 1);
+                        int childWsZ = (wsZ << 1) + ((octant >> 1) & 1);
+
+                        if (isOutOfWorldY(childLevel, childWsY)) {
+                            continue;
+                        }
+
+                        VoxyRequestDecoder.VoxyNodeRequest req =
+                                new VoxyRequestDecoder.VoxyNodeRequest();
+                        req.lodLevel = childLevel;
+                        req.worldX = childWsX;
+                        req.worldY = childWsY;
+                        req.worldZ = childWsZ;
+                        ShadowRouterJobQueue.enqueue(req);
+                        enqueued++;
+                    }
+                }
+            }
+        }
+        return enqueued;
+    }
+
     private void logDemandProgress(long startMs, int dequeued,
                                    int written, int skipped,
                                    int deferred, int failed) {
@@ -1392,8 +1491,7 @@ public final class LodGenerationService {
         int wsY = req.worldY;
         int wsZ = req.worldZ;
 
-        if (level < 0 || level > 4) return DemandProcessResult.SKIPPED;
-        if (level != MILESTONE_LOD_LEVEL) return DemandProcessResult.SKIPPED;
+        if (level < MILESTONE_MIN_LOD_LEVEL || level > 4) return DemandProcessResult.SKIPPED;
         if (!voxyModelRunner.hasLevel(level)) return DemandProcessResult.SKIPPED;
         if (isOutOfWorldY(level, wsY)) return DemandProcessResult.SKIPPED;
         if (VoxyCompat.allOctantsPopulated(worldEngine, level, wsX, wsY, wsZ)) {

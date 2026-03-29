@@ -164,6 +164,12 @@ public final class VoxyCompat {
         return VoxyWorldBinding.extractOctantAndUpsample(parent32, octant);
     }
 
+    /** @see VoxyWorldBinding#getChildExistenceMask(Object, int, int, int, int) */
+    public static byte getChildExistenceMask(Object worldEngine, int lvl,
+                                              int wsX, int wsY, int wsZ) {
+        return VoxyWorldBinding.getChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ);
+    }
+
     /**
      * Returns {@code true} if Voxy has fully claimed all 8 octants
      * ({@code nonEmptyChildren == 0xFF}).  Use this as the upstream inference
