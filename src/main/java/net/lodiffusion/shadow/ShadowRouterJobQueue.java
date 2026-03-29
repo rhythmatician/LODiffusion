@@ -303,6 +303,23 @@ public class ShadowRouterJobQueue {
             lock.readLock().unlock();
         }
     }
+
+    /**
+     * Check if any partial-fill queue has pending requests.
+     */
+    public static boolean hasPartialFillWork() {
+        lock.readLock().lock();
+        try {
+            for (Queue<?> queue : partialFillQueues) {
+                if (!queue.isEmpty()) {
+                    return true;
+                }
+            }
+            return false;
+        } finally {
+            lock.readLock().unlock();
+        }
+    }
     
     /**
      * Update player position in section-space units for distance estimation.

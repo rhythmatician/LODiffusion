@@ -694,6 +694,29 @@ public final class VoxyWorldBinding {
     }
 
     /**
+     * Returns the octant occupancy mask for an existing WorldSection's voxel data.
+     * For L0 this is the only way to tell whether all 8 octants actually contain data.
+     */
+    public static byte getOccupiedOctantMask(Object worldEngine, int lvl,
+                                             int wsX, int wsY, int wsZ) {
+        ensureWorldSectionBindings();
+        try {
+            Object section = VoxyEngine.acquireIfExistsMethod.invoke(
+                    worldEngine, lvl, wsX, wsY, wsZ);
+            if (section == null) {
+                return 0;
+            }
+            long[] data = (long[]) worldSectionDataField.get(section);
+            byte mask = computeOccupiedOctantMask(data);
+            VoxyEngine.worldSectionReleaseMethod.invoke(section);
+            return mask;
+        } catch (Exception e) {
+            LOGGER.warn("getOccupiedOctantMask failed: {}", e.getMessage());
+            return 0;
+        }
+    }
+
+    /**
      * Returns {@code true} if Voxy has fully claimed all 8 octants of the specified
      * WorldSection ({@code nonEmptyChildren == 0xFF}).  This is the correct guard
      * for skipping model inference entirely: if all octants are already populated,

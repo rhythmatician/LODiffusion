@@ -1351,7 +1351,7 @@ public final class LodGenerationService {
         long lastPartialFillScanMs = 0;
 
         // Initial partial-fill scan across ALL levels before entering the main loop.
-        int initialFill = scanAndEnqueuePartialFillAllLevels(worldEngine, NEAR_SEED_L4_RADIUS);
+        int initialFill = scanAndEnqueuePartialFillAllLevels(world, worldEngine, NEAR_SEED_L4_RADIUS);
         if (initialFill > 0) {
             HelloTerrainMod.LOGGER.info(
                     "[LodGen][PartialFill] initial scan enqueued {} fill requests across all levels",
@@ -1359,21 +1359,20 @@ public final class LodGenerationService {
         }
 
         while (!stopRequested.get()) {
+            long now = System.currentTimeMillis();
+            if (!ShadowRouterJobQueue.hasPartialFillWork()
+                    && now - lastPartialFillScanMs >= PARTIAL_FILL_SCAN_INTERVAL_MS) {
+                int filled = scanAndEnqueuePartialFillAllLevels(world, worldEngine, NEAR_SEED_L4_RADIUS);
+                lastPartialFillScanMs = now;
+                if (filled > 0) {
+                    HelloTerrainMod.LOGGER.info(
+                            "[LodGen][PartialFill] rescan enqueued {} fill requests across all levels",
+                            filled);
+                }
+            }
+
             VoxyRequestDecoder.VoxyNodeRequest req = ShadowRouterJobQueue.dequeueAny();
             if (req == null) {
-                // Periodically rescan for partial sections when the queue is idle.
-                long now = System.currentTimeMillis();
-                if (now - lastPartialFillScanMs >= PARTIAL_FILL_SCAN_INTERVAL_MS) {
-                    int filled = scanAndEnqueuePartialFillAllLevels(
-                            worldEngine, NEAR_SEED_L4_RADIUS);
-                    lastPartialFillScanMs = now;
-                    if (filled > 0) {
-                        HelloTerrainMod.LOGGER.info(
-                                "[LodGen][PartialFill] rescan enqueued {} fill requests across all levels",
-                                filled);
-                        continue; // skip sleep, process fill requests immediately
-                    }
-                }
                 try {
                     Thread.sleep(DEMAND_IDLE_SLEEP_MS);
                 } catch (InterruptedException ie) {
@@ -1400,12 +1399,12 @@ public final class LodGenerationService {
                     case FAILED -> failed++;
                 }
 
-                long now = System.currentTimeMillis();
+                long progressNow = System.currentTimeMillis();
                 if (written == 1
                         || dequeued == 1
-                        || now - lastProgressLogMs >= DEMAND_PROGRESS_LOG_MS) {
+                        || progressNow - lastProgressLogMs >= DEMAND_PROGRESS_LOG_MS) {
                     logDemandProgress(startMs, dequeued, written, skipped, deferred, failed);
-                    lastProgressLogMs = now;
+                    lastProgressLogMs = progressNow;
                 }
             } finally {
                 if (!requeued) {
@@ -1422,15 +1421,62 @@ public final class LodGenerationService {
     }
 
     /**
-     * Scan ALL parent levels (L1 → L4) for partial WorldSections and enqueue child
-     * fill requests.  Returns total enqueued across all levels.
+     * Scan ALL levels for partial WorldSections and enqueue fill requests.
+     * L0 must be discovered from actual voxel occupancy; L1-L4 can use child masks.
      */
-    private int scanAndEnqueuePartialFillAllLevels(Object worldEngine, int radius) {
-        int total = 0;
+    private int scanAndEnqueuePartialFillAllLevels(World world, Object worldEngine, int radius) {
+        int total = scanAndEnqueueL0PartialFill(world, worldEngine, NEAR_SEED_L0_RADIUS);
         for (int parentLevel = 1; parentLevel <= 4; parentLevel++) {
             total += scanAndEnqueuePartialFill(worldEngine, parentLevel, radius);
         }
         return total;
+    }
+
+    /**
+     * L0 has no child-existence mask for its internal 16^3 octants, so hybrid
+     * vanilla sections must be discovered by looking at actual voxel occupancy.
+     */
+    private int scanAndEnqueueL0PartialFill(World world, Object worldEngine, int radius) {
+        int centerX = WorldSectionCoord.sectionToWorldSection(playerSectionX, 0);
+        int centerZ = WorldSectionCoord.sectionToWorldSection(playerSectionZ, 0);
+        int centerY = WorldSectionCoord.sectionToWorldSection(playerSectionY, 0);
+
+        int enqueued = 0;
+        for (int dy = -1; dy <= 1; dy++) {
+            int wsY = centerY + dy;
+            if (isOutOfWorldY(0, wsY)) {
+                continue;
+            }
+            for (int dz = -radius; dz <= radius; dz++) {
+                for (int dx = -radius; dx <= radius; dx++) {
+                    int wsX = centerX + dx;
+                    int wsZ = centerZ + dz;
+
+                    byte loadedMask = loadedChunkOctantMask(world, 0, wsX, wsY, wsZ);
+                    if (loadedMask == 0 || loadedMask == (byte) 0xFF) {
+                        continue;
+                    }
+                    if (!VoxyCompat.sectionExistsAtLevel(worldEngine, 0, wsX, wsY, wsZ)) {
+                        continue;
+                    }
+
+                    byte occupiedMask = VoxyCompat.getOccupiedOctantMask(worldEngine, 0, wsX, wsY, wsZ);
+                    if (occupiedMask != loadedMask) {
+                        continue;
+                    }
+
+                    VoxyRequestDecoder.VoxyNodeRequest req = new VoxyRequestDecoder.VoxyNodeRequest();
+                    req.lodLevel = 0;
+                    req.worldX = wsX;
+                    req.worldY = wsY;
+                    req.worldZ = wsZ;
+                    req.isPartialFill = true;
+                    ShadowRouterJobQueue.enqueue(req);
+                    enqueued++;
+                }
+            }
+        }
+        return enqueued;
     }
 
     /**
