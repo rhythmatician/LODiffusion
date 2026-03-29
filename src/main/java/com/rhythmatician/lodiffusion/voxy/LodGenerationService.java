@@ -102,10 +102,6 @@ public final class LodGenerationService {
         private static final int DEMAND_IDLE_SLEEP_MS =
             Config.getInt("demandIdleSleepMs", 25);
 
-        /** Temporary milestone gate: only service L3+ until coarse visibility is stable. */
-        private static final int MILESTONE_MIN_LOD_LEVEL = 3;
-        private static final int MILESTONE_LOD_LEVEL = 4;
-
             /** Throttle interval for demand-pipeline progress diagnostics. */
             private static final int DEMAND_PROGRESS_LOG_MS =
                 Config.getInt("demandProgressLogMs", 5000);
@@ -129,6 +125,23 @@ public final class LodGenerationService {
             /** Horizontal ring radius in world-sections for L4 seed requests. */
             private static final int NEAR_SEED_L4_RADIUS =
                 Config.getInt("nearSeedL4Radius", 4);
+
+            /**
+             * Regular seeding uses the same world-section count per LOD by default.
+             * Because finer levels have smaller world-sections, this naturally shrinks
+             * the block radius at each finer level without creating giant gaps.
+             */
+            private static final int NEAR_SEED_L3_RADIUS =
+                Math.max(1, Config.getInt("nearSeedL3Radius", NEAR_SEED_L4_RADIUS));
+
+            private static final int NEAR_SEED_L2_RADIUS =
+                Math.max(1, Config.getInt("nearSeedL2Radius", NEAR_SEED_L4_RADIUS));
+
+            private static final int NEAR_SEED_L1_RADIUS =
+                Math.max(1, Config.getInt("nearSeedL1Radius", NEAR_SEED_L4_RADIUS));
+
+            private static final int NEAR_SEED_L0_RADIUS =
+                Math.max(1, Config.getInt("nearSeedL0Radius", NEAR_SEED_L4_RADIUS));
 
             private static final int[] L2_CLIMATE_CHANNELS = {
                 RouterField.TEMPERATURE.ordinal(),
@@ -393,7 +406,12 @@ public final class LodGenerationService {
             return;
         }
 
-        int enqueued = enqueueLocalSeedRing(MILESTONE_LOD_LEVEL, NEAR_SEED_L4_RADIUS, now);
+        int enqueuedL4 = enqueueLocalSeedRing(4, NEAR_SEED_L4_RADIUS, now);
+        int enqueuedL3 = enqueueLocalSeedRing(3, NEAR_SEED_L3_RADIUS, now);
+        int enqueuedL2 = enqueueLocalSeedRing(2, NEAR_SEED_L2_RADIUS, now);
+        int enqueuedL1 = enqueueLocalSeedRing(1, NEAR_SEED_L1_RADIUS, now);
+        int enqueuedL0 = enqueueLocalSeedRing(0, NEAR_SEED_L0_RADIUS, now);
+        int enqueued = enqueuedL4 + enqueuedL3 + enqueuedL2 + enqueuedL1 + enqueuedL0;
 
         lastSeedPlayerSectionX = playerSectionX;
         lastSeedPlayerSectionZ = playerSectionZ;
@@ -406,8 +424,11 @@ public final class LodGenerationService {
 
         if (enqueued > 0 && (movedSection || (now % 5000L) < NEAR_SEED_INTERVAL_MS)) {
             HelloTerrainMod.LOGGER.info(
-                    "[LodGen][Seed] enqueued={} lod={} r={} queueDepth={} player=({}, {}, {})",
-                    enqueued, MILESTONE_LOD_LEVEL, NEAR_SEED_L4_RADIUS,
+                    "[LodGen][Seed] enqueued={} L4={} L3={} L2={} L1={} L0={} radii=[{},{},{},{},{}] queueDepth={} player=({}, {}, {})",
+                    enqueued,
+                    enqueuedL4, enqueuedL3, enqueuedL2, enqueuedL1, enqueuedL0,
+                    NEAR_SEED_L4_RADIUS, NEAR_SEED_L3_RADIUS, NEAR_SEED_L2_RADIUS,
+                    NEAR_SEED_L1_RADIUS, NEAR_SEED_L0_RADIUS,
                     queueDepth,
                     playerSectionX, playerSectionY, playerSectionZ);
         }
@@ -1401,12 +1422,12 @@ public final class LodGenerationService {
     }
 
     /**
-     * Scan ALL levels (L4 → L1) for partial WorldSections and enqueue child
+     * Scan ALL parent levels (L1 → L4) for partial WorldSections and enqueue child
      * fill requests.  Returns total enqueued across all levels.
      */
     private int scanAndEnqueuePartialFillAllLevels(Object worldEngine, int radius) {
         int total = 0;
-        for (int parentLevel = 4; parentLevel >= 1; parentLevel--) {
+        for (int parentLevel = 1; parentLevel <= 4; parentLevel++) {
             total += scanAndEnqueuePartialFill(worldEngine, parentLevel, radius);
         }
         return total;
@@ -1447,8 +1468,16 @@ public final class LodGenerationService {
 
                     byte childMask = VoxyCompat.getChildExistenceMask(
                             worldEngine, parentLevel, wsX, wsY, wsZ);
-                    if (childMask == 0 || childMask == (byte) 0xFF) {
-                        continue; // fully empty or fully populated — nothing to fill
+                    if (childMask == (byte) 0xFF) {
+                        continue; // fully populated — nothing to fill
+                    }
+                    // childMask==0 could mean truly empty OR a written parent
+                    // with no children yet.  Only descend when the parent
+                    // section actually exists in Voxy.
+                    if (childMask == 0
+                            && !VoxyCompat.sectionExistsAtLevel(
+                                    worldEngine, parentLevel, wsX, wsY, wsZ)) {
+                        continue;
                     }
 
                     // Partial section — enqueue generation for missing children.
@@ -1505,8 +1534,6 @@ public final class LodGenerationService {
         int wsZ = req.worldZ;
 
         if (level < 0 || level > 4) return DemandProcessResult.SKIPPED;
-        // Partial-fill requests bypass the milestone gate — they fix rendering holes.
-        if (!req.isPartialFill && (level < MILESTONE_MIN_LOD_LEVEL)) return DemandProcessResult.SKIPPED;
         if (!voxyModelRunner.hasLevel(level)) return DemandProcessResult.SKIPPED;
         if (isOutOfWorldY(level, wsY)) return DemandProcessResult.SKIPPED;
         if (VoxyCompat.allOctantsPopulated(worldEngine, level, wsX, wsY, wsZ)) {
@@ -1581,12 +1608,9 @@ public final class LodGenerationService {
         // Do not skip writing the requested level when occupancy predicts no child expansion.
         // Voxy can still render this coarse level as fallback while finer children are absent.
 
-        byte preserveOctantsMask = 0;
-        if (level == 0) {
-            preserveOctantsMask = loadedChunkOctantMaskL0(world, wsX, wsY, wsZ);
-            if (preserveOctantsMask == (byte) 0xFF) {
-                return DemandProcessResult.SKIPPED;
-            }
+        byte preserveOctantsMask = loadedChunkOctantMask(world, level, wsX, wsY, wsZ);
+        if (preserveOctantsMask == (byte) 0xFF) {
+            return DemandProcessResult.SKIPPED;
         }
 
         int[][][] writeBlocks = padYTo32(modelOut.blocks(), modelOut.dimY());
@@ -1806,18 +1830,33 @@ public final class LodGenerationService {
         ShadowRouterJobQueue.enqueue(parentReq);
     }
 
-    private byte loadedChunkOctantMaskL0(World world, int wsX, int wsY, int wsZ) {
-        int baseChunkX = wsX << 1;
-        int baseChunkZ = wsZ << 1;
+    private byte loadedChunkOctantMask(World world, int level, int wsX, int wsY, int wsZ) {
+        if (level < 0 || level > 4) {
+            return 0;
+        }
+
+        int chunkSpanPerAxis = 1 << (level + 1);
+        int chunkSpanPerOctant = 1 << level;
+        int baseChunkX = wsX * chunkSpanPerAxis;
+        int baseChunkZ = wsZ * chunkSpanPerAxis;
         byte mask = 0;
 
-        // L0 world-section is 32^3, i.e., 2x2x2 octants of 16^3.
-        // For preservation we use loaded chunk presence in X/Z; this prevents
-        // overwriting known-good near-player data at chunk boundaries.
+        // Preserve any octant whose X/Z footprint overlaps a currently loaded
+        // vanilla chunk column. We intentionally ignore Y here: if vanilla owns
+        // any part of the column, do not let coarse LOD writes replace it.
         for (int octant = 0; octant < 8; octant++) {
-            int cx = baseChunkX + (octant & 1);
-            int cz = baseChunkZ + ((octant >> 1) & 1);
-            if (tryGetLoadedChunk(world, cx, cz) != null) {
+            int chunkStartX = baseChunkX + ((octant & 1) * chunkSpanPerOctant);
+            int chunkStartZ = baseChunkZ + (((octant >> 1) & 1) * chunkSpanPerOctant);
+            boolean loaded = false;
+            for (int dx = 0; dx < chunkSpanPerOctant && !loaded; dx++) {
+                for (int dz = 0; dz < chunkSpanPerOctant; dz++) {
+                    if (tryGetLoadedChunk(world, chunkStartX + dx, chunkStartZ + dz) != null) {
+                        loaded = true;
+                        break;
+                    }
+                }
+            }
+            if (loaded) {
                 mask |= (byte) (1 << octant);
             }
         }

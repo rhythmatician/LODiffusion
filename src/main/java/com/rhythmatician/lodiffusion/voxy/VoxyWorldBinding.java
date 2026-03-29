@@ -485,19 +485,27 @@ public final class VoxyWorldBinding {
                     worldEngine, lvl, wsX, wsY, wsZ);
             if (existingSection != null) {
                 existingNec = readNec(existingSection);
-                VoxyEngine.worldSectionReleaseMethod.invoke(existingSection);
-                // At L0, nonEmptyChildren is whole-section (0 or 0xFF), not per-octant:
-                // 0xFF means real chunk data exists — preserve it entirely.
                 if (lvl == 0 && existingNec == (byte) 0xFF) {
-                    return 0;
-                }
-                // For L1-4, do not trust existing NEC blindly: stale masks from older
-                // runs may advertise children that do not actually exist. Skip only when
-                // all child world-sections are truly present.
-                if (lvl > 0) {
-                    byte childMask = computeChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ);
-                    if (childMask == (byte) 0xFF) {
-                        return 0;
+                    // L0 NEC=0xFF means "has some blocks", NOT "all 8 octants full".
+                    // Scan actual voxel data to find which octants have real blocks.
+                    long[] existingData = (long[]) worldSectionDataField.get(existingSection);
+                    byte occupied = computeOccupiedOctantMask(existingData);
+                    VoxyEngine.worldSectionReleaseMethod.invoke(existingSection);
+                    if (occupied == (byte) 0xFF) {
+                        return 0; // every octant genuinely has blocks
+                    }
+                    // Preserve only the octants that actually contain data.
+                    preserveOctantsMask |= occupied;
+                } else {
+                    VoxyEngine.worldSectionReleaseMethod.invoke(existingSection);
+                    // For L1-4, do not trust existing NEC blindly: stale masks from older
+                    // runs may advertise children that do not actually exist. Skip only when
+                    // all child world-sections are truly present.
+                    if (lvl > 0) {
+                        byte childMask = computeChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ);
+                        if (childMask == (byte) 0xFF) {
+                            return 0;
+                        }
                     }
                 }
             }
@@ -523,6 +531,9 @@ public final class VoxyWorldBinding {
             if (lvl > 0) {
                 // Preserve any octant that already has real finer child data.
                 preserveMask |= computeChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ);
+            } else {
+                // At L0, preserve octants that already contain vanilla voxel data.
+                preserveMask |= computeOccupiedOctantMask(data);
             }
 
             if (preserveMask == 0) {
@@ -625,6 +636,35 @@ public final class VoxyWorldBinding {
     }
 
     /**
+     * Scan a 32³ voxel array and return a bitmask of which 16³ octants
+     * contain at least one non-air voxel.
+     * Bit layout: bit0=X, bit1=Z, bit2=Y.
+     */
+    private static byte computeOccupiedOctantMask(long[] data) {
+        byte mask = 0;
+        for (int octant = 0; octant < 8; octant++) {
+            int ox = (octant & 1) * 16;
+            int oz = ((octant >> 1) & 1) * 16;
+            int oy = ((octant >> 2) & 1) * 16;
+            boolean hasBlock = false;
+            for (int iy = oy; iy < oy + 16 && !hasBlock; iy++) {
+                for (int iz = oz; iz < oz + 16 && !hasBlock; iz++) {
+                    for (int ix = ox; ix < ox + 16; ix++) {
+                        if (!isAir(data[(iy << 10) | (iz << 5) | ix])) {
+                            hasBlock = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (hasBlock) {
+                mask |= (byte) (1 << octant);
+            }
+        }
+        return mask;
+    }
+
+    /**
      * Read {@code nonEmptyChildren} from an acquired {@code WorldSection} instance.
      * <p>The section must be held acquired (reference count) by the caller.
      */
@@ -676,12 +716,14 @@ public final class VoxyWorldBinding {
             Object section = VoxyEngine.acquireIfExistsMethod.invoke(
                     worldEngine, lvl, wsX, wsY, wsZ);
             if (section == null) return false;
-            byte nec = readNec(section);
-            VoxyEngine.worldSectionReleaseMethod.invoke(section);
-
             if (lvl == 0) {
-                return nec == (byte) 0xFF;
+                long[] data = (long[]) worldSectionDataField.get(section);
+                byte occupied = computeOccupiedOctantMask(data);
+                VoxyEngine.worldSectionReleaseMethod.invoke(section);
+                return occupied == (byte) 0xFF;
             }
+
+            VoxyEngine.worldSectionReleaseMethod.invoke(section);
 
             // True completeness for L1+: every child world-section exists.
             return computeChildExistenceMask(worldEngine, lvl, wsX, wsY, wsZ) == (byte) 0xFF;

@@ -11,8 +11,8 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  */
 public class ShadowRouterJobQueue {
 
-    // Milestone mode: process L3+ until coarse visibility and partial fill are stable.
-    private static final int MILESTONE_MIN_LOD_LEVEL = 3;
+    private static final int[] PARTIAL_FILL_PRIORITY_ORDER = {0, 1, 2, 3, 4};
+    private static final int[] REGULAR_PRIORITY_ORDER = {4, 3, 2, 1, 0};
 
     // Hard cap to prevent far-field request floods from starving nearby refinement.
     // Units are player-section coordinates (16-block sections).
@@ -117,15 +117,15 @@ public class ShadowRouterJobQueue {
     
     /**
      * Dequeue the highest-priority request across all LOD levels.
-     * Priority: closest distance, prefer higher LOD (coarser first) for efficiency.
+     * Priority: partial-fill first (L0 → L4), then regular generation (L4 → L0).
      * 
      * @return Next request to generate, or null if queue is empty
      */
     public static VoxyRequestDecoder.VoxyNodeRequest dequeueAny() {
         lock.writeLock().lock();
         try {
-            // Priority 1: partial-fill at ANY level (closest first within each level).
-            for (int lod = 4; lod >= 0; lod--) {
+            // Priority 1: partial-fill from finest to coarsest.
+            for (int lod : PARTIAL_FILL_PRIORITY_ORDER) {
                 VoxyRequestDecoder.VoxyNodeRequest req = partialFillQueues[lod].poll();
                 if (req != null) {
                     RequestKey key = RequestKey.of(req);
@@ -134,8 +134,8 @@ public class ShadowRouterJobQueue {
                     return req;
                 }
             }
-            // Priority 2: regular generation, coarsest first (L4 → L3 → ...).
-            for (int lod = 4; lod >= MILESTONE_MIN_LOD_LEVEL; lod--) {
+            // Priority 2: regular generation from coarsest to finest.
+            for (int lod : REGULAR_PRIORITY_ORDER) {
                 VoxyRequestDecoder.VoxyNodeRequest req = lodQueues[lod].poll();
                 if (req != null) {
                     RequestKey key = RequestKey.of(req);
@@ -157,7 +157,7 @@ public class ShadowRouterJobQueue {
      * @return Next request at that LOD, or null
      */
     public static VoxyRequestDecoder.VoxyNodeRequest dequeue(int lod) {
-        if (lod < MILESTONE_MIN_LOD_LEVEL || lod > 4) {
+        if (lod < 0 || lod > 4) {
             return null;
         }
         
@@ -197,7 +197,7 @@ public class ShadowRouterJobQueue {
         if (request == null || request.lodLevel < 0 || request.lodLevel > 4) {
             return;
         }
-        if (!shouldAccept(request)) {
+        if (!request.isPartialFill && !shouldAccept(request)) {
             return;
         }
 
@@ -208,7 +208,11 @@ public class ShadowRouterJobQueue {
             if (queuedKeys.contains(key)) {
                 return;
             }
-            lodQueues[request.lodLevel].offer(request);
+            if (request.isPartialFill) {
+                partialFillQueues[request.lodLevel].offer(request);
+            } else {
+                lodQueues[request.lodLevel].offer(request);
+            }
             queuedKeys.add(key);
         } finally {
             lock.writeLock().unlock();
@@ -243,7 +247,7 @@ public class ShadowRouterJobQueue {
         }
         lock.readLock().lock();
         try {
-            return lodQueues[lod].size();
+            return lodQueues[lod].size() + partialFillQueues[lod].size();
         } finally {
             lock.readLock().unlock();
         }
@@ -336,8 +340,7 @@ public class ShadowRouterJobQueue {
     }
 
     private static boolean shouldAccept(VoxyRequestDecoder.VoxyNodeRequest req) {
-        return req.lodLevel >= MILESTONE_MIN_LOD_LEVEL
-                && estimateRawPlayerSectionDistance(req) <= MAX_PLAYER_SECTION_DISTANCE;
+        return estimateRawPlayerSectionDistance(req) <= MAX_PLAYER_SECTION_DISTANCE;
     }
 
     private static double estimateRawPlayerSectionDistance(VoxyRequestDecoder.VoxyNodeRequest req) {

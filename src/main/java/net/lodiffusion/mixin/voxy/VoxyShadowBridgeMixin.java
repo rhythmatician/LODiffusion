@@ -21,7 +21,6 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public class VoxyShadowBridgeMixin {
 
     private static final int WATCH_FLAG_INITIAL_MESH = 0x1;
-    private static final int MILESTONE_MIN_LOD_LEVEL = 3;
     private static final long BRIDGE_LOG_INTERVAL_MS = 5000L;
 
     private static long lastBridgeLogMs;
@@ -55,10 +54,6 @@ public class VoxyShadowBridgeMixin {
             }
 
             if (decoded.level() < 0 || decoded.level() > 4) {
-                return;
-            }
-
-            if (decoded.level() < MILESTONE_MIN_LOD_LEVEL) {
                 return;
             }
 
