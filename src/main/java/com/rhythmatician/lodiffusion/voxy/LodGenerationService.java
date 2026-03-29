@@ -1884,6 +1884,10 @@ public final class LodGenerationService {
             return 0;
         }
 
+        if (level == 0) {
+            return loadedVanillaL0OctantMask(world, wsX, wsY, wsZ);
+        }
+
         int chunkSpanPerAxis = 1 << (level + 1);
         int chunkSpanPerOctant = 1 << level;
         int baseChunkX = wsX * chunkSpanPerAxis;
@@ -1909,6 +1913,58 @@ public final class LodGenerationService {
                 mask |= (byte) (1 << octant);
             }
         }
+        return mask;
+    }
+
+    /**
+     * At L0, preserve only octants whose corresponding loaded vanilla 16^3 slice
+     * actually contains non-air blocks.
+     *
+     * <p>Using mere chunk-column presence here creates a one-chunk moat around the
+     * detailed terrain: any loaded chunk overlapping the 32^3 WorldSection causes
+     * its whole 16x16 XZ octant to be skipped, even if that particular Y half is
+     * empty or not rendered by vanilla. That produces the persistent 16-block gap
+     * seen at the edge of the detailed region.
+     */
+    private byte loadedVanillaL0OctantMask(World world, int wsX, int wsY, int wsZ) {
+        int baseChunkX = wsX << 1;
+        int baseChunkZ = wsZ << 1;
+        int baseBlockY = wsY << 5; // wsY * 32
+        byte mask = 0;
+        BlockPos.Mutable probePos = new BlockPos.Mutable();
+
+        for (int octant = 0; octant < 8; octant++) {
+            int chunkX = baseChunkX + (octant & 1);
+            int chunkZ = baseChunkZ + ((octant >> 1) & 1);
+            int blockYStart = baseBlockY + (((octant >> 2) & 1) << 4);
+
+            Chunk chunk = tryGetLoadedChunk(world, chunkX, chunkZ);
+            if (chunk == null) {
+                continue;
+            }
+
+            boolean occupied = false;
+            int blockXStart = chunkX << 4;
+            int blockZStart = chunkZ << 4;
+            for (int localY = 0; localY < 16 && !occupied; localY++) {
+                int blockY = blockYStart + localY;
+                for (int localZ = 0; localZ < 16 && !occupied; localZ++) {
+                    int blockZ = blockZStart + localZ;
+                    for (int localX = 0; localX < 16; localX++) {
+                        int blockX = blockXStart + localX;
+                        if (!chunk.getBlockState(probePos.set(blockX, blockY, blockZ)).isAir()) {
+                            occupied = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (occupied) {
+                mask |= (byte) (1 << octant);
+            }
+        }
+
         return mask;
     }
 
