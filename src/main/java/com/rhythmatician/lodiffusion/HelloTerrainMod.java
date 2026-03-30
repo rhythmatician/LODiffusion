@@ -45,10 +45,8 @@ public class HelloTerrainMod implements ModInitializer {
 			LOGGER.info("[LODiffusion] Voxy 5-model set found in {}", modelDir);
 		} else if (OnnxModelFiles.hasAnyVoxyModel(modelDir)) {
 			LOGGER.warn("[LODiffusion] Partial Voxy model set in {} — expected voxy_l0.onnx through voxy_l4.onnx", modelDir);
-		} else if (OnnxModelFiles.hasLegacySparseModel(modelDir)) {
-			LOGGER.info("[LODiffusion] Legacy sparse_octree.onnx found in {}", modelDir);
 		} else {
-			LOGGER.warn("[LODiffusion] No supported ONNX model files found in {} — place voxy_l0.onnx through voxy_l4.onnx for the new runtime", modelDir);
+			LOGGER.warn("[LODiffusion] No Voxy ONNX model files found in {} — place voxy_l0.onnx through voxy_l4.onnx", modelDir);
 		}
 
 		LOGGER.info("[LODiffusion] Mod initialization complete!");

@@ -14,7 +14,6 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 import com.rhythmatician.lodiffusion.Config;
 import com.rhythmatician.lodiffusion.HelloTerrainMod;
-import com.rhythmatician.lodiffusion.onnx.SparseOctreeModelRunner;
 import com.rhythmatician.lodiffusion.onnx.VoxyModelRunner;
 import com.rhythmatician.lodiffusion.world.noise.BiomeProvider;
 import com.rhythmatician.lodiffusion.world.noise.RouterField;
@@ -36,13 +35,11 @@ import net.minecraft.world.chunk.ChunkStatus;
 
 /**
  * Background service that generates terrain around the player using the
- * sparse-root ONNX model and pushes results into Voxy for distant rendering.
+ * Voxy ONNX model set and pushes results into Voxy for distant rendering.
  *
- * <h3>Architecture — Sparse Octree Pipeline</h3>
- * <p>Generates sections in a spiral pattern around the player.  Each column
- * is conditioned on vanilla noise (15 channels), biome IDs, and heightmap
- * data via {@link SparseOctreeModelRunner}.  Results are written to Voxy
- * through {@link VoxySectionWriter}.
+ * <h3>Architecture — Demand-driven Voxy Pipeline</h3>
+ * <p>Generates sections from demand requests around the player. Results are
+ * written to Voxy through {@link VoxySectionWriter}.
  *
  * <p>Sections are prioritised by Manhattan distance from the player.
  */
@@ -76,27 +73,12 @@ public final class LodGenerationService {
         return blockYMaxExcl <= MIN_WORLD_BLOCK_Y || blockYMin >= MAX_WORLD_BLOCK_Y;
     }
 
-
-
-
-
-
-
-
     /**
      * Generation radius (in sections).  All sections within this Manhattan
      * distance from the player are generated, closest first.
      */
     private static final int GENERATION_RADIUS =
             Config.getInt("generationRadius", 32);
-
-
-
-    /**
-     * Minimum columns to process before declaring the sparse-root model
-     * all-air and falling back to the heightmap generator.
-     */
-    private static final int FALLBACK_MIN_COLUMNS = Config.getInt("fallbackMinColumns", 50);
 
         /** Demand-driven queue poll sleep when there is no pending job. */
         private static final int DEMAND_IDLE_SLEEP_MS =
@@ -198,15 +180,7 @@ public final class LodGenerationService {
      * before the world fully joins (e.g. during "Loading terrain...").
      * {@code null} if pre-loading was not requested.
      */
-    private volatile CompletableFuture<SparseOctreeModelRunner> preloadFuture;
-
-    /**
-     * Sparse-root model runner — the primary terrain generation model.
-     * {@code null} if {@code sparse_octree.onnx} is absent or failed to load.
-     * When loaded, drives the flat subchunk pipeline that replaces the old
-     * octree init/refine/leaf hierarchy.
-     */
-    private volatile SparseOctreeModelRunner sparseRootRunner;
+    private volatile CompletableFuture<VoxyModelRunner> preloadFuture;
 
     /** New 5-model hierarchical runner (L4→L0). */
     private volatile VoxyModelRunner voxyModelRunner;
@@ -258,7 +232,7 @@ public final class LodGenerationService {
     // ------------------------------------------------------------------ //
 
     /**
-     * Begin loading the three ONNX models on a background thread so they are
+    * Begin loading the Voxy ONNX model set on a background thread so they are
      * ready (or nearly so) by the time {@link #start} is called.
      *
      * <p>Safe to call multiple times — a second call is a no-op while a
@@ -277,19 +251,19 @@ public final class LodGenerationService {
         }
         if (!Config.useOnnxTerrain()) return;
 
-        HelloTerrainMod.LOGGER.info("[LodGen] Pre-loading sparse-root model in background...");
+        HelloTerrainMod.LOGGER.info("[LodGen] Pre-loading VoxyModelRunner in background...");
         preloadFuture = CompletableFuture.supplyAsync(() -> {
             try {
                 java.nio.file.Path modelDir = Config.modelDir();
-                SparseOctreeModelRunner runner = SparseOctreeModelRunner.tryLoad(modelDir);
+                VoxyModelRunner runner = VoxyModelRunner.tryLoad(modelDir);
                 if (runner != null) {
-                    HelloTerrainMod.LOGGER.info("[LodGen] Sparse-root pre-load complete");
+                    HelloTerrainMod.LOGGER.info("[LodGen] VoxyModelRunner pre-load complete");
                 } else {
-                    HelloTerrainMod.LOGGER.warn("[LodGen] Sparse-root pre-load: model not found");
+                    HelloTerrainMod.LOGGER.warn("[LodGen] VoxyModelRunner pre-load: model set not found");
                 }
                 return runner;
             } catch (Exception e) {
-                HelloTerrainMod.LOGGER.warn("[LodGen] Sparse-root pre-load failed (will retry in worker): {}",
+                HelloTerrainMod.LOGGER.warn("[LodGen] VoxyModelRunner pre-load failed (will retry in worker): {}",
                         e.getMessage());
                 return null;
             }
@@ -364,10 +338,6 @@ public final class LodGenerationService {
         if (voxyModelRunner != null) {
             try { voxyModelRunner.close(); } catch (Exception ignored) {}
             voxyModelRunner = null;
-        }
-        if (sparseRootRunner != null) {
-            try { sparseRootRunner.close(); } catch (Exception ignored) {}
-            sparseRootRunner = null;
         }
         HelloTerrainMod.LOGGER.info("[LodGen] Service stopped");
     }
@@ -523,10 +493,6 @@ public final class LodGenerationService {
             // ── Primary path: demand-driven 5-model voxy runtime ────────
             voxyModelRunner = resolveVoxyModel();
 
-            // Legacy fallback path: sparse-root model.
-            // Resolve from pre-loaded future if available, otherwise load synchronously.
-            sparseRootRunner = resolveSparseOctreeModel();
-
             Object voxyMapper = VoxyCompat.getMapper(worldEngine);
             Registry<Biome> biomeRegistry =
                     world.getRegistryManager().getOrThrow(RegistryKeys.BIOME);
@@ -552,48 +518,18 @@ public final class LodGenerationService {
 
                 HelloTerrainMod.LOGGER.warn(
                     "[LodGen] Demand-driven Voxy pipeline produced no terrain — "
-                    + "falling back to sparse-root pipeline");
-                generatedSections.clear();
-                }
-
-            if (sparseRootRunner != null && noiseAccess != null) {
-                // Sparse-root pipeline — flat per-subchunk generation
-                VoxyBlockMapper blockMapper = VoxyBlockMapper.build(
-                        sparseRootRunner.vocabulary(), voxyMapper, biomeRegistry);
-                VoxySectionWriter writer = new VoxySectionWriter(worldEngine, blockMapper);
-
-                HelloTerrainMod.LOGGER.info(
-                        "[LodGen] Sparse-root model loaded — starting noise-conditioned pipeline " +
-                        "(vocab={}, biomeVoxyId={})",
-                        sparseRootRunner.vocabulary() != null
-                                ? sparseRootRunner.vocabulary().size() : "none",
-                        blockMapper.defaultBiomeVoxyId());
-
-                waitForPlayerPosition();
-                if (stopRequested.get()) return;
-
-                HelloTerrainMod.LOGGER.info(
-                        "[LodGen] Starting SPARSE-ROOT generation from player section ({}, {}, {})",
-                        playerSectionX, playerSectionY, playerSectionZ);
-
-                boolean produced = runSparseOctreePipeline(world, worldEngine, writer, blockMapper, voxyMapper);
-                if (produced) return; // model is producing real terrain
-
-                // Model produced 0 sections — fall through to heightmap fallback
-                HelloTerrainMod.LOGGER.warn(
-                        "[LodGen] Sparse-root model produced no terrain — " +
-                        "falling back to heightmap generator");
+                    + "falling back to heightmap generator");
                 generatedSections.clear();
             }
 
             // ── Heightmap fallback path ──────────────────────────────────
-            if (sparseRootRunner != null && noiseAccess == null) {
+                if (voxyModelRunner != null && noiseAccess == null) {
                 HelloTerrainMod.LOGGER.warn(
-                        "[LodGen] Sparse-root model loaded but noise access unavailable — " +
+                    "[LodGen] VoxyModelRunner loaded but noise access unavailable — " +
                         "falling back to heightmap generator");
-            } else if (sparseRootRunner == null) {
+                } else if (voxyModelRunner == null) {
                 HelloTerrainMod.LOGGER.info(
-                        "[LodGen] No sparse-root model found — using heightmap fallback generator");
+                    "[LodGen] No Voxy model set found — using heightmap fallback generator");
             }
 
             HeightmapFallbackGenerator.FallbackBlockIds fallbackBlocks =
@@ -688,10 +624,8 @@ public final class LodGenerationService {
                     rawHm        = hmData.worldSurface();
                     oceanFloorHm = hmData.oceanFloor();
 
-                    // Column biomes (2D, 16×16) for Voxy block writes.
-                    // We sample at surface-Y at quart centres, expanding to block res.
-                    // Note: 3D section-level biomes for ONNX are obtained separately
-                    // in runSparseOctreePipeline() via BiomeProvider.classifyBiomes().
+                        // Column biomes (2D, 16×16) for Voxy block writes.
+                        // We sample at surface-Y at quart centres, expanding to block res.
                     String[][] biomeNames = noiseAccess.sampleBiomeNames(
                             sectionX, sectionZ, rawHm);
                     biomeIdx = new int[16][16];
@@ -915,235 +849,6 @@ public final class LodGenerationService {
             }
         }
         return null;
-    }
-
-    // ------------------------------------------------------------------ //
-    //  Sparse-root pipeline
-    // ------------------------------------------------------------------ //
-
-    /**
-     * Flat, per-subchunk generation pipeline driven by the sparse-root model.
-     *
-     * <p>Iterates all 16³ subchunks in a spiral around the player, samples
-     * real Minecraft noise via {@link WorldNoiseAccess}, and writes the result
-     * directly to Voxy.  No octree hierarchy — the sparse-root model produces
-     * block predictions for each subchunk independently.
-     *
-     * <p>This replaces the old octree init/refine/leaf pipeline.
-     */
-    /**
-     * Runs the sparse-octree ONNX model pipeline. Returns {@code true} if
-     * the model produced at least one non-air section, {@code false} if
-     * the caller should fall back to the heightmap generator.
-     */
-    private boolean runSparseOctreePipeline(World world, Object worldEngine,
-                                            VoxySectionWriter writer,
-                                            VoxyBlockMapper blockMapper,
-                                            Object voxyMapper) {
-        int totalSections = 0;
-        int skippedAir = 0;
-        int skippedExisting = 0;
-        int columnsProcessed = 0;
-        int inferenceFails = 0;
-        long startTime = System.currentTimeMillis();
-
-        HelloTerrainMod.LOGGER.info(
-                "[LodGen] Sparse-root pipeline starting — continuous mode, radius={}",
-                GENERATION_RADIUS);
-
-        // ── Continuous loop: re-spiral from player position each pass ───
-        while (!stopRequested.get()) {
-            int centerX = playerSectionX;
-            int centerZ = playerSectionZ;
-
-            List<int[]> columns = buildSpiralSections(centerX, centerZ,
-                    GENERATION_RADIUS, false);
-
-            boolean anyNew = false;
-
-            for (int[] col : columns) {
-                if (stopRequested.get()) break;
-
-                int sx = col[0], sz = col[1];
-
-                // If player moved far, restart spiral from new position
-                int drift = Math.abs(playerSectionX - centerX)
-                          + Math.abs(playerSectionZ - centerZ);
-                if (drift > 2) break;
-
-                // Get or build column context (cached across Y sections)
-                ColumnContext ctx = getOrBuildColumnContext(world, sx, sz);
-
-                // Compute Y range from surface heightmap
-                float minH = Float.MAX_VALUE, maxH = -Float.MAX_VALUE;
-                for (int lx = 0; lx < 16; lx++) {
-                    for (int lz = 0; lz < 16; lz++) {
-                        float h = ctx.rawHm()[lx][lz];
-                        if (h < minH) minH = h;
-                        if (h > maxH) maxH = h;
-                    }
-                }
-
-                float effectiveMax = Math.max(maxH, HeightmapFallbackGenerator.SEA_LEVEL);
-
-                int minSectionY = Math.max(
-                        Math.floorDiv((int) Math.floor(minH), 16) - SURFACE_MARGIN,
-                        Y_BASE_SECTION);
-                int maxSectionY = Math.min(
-                        Math.floorDiv((int) Math.ceil(effectiveMax), 16) + SURFACE_MARGIN,
-                        Y_BASE_SECTION + Y_SECTIONS - 1);
-
-                // Process all Y sections in this column
-                for (int sy = minSectionY; sy <= maxSectionY; sy++) {
-                    if (stopRequested.get()) break;
-
-                    long key = sectionKey(sx, sy, sz);
-                    if (generatedSections.contains(key)) continue;
-
-                    // Never infer into sections backed by loaded vanilla chunks.
-                    if (isVanillaChunkLoaded(world, sx, sz)) {
-                        skippedExisting++;
-                        generatedSections.add(key);
-                        continue;
-                    }
-
-                    // Skip if Voxy already has real data for this section
-                    if (VoxyCompat.sectionExists(worldEngine, sx, sy, sz)) {
-                        skippedExisting++;
-                        generatedSections.add(key);
-                        continue;
-                    }
-
-                    // Sample noise via the hot-swappable sampler (vanilla CPU or GPU)
-                    // and run sparse-root inference for this 16³ subchunk.
-                    NoiseRouterSampler sampler = samplerFactory.getSampler();
-                    SectionNoiseData snd = sampler.sampleSection(sx, sy, sz);
-                    float[] noise = snd.flat();
-
-                    // Classify biomes at quart resolution for the ONNX model.
-                    // BiomeProvider returns int[4][2][4] (qx/qy/qz) with
-                    // canonical palette indices (cellHeight=8 → 2 Y cells).
-                    // The model runner silently ignores biome IDs if the model
-                    // config doesn't declare a biome_ids input.
-                    int[][][] biomeIds = null;
-                    if (sparseRootRunner.acceptsBiomeIds()) {
-                        try {
-                            BiomeProvider bp = samplerFactory.getUpstreamContext()
-                                    .biomeProvider();
-                            biomeIds = bp.classifyBiomes(sx, sy, sz, snd);
-                        } catch (Exception e) {
-                            // Upstream context unavailable or biome lookup failed;
-                            // fall back to zero-fill (model runner handles null).
-                            if (diagnosticCount.get() < 3) {
-                                HelloTerrainMod.LOGGER.warn(
-                                        "[LodGen] BiomeProvider unavailable for ({},{},{}) — " +
-                                        "falling back to zero-fill biome IDs: {}",
-                                        sx, sy, sz, e.getMessage());
-                            }
-                        }
-                    }
-                    // blockYMin = the actual block-Y of this section's bottom edge.
-                    // The model is trained at per-section granularity (16 blocks),
-                    // so blockYMin is simply sy * 16.
-                    int blockYMin = sy * 16;
-                    int[][][] blocks = sparseRootRunner.runInferenceWithBiome(
-                            noise, biomeIds, ctx.hp5(), blockYMin);
-
-                    if (blocks != null) {
-                        // Build a VoxelizedSection (16³ L0) and insert via Voxy's
-                        // normal ingestion path — same approach as the heightmap
-                        // fallback.  insertUpdate handles placing the 16³ data
-                        // into the correct octant of a 32³ WorldSection and
-                        // propagating mip / existence bits upward.
-                        Object section = VoxyCompat.createEmptySection();
-                        VoxyCompat.setSectionPosition(section, sx, sy, sz);
-                        long[] data = VoxyCompat.getSectionData(section);
-
-                        int nonAir = 0;
-                        for (int iy = 0; iy < 16; iy++) {
-                            for (int iz = 0; iz < 16; iz++) {
-                                for (int ix = 0; ix < 16; ix++) {
-                                    int blockIdx = blocks[iy][iz][ix];
-                                    int biome = blockMapper.getVoxyBiomeId(
-                                            ctx.biomeIdx()[ix][iz]);
-                                    long voxel;
-                                    if (blockIdx == 0) {
-                                        voxel = VoxyCompat.composeVoxel(0, biome, 15);
-                                    } else {
-                                        int voxyBlockId = blockMapper.getVoxyBlockId(blockIdx);
-                                        voxel = VoxyCompat.composeVoxel(voxyBlockId, biome, 15);
-                                        if (voxyBlockId != 0) nonAir++;
-                                    }
-                                    data[VoxyCompat.l0Index(ix, iy, iz)] = voxel;
-                                }
-                            }
-                        }
-
-                        if (nonAir > 0) {
-                            // Double-check before write to avoid races with real chunk ingestion.
-                            if (VoxyCompat.sectionExists(worldEngine, sx, sy, sz)) {
-                                skippedExisting++;
-                                generatedSections.add(key);
-                                continue;
-                            }
-                            VoxyCompat.setNonAirCount(section, nonAir);
-                            VoxyCompat.mipSection(section, voxyMapper);
-                            VoxyCompat.insertUpdate(worldEngine, section);
-                            totalSections++;
-                            anyNew = true;
-                        } else {
-                            skippedAir++;
-                        }
-                    } else {
-                        inferenceFails++;
-                    }
-
-                    generatedSections.add(key);
-                }
-
-                columnsProcessed++;
-
-                // Progress logging
-                if (columnsProcessed % 100 == 0) {
-                    long elapsed = System.currentTimeMillis() - startTime;
-                    double sectionsPerSec = totalSections > 0
-                            ? totalSections / (elapsed / 1000.0) : 0;
-                    HelloTerrainMod.LOGGER.info(
-                            "[LodGen] Sparse-root progress: {} columns, {} sections written, "
-                            + "{} air-skipped, {} existing-skipped, {} inference-fails ({} sec, {} sections/s)",
-                            columnsProcessed, totalSections,
-                            skippedAir, skippedExisting, inferenceFails,
-                            elapsed / 1000, (int) sectionsPerSec);
-                }
-            }
-
-            // Early bail: if after enough columns we still have 0 sections,
-            // the model is predicting all-air and the heightmap fallback should
-            // take over.
-            if (columnsProcessed >= FALLBACK_MIN_COLUMNS && totalSections == 0) {
-                HelloTerrainMod.LOGGER.warn(
-                        "[LodGen] Sparse-root model produced 0 sections after {} columns "
-                        + "({} air-skipped) — model appears to predict all-air",
-                        columnsProcessed, skippedAir);
-                return false;
-            }
-
-            // Pause if nothing new generated this pass
-            if (!anyNew && !stopRequested.get()) {
-                try {
-                    Thread.sleep(500);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
-            }
-        }
-
-        HelloTerrainMod.LOGGER.info(
-                "[LodGen] Sparse-root pipeline finished — {} columns, {} sections, {} air-skipped, "
-                + "{} existing-skipped, {} inference-fails",
-                columnsProcessed, totalSections, skippedAir, skippedExisting, inferenceFails);
-        return totalSections > 0;
     }
 
     // ------------------------------------------------------------------ //
@@ -1969,40 +1674,15 @@ public final class LodGenerationService {
     }
 
     private VoxyModelRunner resolveVoxyModel() {
-        java.nio.file.Path modelDir = Config.modelDir();
-        try {
-            HelloTerrainMod.LOGGER.info("[LodGen] Loading VoxyModelRunner from {}...", modelDir);
-            return VoxyModelRunner.tryLoad(modelDir);
-        } catch (Exception e) {
-            HelloTerrainMod.LOGGER.warn("[LodGen] VoxyModelRunner load failed: {}", e.getMessage());
-            return null;
-        }
-    }
-
-    /**
-     * Resolve the ONNX model runner, preferring the pre-loaded future.
-     *
-     * <p>If {@link #preloadFuture} is set, block on it (it may already be
-     * done by the time we get here).  On any error falls back to a fresh
-     * synchronous load.
-     *
-     * @return the loaded runner, or {@code null} if models are absent / failed
-     */
-    /**
-     * Resolve the sparse-root model, consuming the pre-load future if available.
-     *
-     * @return loaded runner, or {@code null} if the model is absent / failed
-     */
-    private SparseOctreeModelRunner resolveSparseOctreeModel() {
-        CompletableFuture<SparseOctreeModelRunner> future = preloadFuture;
+        CompletableFuture<VoxyModelRunner> future = preloadFuture;
         preloadFuture = null;  // consume so we don't reuse a stale instance
 
         if (future != null) {
             try {
-                HelloTerrainMod.LOGGER.info("[LodGen] Waiting for pre-loaded sparse-root model...");
-                SparseOctreeModelRunner preloaded = future.get(60, TimeUnit.SECONDS);
+                HelloTerrainMod.LOGGER.info("[LodGen] Waiting for pre-loaded VoxyModelRunner...");
+                VoxyModelRunner preloaded = future.get(60, TimeUnit.SECONDS);
                 if (preloaded != null) {
-                    HelloTerrainMod.LOGGER.info("[LodGen] Using pre-loaded sparse-root model");
+                    HelloTerrainMod.LOGGER.info("[LodGen] Using pre-loaded VoxyModelRunner");
                     return preloaded;
                 }
             } catch (Exception e) {
@@ -2012,14 +1692,12 @@ public final class LodGenerationService {
             }
         }
 
-        // Synchronous fallback
+        java.nio.file.Path modelDir = Config.modelDir();
         try {
-            java.nio.file.Path modelDir = Config.modelDir();
-            HelloTerrainMod.LOGGER.info("[LodGen] Loading sparse-root model from {}...", modelDir);
-            return SparseOctreeModelRunner.tryLoad(modelDir);
+            HelloTerrainMod.LOGGER.info("[LodGen] Loading VoxyModelRunner from {}...", modelDir);
+            return VoxyModelRunner.tryLoad(modelDir);
         } catch (Exception e) {
-            HelloTerrainMod.LOGGER.error("[LodGen] Sparse-root model load failed: {}",
-                    e.getMessage(), e);
+            HelloTerrainMod.LOGGER.warn("[LodGen] VoxyModelRunner load failed: {}", e.getMessage());
             return null;
         }
     }

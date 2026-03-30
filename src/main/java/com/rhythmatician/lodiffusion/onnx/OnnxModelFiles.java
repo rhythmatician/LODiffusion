@@ -9,13 +9,7 @@ import java.nio.file.Path;
  */
 public final class OnnxModelFiles {
 
-    private static final String LEGACY_MODEL = "sparse_octree.onnx";
-
     private OnnxModelFiles() {}
-
-    public static boolean hasLegacySparseModel(Path modelDir) {
-        return Files.isRegularFile(modelDir.resolve(LEGACY_MODEL));
-    }
 
     public static boolean hasFullVoxyModelSet(Path modelDir) {
         for (int level = 0; level < VoxyModelRunner.NUM_LEVELS; level++) {
@@ -42,9 +36,6 @@ public final class OnnxModelFiles {
         if (hasAnyVoxyModel(modelDir)) {
             return "Partial Voxy model set present (expected voxy_l0.onnx through voxy_l4.onnx)";
         }
-        if (hasLegacySparseModel(modelDir)) {
-            return "Legacy sparse_octree.onnx present";
-        }
-        return "No supported ONNX model files present";
+        return "No Voxy ONNX model files present";
     }
 }

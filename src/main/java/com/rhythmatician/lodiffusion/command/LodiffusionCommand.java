@@ -39,7 +39,7 @@ public final class LodiffusionCommand {
             .then(CommandManager.literal("performance")
                 .executes(context -> executePerformance(context)))
             
-            // Service stats (sparse-octree pipeline)
+            // Service stats
             .then(CommandManager.literal("stats")
                 .executes(context -> executeStats(context)))
             
@@ -65,8 +65,7 @@ public final class LodiffusionCommand {
         status.append("§7ONNX Terrain: §").append(Config.useOnnxTerrain() ? "aEnabled" : "cDisabled").append("§r\n");
         status.append("§7Current Adapter: §f").append(Config.adapter()).append("§r\n");
         java.nio.file.Path modelDir = Config.modelDir();
-        boolean modelPresent = OnnxModelFiles.hasFullVoxyModelSet(modelDir)
-            || OnnxModelFiles.hasLegacySparseModel(modelDir);
+        boolean modelPresent = OnnxModelFiles.hasAnyVoxyModel(modelDir);
         status.append("§7Model Present: §").append(modelPresent ? "aYes" : "cNo").append("§r\n");
         status.append("§7Model Contract: §f").append(OnnxModelFiles.describeModelState(modelDir)).append("§r\n");
         status.append("§7Model Dir: §f").append(modelDir).append("§r\n");
@@ -187,10 +186,8 @@ public final class LodiffusionCommand {
             source.sendFeedback(() -> Text.literal("§aVoxy 5-model set found in " + modelDir + ". Restart the world to reload.§r"), true);
         } else if (OnnxModelFiles.hasAnyVoxyModel(modelDir)) {
             source.sendFeedback(() -> Text.literal("§cPartial Voxy model set in " + modelDir + " (expected voxy_l0.onnx through voxy_l4.onnx).§r"), true);
-        } else if (OnnxModelFiles.hasLegacySparseModel(modelDir)) {
-            source.sendFeedback(() -> Text.literal("§aLegacy sparse_octree.onnx found in " + modelDir + ". Restart the world to reload.§r"), true);
         } else {
-            source.sendFeedback(() -> Text.literal("§cNo supported ONNX model files found in " + modelDir + ".§r"), true);
+            source.sendFeedback(() -> Text.literal("§cNo Voxy ONNX model files found in " + modelDir + ".§r"), true);
         }
         return 1;
     }
