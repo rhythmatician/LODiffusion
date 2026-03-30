@@ -21,7 +21,7 @@
     "RIDGES"
   ],
   "has_parent": false,
-  "has_occupancy": true,
+  "has_occupancy": false,
   "inputs": {
     "climate_2d": [
       1,
@@ -50,10 +50,6 @@
       24,
       32,
       32
-    ],
-    "occ_logits": [
-      1,
-      8
     ]
   },
   "output_resolution": 32,
@@ -77,9 +73,9 @@
     "biome_format": "int64, Minecraft biome registry IDs"
   },
   "provenance": {
-    "git_commit": "661214f02255323ee0e00eb8f4d6d972d92086ed",
+    "git_commit": "4091acc8ee84fe62c372cd50974204b62589eebc",
     "git_branch": "new-architecture",
-    "git_clean": false
+    "git_clean": true
   },
   "noise_2d_preparation": {
     "description": "Select noise_channels from 15-field router output, collapse Y dimension (mean), subsample XZ to 8\u00d78",
