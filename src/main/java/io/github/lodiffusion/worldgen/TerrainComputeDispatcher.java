@@ -81,9 +81,17 @@ public class TerrainComputeDispatcher {
      *   offset 100: int  nn_temperature     (biome: temperature noise index)
      *   offset 104: int  nn_vegetation      (biome: vegetation/humidity noise index)
      *   offset 108: int  biome_palette_count (0 = GPU biome pass disabled)
-     *   total     : 112 bytes
+     *   offset 112: int  nn_barrier          (aquifer: barrier noise)
+     *   offset 116: int  nn_floodedness      (aquifer: flood-level floodedness)
+     *   offset 120: int  nn_spread           (aquifer: flood-level spread)
+     *   offset 124: int  nn_lava             (aquifer: lava selection)
+     *   offset 128: int  nn_vein_toggle      (ore vein: copper/iron toggle)
+     *   offset 132: int  nn_vein_ridged      (ore vein: ridged shape)
+     *   offset 136: int  nn_vein_gap         (ore vein: gap/hole control)
+     *   offset 140: int  _pad_aq             (padding to 144-byte boundary)
+     *   total     : 144 bytes
      */
-    private static final int UBO_SIZE_BYTES = 112;
+    private static final int UBO_SIZE_BYTES = 144;
 
     // Byte offsets for the mutable chunk-origin fields (updated per dispatch)
     private static final int OFFSET_CHUNK_X = 0;
@@ -229,20 +237,25 @@ public class TerrainComputeDispatcher {
         if (req == null) {
             return false;
         }
-        
-        // Convert Voxy world coordinates to chunk coordinates.
-        // Voxy stores coordinates in a 16-voxel unit space, so divide by 16 to get chunk coords.
-        int chunkX = req.worldX / 16;
-        int chunkZ = req.worldZ / 16;
-        
-        // Dispatch for this request
-        dispatch(chunkX, chunkZ);
-        
-        // Log for debugging (can be disabled later)
-        LOGGER.debug("TerrainComputeDispatcher: processed request LOD={} at chunk ({}, {})",
-                req.lodLevel, chunkX, chunkZ);
-        
-        return true;
+        try {
+            // Convert Voxy world coordinates to chunk coordinates.
+            // Voxy stores coordinates in a 16-voxel unit space, so divide by 16 to get chunk coords.
+            int chunkX = req.worldX / 16;
+            int chunkZ = req.worldZ / 16;
+
+            // Dispatch for this request
+            dispatch(chunkX, chunkZ);
+
+            // Log for debugging (can be disabled later)
+            LOGGER.debug("TerrainComputeDispatcher: processed request LOD={} at chunk ({}, {})",
+                    req.lodLevel, chunkX, chunkZ);
+
+            return true;
+        } finally {
+            // Always release the in-flight token so future identical requests
+            // can be enqueued if traversal still needs this node.
+            ShadowRouterJobQueue.markCompleted(req);
+        }
     }
 
     // -------------------------------------------------------------------------
@@ -316,6 +329,16 @@ public class TerrainComputeDispatcher {
         buf.putInt(c.nnVegetation);        // was _pad5
         buf.putInt(c.biomePaletteCount);   // was _pad6
 
+        // offset 112–143: aquifer + ore vein noise indices (WS-quart; -1 = not wired)
+        buf.putInt(c.nnBarrier);
+        buf.putInt(c.nnFloodedness);
+        buf.putInt(c.nnSpread);
+        buf.putInt(c.nnLava);
+        buf.putInt(c.nnVeinToggle);
+        buf.putInt(c.nnVeinRidged);
+        buf.putInt(c.nnVeinGap);
+        buf.putInt(0); // _pad_aq (align to 144 bytes = 9 × 16)
+
         buf.flip();
         return buf;
     }
@@ -363,6 +386,17 @@ public class TerrainComputeDispatcher {
         public int nnVegetation      = -1;  // NoiseRouter.vegetation (= humidity)
         public int biomePaletteCount =  0;  // 0 = GPU biome pass disabled
 
+        // WS-quart: Aquifer noise indices (-1 = disabled / not yet wired)
+        public int nnBarrier      = -1;   // NoiseRouter.barrierNoise()
+        public int nnFloodedness  = -1;   // NoiseRouter.fluidLevelFloodednessNoise()
+        public int nnSpread       = -1;   // NoiseRouter.fluidLevelSpreadNoise()
+        public int nnLava         = -1;   // NoiseRouter.lavaNoise()
+
+        // WS-quart: Ore vein noise indices (-1 = disabled / not yet wired)
+        public int nnVeinToggle   = -1;   // NoiseRouter.veinToggle()
+        public int nnVeinRidged   = -1;   // NoiseRouter.veinRidged()
+        public int nnVeinGap      = -1;   // NoiseRouter.veinGap()
+
         // YClampedGradient for depth
         public float gradFromY     = -64.0f;
         public float gradToY       = 320.0f;
@@ -392,7 +426,7 @@ public class TerrainComputeDispatcher {
         public RouterConfig withNamedIndices(
                 int continents, int erosion, int ridges,
                 int depthNoise, int jagged, int shiftA, int shiftB) {
-            RouterConfig c = new RouterConfig();
+            RouterConfig c = copyBase(this);
             c.nnContinents = continents;
             c.nnErosion    = erosion;
             c.nnRidges     = ridges;
@@ -400,22 +434,60 @@ public class TerrainComputeDispatcher {
             c.nnJagged     = jagged;
             c.nnShiftA     = shiftA;
             c.nnShiftB     = shiftB;
-            // copy gradient, spline and cave fields
-            c.gradFromY      = this.gradFromY;
-            c.gradToY        = this.gradToY;
-            c.gradFromValue  = this.gradFromValue;
-            c.gradToValue    = this.gradToValue;
-            c.splineOffsetOffset = this.splineOffsetOffset;
-            c.splineFactorOffset = this.splineFactorOffset;
-            c.splineJaggedOffset = this.splineJaggedOffset;
-            c.nnEntrances        = this.nnEntrances;
-            c.nnCheeseCaves      = this.nnCheeseCaves;
-            c.nnSpaghetti2d      = this.nnSpaghetti2d;
-            c.nnRoughness        = this.nnRoughness;
-            c.nnNoodle           = this.nnNoodle;
-            c.nnTemperature      = this.nnTemperature;
-            c.nnVegetation       = this.nnVegetation;
-            c.biomePaletteCount  = this.biomePaletteCount;
+            return c;
+        }
+
+        /**
+         * Returns a copy with aquifer + ore-vein noise indices set.
+         * These are used by the quart-resolution compute shader to evaluate
+         * all 15 RouterField values.
+         */
+        public RouterConfig withAquiferOreIndices(
+                int barrier, int floodedness, int spread, int lava,
+                int veinToggle, int veinRidged, int veinGap) {
+            RouterConfig c = copyBase(this);
+            c.nnBarrier     = barrier;
+            c.nnFloodedness = floodedness;
+            c.nnSpread      = spread;
+            c.nnLava        = lava;
+            c.nnVeinToggle  = veinToggle;
+            c.nnVeinRidged  = veinRidged;
+            c.nnVeinGap     = veinGap;
+            return c;
+        }
+
+        /** Deep-copy all fields from source into a fresh RouterConfig. */
+        private static RouterConfig copyBase(RouterConfig src) {
+            RouterConfig c = new RouterConfig();
+            c.nnContinents       = src.nnContinents;
+            c.nnErosion          = src.nnErosion;
+            c.nnRidges           = src.nnRidges;
+            c.nnDepthNoise       = src.nnDepthNoise;
+            c.nnJagged           = src.nnJagged;
+            c.nnShiftA           = src.nnShiftA;
+            c.nnShiftB           = src.nnShiftB;
+            c.gradFromY          = src.gradFromY;
+            c.gradToY            = src.gradToY;
+            c.gradFromValue      = src.gradFromValue;
+            c.gradToValue        = src.gradToValue;
+            c.splineOffsetOffset = src.splineOffsetOffset;
+            c.splineFactorOffset = src.splineFactorOffset;
+            c.splineJaggedOffset = src.splineJaggedOffset;
+            c.nnEntrances        = src.nnEntrances;
+            c.nnCheeseCaves      = src.nnCheeseCaves;
+            c.nnSpaghetti2d      = src.nnSpaghetti2d;
+            c.nnRoughness        = src.nnRoughness;
+            c.nnNoodle           = src.nnNoodle;
+            c.nnTemperature      = src.nnTemperature;
+            c.nnVegetation       = src.nnVegetation;
+            c.biomePaletteCount  = src.biomePaletteCount;
+            c.nnBarrier          = src.nnBarrier;
+            c.nnFloodedness      = src.nnFloodedness;
+            c.nnSpread           = src.nnSpread;
+            c.nnLava             = src.nnLava;
+            c.nnVeinToggle       = src.nnVeinToggle;
+            c.nnVeinRidged       = src.nnVeinRidged;
+            c.nnVeinGap          = src.nnVeinGap;
             return c;
         }
 
@@ -424,29 +496,10 @@ public class TerrainComputeDispatcher {
          * Call {@code TerrainComputeDispatcher.initBiomePalette()} which calls this internally.
          */
         public RouterConfig withBiomePalette(int temperature, int vegetation, int paletteCount) {
-            RouterConfig c = new RouterConfig();
-            c.nnContinents       = this.nnContinents;
-            c.nnErosion          = this.nnErosion;
-            c.nnRidges           = this.nnRidges;
-            c.nnDepthNoise       = this.nnDepthNoise;
-            c.nnJagged           = this.nnJagged;
-            c.nnShiftA           = this.nnShiftA;
-            c.nnShiftB           = this.nnShiftB;
-            c.gradFromY          = this.gradFromY;
-            c.gradToY            = this.gradToY;
-            c.gradFromValue      = this.gradFromValue;
-            c.gradToValue        = this.gradToValue;
-            c.splineOffsetOffset = this.splineOffsetOffset;
-            c.splineFactorOffset = this.splineFactorOffset;
-            c.splineJaggedOffset = this.splineJaggedOffset;
-            c.nnEntrances        = this.nnEntrances;
-            c.nnCheeseCaves      = this.nnCheeseCaves;
-            c.nnSpaghetti2d      = this.nnSpaghetti2d;
-            c.nnRoughness        = this.nnRoughness;
-            c.nnNoodle           = this.nnNoodle;
-            c.nnTemperature      = temperature;
-            c.nnVegetation       = vegetation;
-            c.biomePaletteCount  = paletteCount;
+            RouterConfig c = copyBase(this);
+            c.nnTemperature     = temperature;
+            c.nnVegetation      = vegetation;
+            c.biomePaletteCount = paletteCount;
             return c;
         }
 
@@ -457,21 +510,7 @@ public class TerrainComputeDispatcher {
         public RouterConfig withCaveIndices(
                 int entrances, int cheeseCaves, int spaghetti2d,
                 int roughness, int noodle) {
-            RouterConfig c = new RouterConfig();
-            c.nnContinents = this.nnContinents;
-            c.nnErosion    = this.nnErosion;
-            c.nnRidges     = this.nnRidges;
-            c.nnDepthNoise = this.nnDepthNoise;
-            c.nnJagged     = this.nnJagged;
-            c.nnShiftA     = this.nnShiftA;
-            c.nnShiftB     = this.nnShiftB;
-            c.gradFromY      = this.gradFromY;
-            c.gradToY        = this.gradToY;
-            c.gradFromValue  = this.gradFromValue;
-            c.gradToValue    = this.gradToValue;
-            c.splineOffsetOffset = this.splineOffsetOffset;
-            c.splineFactorOffset = this.splineFactorOffset;
-            c.splineJaggedOffset = this.splineJaggedOffset;
+            RouterConfig c = copyBase(this);
             c.nnEntrances   = entrances;
             c.nnCheeseCaves = cheeseCaves;
             c.nnSpaghetti2d = spaghetti2d;
@@ -485,29 +524,10 @@ public class TerrainComputeDispatcher {
          * Call this once spline data is packed into Binding 6 by the extractor.
          */
         public RouterConfig withSplineOffsets(int offsetSpline, int factorSpline, int jaggedSpline) {
-            RouterConfig c = new RouterConfig();
-            c.nnContinents = this.nnContinents;
-            c.nnErosion    = this.nnErosion;
-            c.nnRidges     = this.nnRidges;
-            c.nnDepthNoise = this.nnDepthNoise;
-            c.nnJagged     = this.nnJagged;
-            c.nnShiftA     = this.nnShiftA;
-            c.nnShiftB     = this.nnShiftB;
-            c.gradFromY      = this.gradFromY;
-            c.gradToY        = this.gradToY;
-            c.gradFromValue  = this.gradFromValue;
-            c.gradToValue    = this.gradToValue;
+            RouterConfig c = copyBase(this);
             c.splineOffsetOffset = offsetSpline;
             c.splineFactorOffset = factorSpline;
             c.splineJaggedOffset = jaggedSpline;
-            c.nnEntrances   = this.nnEntrances;
-            c.nnCheeseCaves = this.nnCheeseCaves;
-            c.nnSpaghetti2d = this.nnSpaghetti2d;
-            c.nnRoughness   = this.nnRoughness;
-            c.nnNoodle      = this.nnNoodle;
-            c.nnTemperature     = this.nnTemperature;
-            c.nnVegetation      = this.nnVegetation;
-            c.biomePaletteCount = this.biomePaletteCount;
             return c;
         }
     }

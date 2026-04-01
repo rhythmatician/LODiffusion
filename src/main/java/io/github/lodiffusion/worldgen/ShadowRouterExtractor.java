@@ -11,9 +11,11 @@ import java.lang.reflect.Proxy;
 import java.nio.FloatBuffer;
 import java.nio.IntBuffer;
 import java.util.IdentityHashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.ArrayList;
+import java.util.Set;
 
 /**
  * {@code ShadowRouterExtractor} — Java-side initialization stage of the
@@ -131,20 +133,47 @@ public class ShadowRouterExtractor {
     // ----------------------------------------------------------------------------------------------------------------
 
     public ShadowRouterExtractor() {
-        this.densityFunctionClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunction");
-        this.densityFunctionVisitorClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunction$Visitor");
-        this.densityFunctionsNoiseClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunctions$Noise");
-        this.densityFunctionsSplineClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunctions$Spline");
-        this.densityFunctionsMarkerClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunctions$Marker");
-        this.densityFunctionNoiseHolderClass = loadClassOrNull("net.minecraft.world.level.levelgen.DensityFunction$NoiseHolder");
+        // Yarn-mapped names (MC 1.21.11 Fabric).  Mojang-mapped fallbacks are
+        // tried second so the extractor also works in a Mojmap dev environment.
+        this.densityFunctionClass = loadClassWithFallback(
+                "net.minecraft.world.gen.densityfunction.DensityFunction",
+                "net.minecraft.world.level.levelgen.DensityFunction");
+        this.densityFunctionVisitorClass = loadClassWithFallback(
+                "net.minecraft.world.gen.densityfunction.DensityFunction$DensityFunctionVisitor",
+                "net.minecraft.world.level.levelgen.DensityFunction$Visitor");
+        this.densityFunctionsNoiseClass = loadClassWithFallback(
+                "net.minecraft.world.gen.densityfunction.DensityFunctionTypes$Noise",
+                "net.minecraft.world.level.levelgen.DensityFunctions$Noise");
+        this.densityFunctionsSplineClass = loadClassWithFallback(
+                "net.minecraft.world.gen.densityfunction.DensityFunctionTypes$Spline",
+                "net.minecraft.world.level.levelgen.DensityFunctions$Spline");
+        this.densityFunctionsMarkerClass = loadClassWithFallback(
+                "net.minecraft.world.gen.densityfunction.DensityFunctionTypes$Wrapping",
+                "net.minecraft.world.level.levelgen.DensityFunctions$Marker");
+        this.densityFunctionNoiseHolderClass = loadClassWithFallback(
+                "net.minecraft.world.gen.densityfunction.DensityFunction$Noise",
+                "net.minecraft.world.level.levelgen.DensityFunction$NoiseHolder");
 
-        this.normalNoiseClass = loadClassOrNull("net.minecraft.world.level.levelgen.synth.NormalNoise");
-        this.perlinNoiseClass = loadClassOrNull("net.minecraft.world.level.levelgen.synth.PerlinNoise");
-        this.improvedNoiseClass = loadClassOrNull("net.minecraft.world.level.levelgen.synth.ImprovedNoise");
-        this.cubicSplineClass = loadClassOrNull("net.minecraft.util.CubicSpline");
+        this.normalNoiseClass = loadClassWithFallback(
+                "net.minecraft.util.math.noise.DoublePerlinNoiseSampler",
+                "net.minecraft.world.level.levelgen.synth.NormalNoise");
+        this.perlinNoiseClass = loadClassWithFallback(
+                "net.minecraft.util.math.noise.OctavePerlinNoiseSampler",
+                "net.minecraft.world.level.levelgen.synth.PerlinNoise");
+        this.improvedNoiseClass = loadClassWithFallback(
+                "net.minecraft.util.math.noise.PerlinNoiseSampler",
+                "net.minecraft.world.level.levelgen.synth.ImprovedNoise");
+        this.cubicSplineClass = loadClassWithFallback(
+                "net.minecraft.util.math.Spline",
+                "net.minecraft.util.CubicSpline");
 
-        this.mapAllMethod = findMethodOrNull("mapAll", Object.class);
+        // Yarn: apply(DensityFunctionVisitor)  Mojang: mapAll(Visitor)
+        this.mapAllMethod = findMethodByNameFallback(
+                densityFunctionClass, densityFunctionVisitorClass,
+                "apply", "mapAll");
         this.noiseHolderNoiseMethod = findMethodOrNull(densityFunctionNoiseHolderClass, "noise");
+        // Yarn: Spline is an interface; concrete Spline$Implementation exposes
+        // locations()/values()/derivatives() — getControlPoints() no longer exists.
         this.cubicSplineControlPointsMethod = findMethodOrNull(cubicSplineClass, "getControlPoints");
     }
 
@@ -162,13 +191,17 @@ public class ShadowRouterExtractor {
         if (noiseRouter == null) {
             throw new IllegalArgumentException("noiseRouter must not be null");
         }
-        if (mapAllMethod == null || densityFunctionVisitorClass == null) {
-            throw new IllegalStateException("Unable to locate DensityFunction.mapAll or Visitor interface at runtime");
+        if (densityFunctionVisitorClass == null) {
+            throw new IllegalStateException("Unable to locate DensityFunction visitor interface at runtime");
         }
 
         Object visitor = createVisitorProxy();
         try {
-            mapAllMethod.invoke(noiseRouter, visitor);
+            int traversed = traverseNoiseRouterDensityFunctions(noiseRouter, visitor);
+            if (traversed == 0) {
+                throw new IllegalStateException("NoiseRouter traversal found no DensityFunction accessors");
+            }
+            LOGGER.info("Traversed {} NoiseRouter density functions via mapAll/apply", traversed);
         } catch (Exception e) {
             throw new RuntimeException("Failed to invoke mapAll() on NoiseRouter", e);
         }
@@ -222,6 +255,75 @@ public class ShadowRouterExtractor {
         );
     }
 
+    /**
+     * Visits every zero-arg NoiseRouter accessor that returns a DensityFunction
+     * and invokes DensityFunction.mapAll/apply with our visitor.
+     */
+    private int traverseNoiseRouterDensityFunctions(Object noiseRouter, Object visitor) throws Exception {
+        Class<?> routerClass = noiseRouter.getClass();
+        Set<Object> seenFunctions = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+        Set<String> attemptedAccessors = new HashSet<>();
+        int traversed = 0;
+
+        for (Method accessor : routerClass.getMethods()) {
+            if (accessor.getParameterCount() != 0) continue;
+            if (!densityFunctionClass.isAssignableFrom(accessor.getReturnType())) continue;
+            if (accessor.getDeclaringClass() == Object.class) continue;
+
+            String name = accessor.getName();
+            if (!attemptedAccessors.add(name)) continue;
+
+            Object densityFn;
+            try {
+                densityFn = accessor.invoke(noiseRouter);
+            } catch (Exception e) {
+                LOGGER.debug("Skipping NoiseRouter accessor {} due to invocation failure", name, e);
+                continue;
+            }
+            if (densityFn == null || !seenFunctions.add(densityFn)) {
+                continue;
+            }
+
+            if (!invokeMapAllCompatible(densityFn, visitor)) {
+                // Last resort: process the node directly so extraction still proceeds.
+                unwrapAndProcess(densityFn);
+                LOGGER.debug("Visited {} via direct fallback (mapAll/apply unavailable)", densityFn.getClass().getName());
+            }
+            traversed++;
+        }
+
+        return traversed;
+    }
+
+    /**
+     * Invoke mapAll/apply on a concrete DensityFunction instance, tolerating
+     * declaring-class mismatches caused by mapping/classloader differences.
+     */
+    private boolean invokeMapAllCompatible(Object densityFn, Object visitor) {
+        // Fast path: method discovered from the interface cache.
+        if (mapAllMethod != null && mapAllMethod.getDeclaringClass().isInstance(densityFn)) {
+            try {
+                mapAllMethod.invoke(densityFn, visitor);
+                return true;
+            } catch (Exception e) {
+                LOGGER.debug("Cached mapAll/apply invocation failed on {}", densityFn.getClass().getName(), e);
+            }
+        }
+
+        // Fallback: resolve on concrete runtime class.
+        Method concrete = findMethodByNameFallback(densityFn.getClass(), densityFunctionVisitorClass, "apply", "mapAll");
+        if (concrete == null) {
+            return false;
+        }
+        try {
+            concrete.invoke(densityFn, visitor);
+            return true;
+        } catch (Exception e) {
+            LOGGER.debug("Concrete mapAll/apply invocation failed on {}", densityFn.getClass().getName(), e);
+            return false;
+        }
+    }
+
     // ----------------------------------------------------------------------------------------------------------------
     // Graph traversal and node processing
     // ----------------------------------------------------------------------------------------------------------------
@@ -273,8 +375,8 @@ public class ShadowRouterExtractor {
                 noiseIndexMap.put(noiseObj, index);
                 normalNoises.add(noiseObj);
 
-                Object first  = getFieldValue(noiseObj, "first");
-                Object second = getFieldValue(noiseObj, "second");
+                Object first  = getFieldValue(noiseObj, "firstSampler");
+                Object second = getFieldValue(noiseObj, "secondSampler");
                 registerPerlinNoise(first);
                 registerPerlinNoise(second);
             }
@@ -298,8 +400,8 @@ public class ShadowRouterExtractor {
                 noiseIndexMap.put(noiseObj, index);
                 normalNoises.add(noiseObj);
 
-                Object first = getFieldValue(noiseObj, "first");
-                Object second = getFieldValue(noiseObj, "second");
+                Object first = getFieldValue(noiseObj, "firstSampler");
+                Object second = getFieldValue(noiseObj, "secondSampler");
 
                 registerPerlinNoise(first);
                 registerPerlinNoise(second);
@@ -365,9 +467,9 @@ public class ShadowRouterExtractor {
         FloatBuffer buffer = FloatBuffer.allocate(improvedNoises.size() * 3);
         for (Object improved : improvedNoises) {
             try {
-                double xo = getDoubleField(improved, "xo");
-                double yo = getDoubleField(improved, "yo");
-                double zo = getDoubleField(improved, "zo");
+                double xo = getDoubleField(improved, "originX");
+                double yo = getDoubleField(improved, "originY");
+                double zo = getDoubleField(improved, "originZ");
                 buffer.put((float) xo);
                 buffer.put((float) yo);
                 buffer.put((float) zo);
@@ -384,7 +486,7 @@ public class ShadowRouterExtractor {
         IntBuffer buffer = IntBuffer.allocate(improvedNoises.size() * IMPROVED_PERMS_STRIDE);
         for (Object improved : improvedNoises) {
             try {
-                byte[] perms = (byte[]) getFieldValue(improved, "p");
+                byte[] perms = (byte[]) getFieldValue(improved, "permutation");
                 for (byte perm : perms) {
                     buffer.put(perm & 0xFF);
                 }
@@ -431,8 +533,8 @@ public class ShadowRouterExtractor {
         FloatBuffer buffer = FloatBuffer.allocate(perlinNoises.size() * (2 + MAX_OCTAVES));
         for (Object pn : perlinNoises) {
             try {
-                double lowestFreqFactor = getDoubleField(pn, "lowestFreqInputFactor");
-                double lowestValFactor = getDoubleField(pn, "lowestFreqValueFactor");
+                double lowestFreqFactor = getDoubleField(pn, "lacunarity");
+                double lowestValFactor = getDoubleField(pn, "persistence");
                 buffer.put((float) lowestFreqFactor);
                 buffer.put((float) lowestValFactor);
 
@@ -472,8 +574,8 @@ public class ShadowRouterExtractor {
         IntBuffer buffer = IntBuffer.allocate(normalNoises.size() * 2);
         for (Object nn : normalNoises) {
             try {
-                Object first = getFieldValue(nn, "first");
-                Object second = getFieldValue(nn, "second");
+                Object first = getFieldValue(nn, "firstSampler");
+                Object second = getFieldValue(nn, "secondSampler");
                 Integer firstIdx = perlinNoiseIndexMap.get(first);
                 Integer secondIdx = perlinNoiseIndexMap.get(second);
                 buffer.put(firstIdx != null ? firstIdx : -1);
@@ -491,7 +593,7 @@ public class ShadowRouterExtractor {
         FloatBuffer buffer = FloatBuffer.allocate(normalNoises.size());
         for (Object nn : normalNoises) {
             try {
-                double valueFactor = getDoubleField(nn, "valueFactor");
+                double valueFactor = getDoubleField(nn, "amplitude");
                 buffer.put((float) valueFactor);
             } catch (Exception e) {
                 LOGGER.warn("Failed to extract NormalNoise float data", e);
@@ -514,6 +616,12 @@ public class ShadowRouterExtractor {
         }
     }
 
+    /** Try the primary (Yarn) name first, then the fallback (Mojang) name. */
+    private Class<?> loadClassWithFallback(String primary, String fallback) {
+        Class<?> cls = loadClassOrNull(primary);
+        return cls != null ? cls : loadClassOrNull(fallback);
+    }
+
     private Method findMethodOrNull(String methodName, Class<?>... paramTypes) {
         if (densityFunctionClass == null) return null;
         try {
@@ -521,6 +629,21 @@ public class ShadowRouterExtractor {
         } catch (Exception ignored) {
             return null;
         }
+    }
+
+    /**
+     * Finds a method on {@code clazz} accepting a single parameter of {@code paramType},
+     * trying the primary (Yarn) method name first, then the fallback (Mojang) name.
+     */
+    private Method findMethodByNameFallback(Class<?> clazz, Class<?> paramType,
+                                            String primary, String fallback) {
+        if (clazz == null || paramType == null) return null;
+        try {
+            return clazz.getMethod(primary, paramType);
+        } catch (Exception ignored) { /* try fallback */ }
+        try {
+            return clazz.getMethod(fallback, paramType);
+        } catch (Exception ignored) { return null; }
     }
 
     private Method findMethodOrNull(Class<?> clazz, String methodName, Class<?>... paramTypes) {
@@ -561,7 +684,7 @@ public class ShadowRouterExtractor {
     }
 
     private Object getNoiseHolder(Object noiseFunc) {
-        return getFieldValue(noiseFunc, "noiseData");
+        return getFieldValue(noiseFunc, "noise");
     }
 
     private Object getMarkerArgument(Object marker) {
@@ -569,7 +692,7 @@ public class ShadowRouterExtractor {
     }
 
     private Object[] getImprovedOctaves(Object perlinNoise) {
-        Object value = getFieldValue(perlinNoise, "noiseLevels");
+        Object value = getFieldValue(perlinNoise, "octaveSamplers");
         if (value == null) return null;
         if (value.getClass().isArray()) {
             int len = Array.getLength(value);
@@ -608,9 +731,83 @@ public class ShadowRouterExtractor {
         // mc_normal_noise() cannot evaluate it; tracked as WS-1.2-BlendedNoise.
         // data.nnDepthNoise remains -1 until a mc_blended_noise() GLSL function is added.
 
+        // Aquifer noise fields (4 fields; each is a simple DensityFunctions.Noise wrapper)
+        data.nnBarrier      = indexForDirectNoise(noiseRouter, "barrierNoise");
+        data.nnFloodedness  = indexForDirectNoise(noiseRouter, "fluidLevelFloodednessNoise");
+        data.nnSpread       = indexForDirectNoise(noiseRouter, "fluidLevelSpreadNoise");
+        data.nnLava         = indexForDirectNoise(noiseRouter, "lavaNoise");
+
+        // Ore vein noise fields (3 fields; each is a simple DensityFunctions.Noise wrapper)
+        data.nnVeinToggle   = indexForDirectNoise(noiseRouter, "veinToggle");
+        data.nnVeinRidged   = indexForDirectNoise(noiseRouter, "veinRidged");
+        data.nnVeinGap      = indexForDirectNoise(noiseRouter, "veinGap");
+
         LOGGER.info("Named noise indices: continents={}, erosion={}, ridges={}, temp={}, veg={}, shift={}, jagged={}",
                 data.nnContinents, data.nnErosion, data.nnRidges,
                 data.nnTemperature, data.nnVegetation, data.shiftNoiseIndex, data.nnJagged);
+        LOGGER.info("Aquifer/ore noise indices: barrier={}, floodedness={}, spread={}, lava={}, veinToggle={}, veinRidged={}, veinGap={}",
+                data.nnBarrier, data.nnFloodedness, data.nnSpread, data.nnLava,
+                data.nnVeinToggle, data.nnVeinRidged, data.nnVeinGap);
+    }
+
+    /**
+     * Returns the NormalNoise SSBO index for a router field backed by a
+     * {@code DensityFunctions.Noise} wrapper (non-shifted).  This covers the
+     * aquifer fields (barrier, floodedness, spread, lava) and ore vein fields
+     * (veinToggle, veinRidged, veinGap) where the DensityFunction graph is:
+     *   noiseRouter.{fieldName}() → DensityFunctions.Noise → .noiseData (NoiseHolder) → NormalNoise
+     *
+     * <p>Falls back to unwrapping intermediate cache/marker wrappers if needed.
+     */
+    private int indexForDirectNoise(Object noiseRouter, String fieldName) {
+        try {
+            Object densityFunction = invokeAccessor(noiseRouter, fieldName);
+            if (densityFunction == null) return -1;
+
+            // Walk through potential wrappers (cache, marker) to reach the Noise node
+            return resolveNoiseIndex(densityFunction, fieldName);
+        } catch (Exception e) {
+            LOGGER.warn("Failed to extract direct noise index for '{}'", fieldName, e);
+            return -1;
+        }
+    }
+
+    /**
+     * Recursively resolves a NormalNoise SSBO index from a DensityFunction, handling
+     * common wrappers: DensityFunctions.Noise, cache layers, markers.
+     */
+    private int resolveNoiseIndex(Object densityFunction, String debugName) {
+        if (densityFunction == null) return -1;
+
+        // Direct: DensityFunctions.Noise → noiseData (NoiseHolder) → NormalNoise
+        if (densityFunctionsNoiseClass != null && densityFunctionsNoiseClass.isInstance(densityFunction)) {
+            Object noiseHolder = getFieldValue(densityFunction, "noise");
+            if (noiseHolder == null) noiseHolder = getNoiseHolder(densityFunction);
+            if (noiseHolder != null) {
+                try {
+                    Object normalNoise = noiseHolderNoiseMethod != null
+                            ? noiseHolderNoiseMethod.invoke(noiseHolder) : null;
+                    if (normalNoise != null) {
+                        Integer idx = noiseIndexMap.get(normalNoise);
+                        if (idx != null) return idx;
+                    }
+                } catch (Exception e) {
+                    LOGGER.debug("NoiseHolder invoke failed for '{}'", debugName);
+                }
+            }
+        }
+
+        // Unwrap: cache/marker layers ("wrapped", "argument")
+        Object inner = getFieldValue(densityFunction, "wrapped");
+        if (inner == null) inner = getFieldValue(densityFunction, "argument");
+        if (inner == null) inner = tryUnwrapByName(densityFunction, "delegate");
+        if (inner != null && inner != densityFunction) {
+            return resolveNoiseIndex(inner, debugName);
+        }
+
+        LOGGER.debug("Could not resolve NormalNoise from '{}' (type: {})",
+                debugName, densityFunction.getClass().getSimpleName());
+        return -1;
     }
 
     /**
@@ -743,6 +940,17 @@ public class ShadowRouterExtractor {
          *  {@link ShadowRouterExtractor#indexForJaggedNoise()}. */
         public int nnJagged        = -1;
         public int shiftNoiseIndex = -1;  // Noises.SHIFT — same index for both ShiftA and ShiftB
+
+        // Aquifer noise indices (RouterField ordinals 8–11)
+        public int nnBarrier       = -1;  // NoiseRouter.barrierNoise()
+        public int nnFloodedness   = -1;  // NoiseRouter.fluidLevelFloodednessNoise()
+        public int nnSpread        = -1;  // NoiseRouter.fluidLevelSpreadNoise()
+        public int nnLava          = -1;  // NoiseRouter.lavaNoise()
+
+        // Ore vein noise indices (RouterField ordinals 12–14)
+        public int nnVeinToggle    = -1;  // NoiseRouter.veinToggle()
+        public int nnVeinRidged    = -1;  // NoiseRouter.veinRidged()
+        public int nnVeinGap       = -1;  // NoiseRouter.veinGap()
 
         public void uploadToGPU() {
             LOGGER.info("SSBO upload requested (not yet implemented)");

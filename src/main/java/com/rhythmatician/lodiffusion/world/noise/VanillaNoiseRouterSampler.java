@@ -16,11 +16,12 @@ import net.minecraft.world.gen.noise.NoiseRouter;
  * {@link NoiseConfig}.
  *
  * <h2>Sampling strategy</h2>
- * All 15 fields are sampled at <b>quart resolution</b> (4-block spacing on
- * every axis) for a single 16³ section:
+ * All 15 fields are sampled at <b>quart resolution</b> for a single 16³ section.
+ * Vanilla uses cellWidth=4 (4-block quart spacing on X/Z) and cellHeight=8
+ * (8-block cell spacing on Y), yielding 4×2×4 cells per section:
  * <pre>
  *   qx ∈ [0, 3]  →  blockX = sectionX * 16 + qx * 4 + 2   (cell centre)
- *   qy ∈ [0, 3]  →  blockY = sectionY * 16 + qy * 4 + 2   (cell centre)
+ *   qy ∈ [0, 1]  →  blockY = sectionY * 16 + qy * 8 + 4   (cell centre)
  *   qz ∈ [0, 3]  →  blockZ = sectionZ * 16 + qz * 4 + 2   (cell centre)
  * </pre>
  *
@@ -64,8 +65,8 @@ public final class VanillaNoiseRouterSampler implements NoiseRouterSampler {
             DensityFunction df = dfs[field];
             for (int qx = 0; qx < 4; qx++) {
                 int x = baseX + qx * 4 + 2;  // cell centre
-                for (int qy = 0; qy < 4; qy++) {
-                    int y = baseY + qy * 4 + 2;  // cell centre
+                for (int qy = 0; qy < 2; qy++) {
+                    int y = baseY + qy * 8 + 4;  // cell centre (cellHeight=8)
                     for (int qz = 0; qz < 4; qz++) {
                         int z = baseZ + qz * 4 + 2;  // cell centre
                         flat[flatIdx++] = (float) df.sample(

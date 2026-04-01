@@ -1,91 +1,89 @@
 package net.lodiffusion.mixin.voxy;
 
-import net.lodiffusion.shadow.VoxyRequestDecoder;
+import com.rhythmatician.lodiffusion.HelloTerrainMod;
 import net.lodiffusion.shadow.ShadowRouterJobQueue;
+import net.lodiffusion.shadow.VoxyRequestDecoder;
+import net.lodiffusion.shadow.VoxyWorldSectionKeyDecoder;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
-import org.lwjgl.system.MemoryUtil;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
- * Fabric Mixin for VoxyShadowBridge.
- * 
- * Intercepts HierarchicalOcclusionTraverser.forwardDownloadResult() to extract
- * missing terrain requests from Voxy's GPU traversal and enqueue them for
- * demand-driven generation via LODiffusion's TerrainComputeDispatcher.
- * 
- * Target method signature:
- *   private void forwardDownloadResult(long ptr, long size)
- * 
- * Interception point: just before nodeManager.submitRequestBatch() is called,
- * after requests have been downloaded and parsed.
+ * Bridges Voxy's section-watch demand into LODiffusion generation jobs.
+ *
+ * In Voxy 0.2.11-alpha, SectionUpdateRouter.watch(JI) is called when NodeManager
+ * requests section data (e.g. leaf child requests). Hooking this method gives a
+ * direct signal for missing/needed sections without relying on GPU request-buffer
+ * callbacks that can stay empty for unseen hierarchy.
  */
-@Mixin(targets = "me.cortex.voxy.client.core.rendering.hierachical.HierarchicalOcclusionTraverser")
+@Mixin(targets = "me.cortex.voxy.client.core.rendering.SectionUpdateRouter")
 public class VoxyShadowBridgeMixin {
-    
+
+    private static final int WATCH_FLAG_INITIAL_MESH = 0x1;
+    private static final long BRIDGE_LOG_INTERVAL_MS = 5000L;
+
+    private static long lastBridgeLogMs;
+    private static int bridgeWatchAdds;
+    private static int bridgeQueued;
+
     /**
-     * Intercept the request batch callback to extract and enqueue requests for generation.
-     * 
-     * This injection runs at the beginning of forwardDownloadResult, giving us access to:
-     * - ptr: native memory buffer containing [count(4)] + [request[0](8)] + ... 
-     * - size: total buffer size in bytes
-     * 
-     * The buffer layout is:
-     *   Offset 0–3: count (number of requests)
-     *   Offset 4–7: padding (reserved)
-     *   Offset 8+:  request array (each request is 8 bytes, uvec2)
+     * Intercept SectionUpdateRouter.watch(JI) after Voxy has accepted the new watch.
      */
     @Inject(
-        method = "forwardDownloadResult",
-        at = @At("HEAD"),
+        method = "watch(JI)Z",
+        at = @At("RETURN"),
         cancellable = false
     )
-    private void interceptRequests(long ptr, long size, CallbackInfo ci) {
+    private void interceptWatch(long worldSectionKey,
+                                int watchFlags,
+                                CallbackInfoReturnable<Boolean> cir) {
         try {
-            if (ptr == 0 || size < 8) {
-                return;  // Invalid buffer
-            }
-            
-            // Read request count (first 4 bytes, little-endian int)
-            int count = MemoryUtil.memGetInt(ptr);
-            
-            if (count <= 0 || count > 10000) {  // Sanity check
+            if (!Boolean.TRUE.equals(cir.getReturnValue())) {
                 return;
             }
-            
-            // Validate buffer has enough space
-            long expectedSize = 8L + (long) count * 8L;
-            if (size < expectedSize) {
-                count = (int) ((size - 8) / 8);
-                if (count <= 0) {
-                    return;
-                }
+
+            if ((watchFlags & WATCH_FLAG_INITIAL_MESH) == 0) {
+                return;
             }
-            
-            // Decode all requests from the buffer
-            VoxyRequestDecoder.VoxyNodeRequest[] requests = 
-                new VoxyRequestDecoder.VoxyNodeRequest[count];
-            
-            long requestPtr = ptr + 8;  // Skip count header
-            for (int i = 0; i < count; i++) {
-                try {
-                    requests[i] = VoxyRequestDecoder.decode(requestPtr, i * 8);
-                } catch (Exception e) {
-                    // Log but don't crash on individual request decode errors
-                    System.err.println("[LODiffusion] Error decoding request " + i + ": " + e);
-                }
+
+            VoxyWorldSectionKeyDecoder.DecodedSectionKey decoded =
+                    VoxyWorldSectionKeyDecoder.decode(worldSectionKey);
+            if (decoded == null) {
+                return;
             }
-            
-            // Enqueue all valid requests to ShadowRouterJobQueue
-            // This happens before Voxy's normal nodeManager.submitRequestBatch(),
-            // so LODiffusion gets first crack at generating missing terrain
-            ShadowRouterJobQueue.enqueueBatch(requests);
-            
+
+            if (decoded.level() < 0 || decoded.level() > 4) {
+                return;
+            }
+
+            VoxyRequestDecoder.VoxyNodeRequest req = new VoxyRequestDecoder.VoxyNodeRequest();
+            req.lodLevel = decoded.level();
+            req.worldX = decoded.x();
+            req.worldY = decoded.y();
+            req.worldZ = decoded.z();
+
+            ShadowRouterJobQueue.enqueue(req);
+            logBridgeProgress(1);
+
         } catch (Exception e) {
-            // Fail gracefully: don't crash Voxy if bridge code has issues
-            System.err.println("[LODiffusion] VoxyShadowBridge error: " + e);
-            e.printStackTrace();
+            HelloTerrainMod.LOGGER.warn("[LodGen][Bridge] watch hook failed: {}", e.toString());
+        }
+    }
+
+    private static void logBridgeProgress(int queuedCount) {
+        bridgeWatchAdds++;
+        bridgeQueued += queuedCount;
+
+        long now = System.currentTimeMillis();
+        if (bridgeWatchAdds == 1 || now - lastBridgeLogMs >= BRIDGE_LOG_INTERVAL_MS) {
+            HelloTerrainMod.LOGGER.info(
+                    "[LodGen][Bridge] watchAdds={} queued={} queuedDepth={} inFlight={}",
+                    bridgeWatchAdds,
+                    bridgeQueued,
+                    ShadowRouterJobQueue.size(),
+                    ShadowRouterJobQueue.inFlightSize());
+            lastBridgeLogMs = now;
         }
     }
 }

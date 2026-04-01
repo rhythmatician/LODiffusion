@@ -74,6 +74,21 @@ public final class WorldNoiseAccess {
         return noiseConfig;
     }
 
+    /** The server-side world (needed by {@code VanillaHeightmapProvider}). */
+    public ServerWorld serverWorld() {
+        return serverWorld;
+    }
+
+    /** The chunk generator (needed by {@code VanillaHeightmapProvider}). */
+    public ChunkGenerator generator() {
+        return generator;
+    }
+
+    /** The biome source (needed by {@code VanillaBiomeProvider}). */
+    public BiomeSource biomeSource() {
+        return biomeSource;
+    }
+
     // ------------------------------------------------------------------
     // Factory
     // ------------------------------------------------------------------
@@ -713,7 +728,12 @@ public final class WorldNoiseAccess {
      * @param sectionY section Y in native (L0) units, range [-4, 19]
      * @return flat {@code float[13 * 4 * 2 * 4 = 416]}, or an all-zeros array
      *         if the noise pipeline is unavailable
+     *
+     * @deprecated Legacy 13-channel path.  Use
+     *     {@link com.rhythmatician.lodiffusion.world.noise.NoiseRouterSampler#sampleSection}
+     *     which produces the standard 15-field × 4×4×4 quart tensor.
      */
+    @Deprecated
     public float[] sampleNoise3DForSection(int chunkX, int chunkZ, int sectionY) {
         DensityFunction[] dfs = getNoise3dFunctions();
         float[] flat = new float[N_NOISE_3D * 4 * 2 * 4];

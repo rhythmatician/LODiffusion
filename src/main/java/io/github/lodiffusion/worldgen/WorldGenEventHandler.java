@@ -2,10 +2,12 @@ package io.github.lodiffusion.worldgen;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.lwjgl.opengl.GL;
 
-import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.FloatBuffer;
+
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerWorldEvents;
 import java.nio.IntBuffer;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -13,6 +15,7 @@ import java.util.Map;
 import java.util.WeakHashMap;
 
 import com.rhythmatician.lodiffusion.voxy.VoxyCompat;
+import com.rhythmatician.lodiffusion.world.noise.GpuNoiseDispatchQueue;
 
 /**
  * World-load event handler that bootstraps the <em>shadow router</em> pipeline.
@@ -68,21 +71,24 @@ public class WorldGenEventHandler {
     private final Method getDimensionMethod;
 
     private WorldGenEventHandler() {
-        // Load Minecraft class references via reflection
-        this.serverLevelClass = loadClassOrNull("net.minecraft.server.level.ServerLevel");
+        // Load Minecraft class references via reflection (Yarn-mapped names for MC 1.21)
+        this.serverLevelClass = loadClassOrNull("net.minecraft.server.world.ServerWorld");
         this.minecraftServerClass = loadClassOrNull("net.minecraft.server.MinecraftServer");
-        this.chunkSourceClass = loadClassOrNull("net.minecraft.world.level.chunk.ChunkSource");
-        this.chunkGeneratorClass = loadClassOrNull("net.minecraft.world.level.chunk.ChunkGenerator");
-        this.noiseBasedChunkGeneratorClass = loadClassOrNull("net.minecraft.world.level.levelgen.NoiseBasedChunkGenerator");
-        this.noiseRouterClass = loadClassOrNull("net.minecraft.world.level.levelgen.NoiseRouter");
-        this.dimensionTypeClass = loadClassOrNull("net.minecraft.world.level.dimension.DimensionType");
-        this.resourceKeyClass = loadClassOrNull("net.minecraft.resources.ResourceKey");
+        this.chunkSourceClass = loadClassOrNull("net.minecraft.server.world.ServerChunkManager");
+        this.chunkGeneratorClass = loadClassOrNull("net.minecraft.world.gen.chunk.ChunkGenerator");
+        this.noiseBasedChunkGeneratorClass = loadClassOrNull("net.minecraft.world.gen.chunk.NoiseChunkGenerator");
+        this.noiseRouterClass = loadClassOrNull("net.minecraft.world.gen.noise.NoiseRouter");
+        this.dimensionTypeClass = loadClassOrNull("net.minecraft.world.dimension.DimensionType");
+        this.resourceKeyClass = loadClassOrNull("net.minecraft.registry.RegistryKey");
 
         // Cache methods for performance
-        this.getChunkSourceMethod = findMethodOrNull(serverLevelClass, "getChunkSource");
-        this.getGeneratorMethod = findMethodOrNull(chunkSourceClass, "getGenerator");
-        this.getNoiseRouterMethod = findMethodOrNull(noiseBasedChunkGeneratorClass, "getNoiseRouter");
-        this.getDimensionMethod = findMethodOrNull(serverLevelClass, "dimension");
+        // getChunkSourceMethod → ServerWorld.getChunkManager()
+        this.getChunkSourceMethod = findMethodOrNull(serverLevelClass, "getChunkManager");
+        // getGeneratorMethod → ServerChunkManager.getChunkGenerator()
+        this.getGeneratorMethod = findMethodOrNull(chunkSourceClass, "getChunkGenerator");
+        // getNoiseRouterMethod → ServerChunkManager.getNoiseConfig() (NoiseRouter comes from noiseConfig.getNoiseRouter())
+        this.getNoiseRouterMethod = findMethodOrNull(chunkSourceClass, "getNoiseConfig");
+        this.getDimensionMethod = findMethodOrNull(serverLevelClass, "getRegistryKey");
     }
 
     /**
@@ -96,77 +102,14 @@ public class WorldGenEventHandler {
 
         instance = new WorldGenEventHandler();
 
-        try {
-            // Register LOAD event
-            registerLoadEvent();
-            
-            // Register UNLOAD event
-            registerUnloadEvent();
+        ServerWorldEvents.LOAD.register((server, world) -> {
+            if (instance != null) instance.onWorldLoad(server, world);
+        });
+        ServerWorldEvents.UNLOAD.register((server, world) -> {
+            if (instance != null) instance.onWorldUnload(server, world);
+        });
 
-            LOGGER.info("WorldGenEventHandler initialized — listening for ServerLevelEvents.LOAD/UNLOAD");
-        } catch (Exception e) {
-            LOGGER.error("Failed to initialize WorldGenEventHandler event listeners", e);
-        }
-    }
-
-    /**
-     * Registers the LOAD event using reflection.
-     */
-    private static void registerLoadEvent() {
-        try {
-            // net.fabricmc.fabric.api.event.lifecycle.v1.ServerLevelEvents
-            Class<?> serverLevelEventsClass = Class.forName("net.fabricmc.fabric.api.event.lifecycle.v1.ServerLevelEvents");
-            
-            // Get the LOAD field (which is an Event)
-            Field loadField = serverLevelEventsClass.getField("LOAD");
-            Object loadEvent = loadField.get(null);
-
-            // Get the register method on the Event
-            Method registerMethod = loadEvent.getClass().getMethod("register", Object.class);
-
-            // Create a callback - use a simple approach with a wrapper object
-            Object callback = new Object() {
-                public void onLoadLevel(Object server, Object level) {
-                    if (instance != null) {
-                        instance.onWorldLoad(server, level);
-                    }
-                }
-            };
-
-            // Register the callback
-            registerMethod.invoke(loadEvent, callback);
-            LOGGER.info("Registered ServerLevelEvents.LOAD listener");
-
-        } catch (Exception e) {
-            LOGGER.error("Failed to register LOAD event", e);
-        }
-    }
-
-    /**
-     * Registers the UNLOAD event using reflection.
-     */
-    private static void registerUnloadEvent() {
-        try {
-            Class<?> serverLevelEventsClass = Class.forName("net.fabricmc.fabric.api.event.lifecycle.v1.ServerLevelEvents");
-            Field unloadField = serverLevelEventsClass.getField("UNLOAD");
-            Object unloadEvent = unloadField.get(null);
-
-            Method registerMethod = unloadEvent.getClass().getMethod("register", Object.class);
-            
-            Object callback = new Object() {
-                public void onUnloadLevel(Object server, Object level) {
-                    if (instance != null) {
-                        instance.onWorldUnload(server, level);
-                    }
-                }
-            };
-
-            registerMethod.invoke(unloadEvent, callback);
-            LOGGER.info("Registered ServerLevelEvents.UNLOAD listener");
-
-        } catch (Exception e) {
-            LOGGER.error("Failed to register UNLOAD event", e);
-        }
+        LOGGER.info("WorldGenEventHandler initialized — listening for ServerWorldEvents.LOAD/UNLOAD");
     }
 
     /**
@@ -210,6 +153,13 @@ public class WorldGenEventHandler {
             LOGGER.info("Extraction complete: {} noise instances discovered", 
                     countExtractedInstances(data));
 
+            // Integrated server world-load callbacks run on the server thread,
+            // which does not necessarily own a current OpenGL context.
+            if (!hasCurrentOpenGlContext()) {
+                LOGGER.warn("No current OpenGL context on world-load thread; skipping GPU shadow-router initialization for {}", dimensionInfo);
+                return;
+            }
+
             // Upload to GPU SSBOs
             LOGGER.info("Creating ShaderSSBOManager and uploading to GPU...");
             ShaderSSBOManager manager = new ShaderSSBOManager();
@@ -226,6 +176,15 @@ public class WorldGenEventHandler {
             }
 
             activeLevels.put(level, manager);
+
+            // Initialise the async GPU noise dispatch queue so GpuNoiseRouterSampler
+            // can enqueue section requests from the gen thread.
+            QuartNoiseCompute quartCompute = manager.getQuartCompute();
+            if (quartCompute != null && quartCompute.isReady()) {
+                GpuNoiseDispatchQueue.init(quartCompute);
+            } else {
+                LOGGER.warn("QuartNoiseCompute not ready — GpuNoiseDispatchQueue will not be initialised");
+            }
 
             // Production path: dispatch and hand off GPU buffer handles for staging.
             LOGGER.info("Dispatching GPU compute for startup chunk (0,0) without CPU readback...");
@@ -305,6 +264,14 @@ public class WorldGenEventHandler {
 
         } catch (Exception e) {
             LOGGER.warn("WS-2: writeBlocksToVoxy failed (non-fatal): {}", e.getMessage(), e);
+        }
+    }
+
+    private boolean hasCurrentOpenGlContext() {
+        try {
+            return GL.getCapabilities() != null;
+        } catch (IllegalStateException e) {
+            return false;
         }
     }
 
@@ -404,6 +371,10 @@ public class WorldGenEventHandler {
         LOGGER.info("Level: {}", dimensionInfo);
 
         try {
+            // Shut down the GPU noise dispatch queue first (cancels pending futures
+            // so the gen thread doesn't hang waiting for GPU results).
+            GpuNoiseDispatchQueue.shutdown();
+
             ShaderSSBOManager manager = activeLevels.remove(level);
             if (manager != null) {
                 LOGGER.info("Cleaning up ShaderSSBOManager for level {}", dimensionInfo);
@@ -460,36 +431,31 @@ public class WorldGenEventHandler {
     }
 
     /**
-     * Extracts the NoiseRouter from a ServerLevel using reflection.
+     * Extracts the NoiseRouter from a ServerWorld using reflection.
+     * Chain: ServerWorld.getChunkManager() → ServerChunkManager.getNoiseConfig() → NoiseConfig.getNoiseRouter()
      */
     private Object extractNoiseRouter(Object level) {
         try {
-            if (level == null || getChunkSourceMethod == null || getGeneratorMethod == null) {
+            if (level == null || getChunkSourceMethod == null || getNoiseRouterMethod == null) {
                 return null;
             }
 
-            // level.getChunkSource() returns ChunkSource
-            Object chunkSource = getChunkSourceMethod.invoke(level);
-            if (chunkSource == null) return null;
+            // level.getChunkManager() returns ServerChunkManager
+            Object chunkManager = getChunkSourceMethod.invoke(level);
+            if (chunkManager == null) return null;
 
-            // chunkSource.getGenerator() returns ChunkGenerator
-            Object generator = getGeneratorMethod.invoke(chunkSource);
-            if (generator == null) return null;
+            // chunkManager.getNoiseConfig() returns NoiseConfig
+            Object noiseConfig = getNoiseRouterMethod.invoke(chunkManager);
+            if (noiseConfig == null) return null;
 
-            // Check if it's a NoiseBasedChunkGenerator via class name
-            String genClassName = generator.getClass().getSimpleName();
-            if (!genClassName.equals("NoiseBasedChunkGenerator")) {
-                LOGGER.warn("ChunkGenerator is {} — cannot extract NoiseRouter",
-                        genClassName);
+            // noiseConfig.getNoiseRouter() returns NoiseRouter
+            Method getNoiseRouterFromConfig = findMethodOrNull(noiseConfig.getClass(), "getNoiseRouter");
+            if (getNoiseRouterFromConfig == null) {
+                LOGGER.warn("getNoiseRouter() not found on {} — cannot extract NoiseRouter",
+                        noiseConfig.getClass().getName());
                 return null;
             }
-
-            // Invoke getNoiseRouter() on the generator
-            if (getNoiseRouterMethod != null) {
-                return getNoiseRouterMethod.invoke(generator);
-            }
-            
-            return null;
+            return getNoiseRouterFromConfig.invoke(noiseConfig);
 
         } catch (Exception e) {
             LOGGER.error("Failed to extract NoiseRouter", e);

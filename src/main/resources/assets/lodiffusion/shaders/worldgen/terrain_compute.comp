@@ -203,7 +203,18 @@ layout(binding = 8, std140) uniform RouterConfig {
     int nn_temperature;         // NoiseRouter.temperature  (biome climate signal)
     int nn_vegetation;          // NoiseRouter.vegetation   (= humidity, biome climate signal)
     int biome_palette_count;    // number of entries in BiomePalette SSBO (binding 12; 0 = disabled)
-    // total: 112 bytes (std140 requires multiple-of-16 struct size)
+
+    // WS-quart: Aquifer + ore vein NormalNoise indices (-1 = not wired)
+    // Used by quart_noise_compute.comp; present here for UBO layout compatibility.
+    int nn_barrier;             // NoiseRouter.barrierNoise()          — aquifer pressure barrier
+    int nn_floodedness;         // NoiseRouter.fluidLevelFloodedness() — aquifer flood level
+    int nn_spread;              // NoiseRouter.fluidLevelSpread()      — aquifer spread randomization
+    int nn_lava;                // NoiseRouter.lavaNoise()             — lava vs water selection
+    int nn_vein_toggle;         // NoiseRouter.veinToggle()            — copper/iron toggle
+    int nn_vein_ridged;         // NoiseRouter.veinRidged()            — ridged vein shape
+    int nn_vein_gap;            // NoiseRouter.veinGap()               — vein gap/holes
+    int _pad_aq;                // align to 144 bytes (9 × 16)
+    // total: 144 bytes (std140 requires multiple-of-16 struct size)
 } router;
 
 // ---------------------------------------------------------------------------

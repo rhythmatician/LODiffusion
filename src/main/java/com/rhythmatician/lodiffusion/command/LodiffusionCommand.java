@@ -3,11 +3,10 @@ package com.rhythmatician.lodiffusion.command;
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.context.CommandContext;
 import com.rhythmatician.lodiffusion.Config;
-import java.nio.file.Files;
+import com.rhythmatician.lodiffusion.onnx.OnnxModelFiles;
 import com.rhythmatician.lodiffusion.util.DebugUtils;
 import com.rhythmatician.lodiffusion.util.PerformanceMonitor;
 import com.rhythmatician.lodiffusion.voxy.LodGenerationService;
-import com.rhythmatician.lodiffusion.voxy.OctreeRuntimeStats;
 
 import net.minecraft.command.permission.Permission;
 import net.minecraft.command.permission.PermissionLevel;
@@ -40,9 +39,9 @@ public final class LodiffusionCommand {
             .then(CommandManager.literal("performance")
                 .executes(context -> executePerformance(context)))
             
-            // Octree live stats (per-LOD backlog, throughput, worker allocation)
-            .then(CommandManager.literal("octree")
-                .executes(context -> executeOctreeStats(context)))
+            // Service stats
+            .then(CommandManager.literal("stats")
+                .executes(context -> executeStats(context)))
             
             // Reset metrics
             .then(CommandManager.literal("reset")
@@ -66,9 +65,9 @@ public final class LodiffusionCommand {
         status.append("§7ONNX Terrain: §").append(Config.useOnnxTerrain() ? "aEnabled" : "cDisabled").append("§r\n");
         status.append("§7Current Adapter: §f").append(Config.adapter()).append("§r\n");
         java.nio.file.Path modelDir = Config.modelDir();
-        boolean modelsPresent = Files.isRegularFile(modelDir.resolve("init_to_lod4.onnx"))
-                && Files.isRegularFile(modelDir.resolve("refine_lod2_to_lod1.onnx"));
-        status.append("§7Models Present: §").append(modelsPresent ? "aYes" : "cNo").append("§r\n");
+        boolean modelPresent = OnnxModelFiles.hasAnyVoxyModel(modelDir);
+        status.append("§7Model Present: §").append(modelPresent ? "aYes" : "cNo").append("§r\n");
+        status.append("§7Model Contract: §f").append(OnnxModelFiles.describeModelState(modelDir)).append("§r\n");
         status.append("§7Model Dir: §f").append(modelDir).append("§r\n");
         
         long chunksGenerated = PerformanceMonitor.getCounter(PerformanceMonitor.CHUNKS_GENERATED);
@@ -117,21 +116,9 @@ public final class LodiffusionCommand {
     }
 
     /**
-     * Display live per-LOD octree pipeline statistics.
-     *
-     * <p>Output (example):
-     * <pre>
-     * === LODiffusion Octree Stats ===
-     * mode: ONNX  player section: (12, -4)  radius: 32  uptime: 45s
-     * queue sizes   L4:1  L3:5  L2:20  L1:80  L0:300
-     * oldest age    L4:0ms  L3:200ms  L2:1s  L1:3s  L0:8s
-     * enq/sec       L4:0.0  L3:0.1  L2:0.4  L1:1.2  L0:5.0
-     * cmp/sec       L4:0.0  L3:0.1  L2:0.4  L1:1.2  L0:5.0
-     * workers       L4:1  L3:1  L2:2  L1:3  L0:5
-     * avg latency   L4:0ms  L3:0ms  L2:0ms  L1:0ms  L0:0ms
-     * </pre>
+     * Display sparse-octree pipeline service status.
      */
-    private static int executeOctreeStats(CommandContext<ServerCommandSource> context) {
+    private static int executeStats(CommandContext<ServerCommandSource> context) {
         ServerCommandSource source = context.getSource();
 
         LodGenerationService svc = LodGenerationService.getInstance();
@@ -139,17 +126,12 @@ public final class LodiffusionCommand {
             source.sendFeedback(() -> Text.literal("§cLOD generation service not available.§r"), false);
             return 0;
         }
-        OctreeRuntimeStats stats = svc.getOctreeRuntimeStats();
 
-        source.sendFeedback(() -> Text.literal("§6=== LODiffusion Octree Stats ===§r"), false);
+        source.sendFeedback(() -> Text.literal("§6=== LODiffusion Stats ===§r"), false);
+        source.sendFeedback(() -> Text.literal("§7Service running: §a" + svc.isRunning() + "§r"), false);
 
-        String display = stats.toDisplayString();
-        for (String line : display.split("\n")) {
-            if (!line.trim().isEmpty()) {
-                final String fLine = line;
-                source.sendFeedback(() -> Text.literal("§7" + fLine + "§r"), false);
-            }
-        }
+        long inferences = PerformanceMonitor.getCounter(PerformanceMonitor.ONNX_INFERENCES);
+        source.sendFeedback(() -> Text.literal("§7Total inferences: §f" + inferences + "§r"), false);
 
         return 1;
     }
@@ -200,12 +182,12 @@ public final class LodiffusionCommand {
         // Models are managed by LodGenerationService lifecycle — stop/restart the
         // service to pick up new ONNX files.  For now we just validate the files exist.
         java.nio.file.Path modelDir = Config.modelDir();
-        boolean modelsPresent = Files.isRegularFile(modelDir.resolve("init_to_lod4.onnx"))
-                && Files.isRegularFile(modelDir.resolve("refine_lod2_to_lod1.onnx"));
-        if (modelsPresent) {
-            source.sendFeedback(() -> Text.literal("§aProgressive model files found in " + modelDir + ". Restart the world to reload.§r"), true);
+        if (OnnxModelFiles.hasFullVoxyModelSet(modelDir)) {
+            source.sendFeedback(() -> Text.literal("§aVoxy 5-model set found in " + modelDir + ". Restart the world to reload.§r"), true);
+        } else if (OnnxModelFiles.hasAnyVoxyModel(modelDir)) {
+            source.sendFeedback(() -> Text.literal("§cPartial Voxy model set in " + modelDir + " (expected voxy_l0.onnx through voxy_l4.onnx).§r"), true);
         } else {
-            source.sendFeedback(() -> Text.literal("§cModel files not found in " + modelDir + "§r"), true);
+            source.sendFeedback(() -> Text.literal("§cNo Voxy ONNX model files found in " + modelDir + ".§r"), true);
         }
         return 1;
     }
